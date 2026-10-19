@@ -1,9 +1,7 @@
-import * as React from "react";
 import { Card } from "./theme";
-
-export const serverReact = React;
+import { getUser } from "./data";
 
 export default async function ServerContent() {
-  const user = await Promise.resolve({ name: "Alice" });
+  const user = await getUser();
   return <Card user={user} />;
 }
