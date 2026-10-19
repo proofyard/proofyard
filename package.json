@@ -6,8 +6,9 @@
   "type": "module",
   "repository": "github:proofyard/proofyard",
   "scripts": {
-    "test": "bun test",
-    "test:poc1": "bun test --conditions react-server tests/poc/poc1-rsc.test.tsx"
+    "test": "bun run test:poc1 && bun run test:poc2",
+    "test:poc1": "bun test --conditions react-server tests/poc/poc1-rsc.test.tsx",
+    "test:poc2": "bun test --preload ./tests/poc/poc2/plugin.ts tests/poc/poc2"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
