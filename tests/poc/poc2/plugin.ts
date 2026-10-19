@@ -34,6 +34,10 @@ const CLIENT_PACKAGES = [
   "@testing-library/react",
   "@testing-library/user-event",
 ];
+// Client Mode はブラウザを再現する。条件なしだと Flight Client は node 版（SSR 用、callServer を無視する）になる
+const VENDOR_SOURCE: Record<string, string> = {
+  "react-server-dom-turbopack/client": "react-server-dom-turbopack/client.browser",
+};
 
 // 入口のスタブはプロジェクト内に置く（node_modules を解決するため。中身は常に同じなので並列でも衝突しない）。
 // バンドルの出力はプロセスごとの一時ディレクトリに出す
@@ -49,7 +53,7 @@ async function buildClientVendor() {
   mkdirSync(srcDir, { recursive: true });
   const name = (spec: string) => spec.replaceAll("/", "__");
   for (const spec of CLIENT_PACKAGES) {
-    writeFileSync(join(srcDir, `${name(spec)}.js`), `export default require(${JSON.stringify(spec)});\n`);
+    writeFileSync(join(srcDir, `${name(spec)}.js`), `export default require(${JSON.stringify(VENDOR_SOURCE[spec] ?? spec)});\n`);
   }
   const out = join(vendorDir, "out");
   const result = await Bun.build({
@@ -130,6 +134,37 @@ function clientReferenceModule(path: string, source: string): string {
   return `import { registerClientReference } from "react-server-dom-turbopack/server";\n${lines.join("\n")}`;
 }
 
+const USE_SERVER = /^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*["']use server["']/;
+// 関数本体の中の "use server"（ディレクティブだけの行）
+const INLINE_USE_SERVER = /^[ \t]*["']use server["'];?[ \t]*$/m;
+
+function serverExports(path: string, source: string) {
+  const names = transpilers[loaderOf(path)].scan(source).exports;
+  // ponytail: export default の Server Action は未対応。ローカル名を取り出す変換が要る
+  if (names.includes("default")) throw new Error(`[proofyard] Unsupported: default export in "use server" module ${path}`);
+  return names;
+}
+
+// Server Graph: "use server" モジュールは実行し、export を Server Reference として登録する
+function registerServerModule(path: string, source: string): string {
+  const id = JSON.stringify(path);
+  const lines = serverExports(path, source).map(
+    (name) =>
+      `if (typeof ${name} !== "function") throw new Error(${JSON.stringify(`[proofyard] "use server" export ${name} must be an async function`)});\n` +
+      `__proofyard_registerServerReference(${name}, ${id}, ${JSON.stringify(name)});`,
+  );
+  return `${source}\nimport { registerServerReference as __proofyard_registerServerReference } from "react-server-dom-turbopack/server";\n${lines.join("\n")}\n`;
+}
+
+// Client Graph: "use server" モジュールは実装を読まず、callServer を呼ぶ参照だけを export する
+function serverReferenceModule(path: string, source: string): string {
+  const lines = serverExports(path, source).map(
+    (name) =>
+      `export const ${name} = createServerReference(${JSON.stringify(`${path}#${name}`)}, (id, args) => globalThis.__proofyard.callServer(id, args));`,
+  );
+  return `import { createServerReference } from "react-server-dom-turbopack/client";\n${lines.join("\n")}\n`;
+}
+
 plugin({
   name: "proofyard-poc2",
   setup(build) {
@@ -138,6 +173,11 @@ plugin({
     build.onLoad({ filter: /^(?!.*\/node_modules\/).*\.[cm]?[jt]sx?$/ }, (args) => {
       const source = readFileSync(args.path, "utf8");
       if (USE_CLIENT.test(source)) return { loader: "js", contents: clientReferenceModule(args.path, source) };
+      if (USE_SERVER.test(source)) return { loader: loaderOf(args.path), contents: registerServerModule(args.path, source) };
+      // Fail Closed: 関数レベルの "use server" はクロージャ変換（Next.js コンパイラ）が要る
+      if (INLINE_USE_SERVER.test(source)) {
+        throw new Error(`[proofyard] Unsupported: function-level "use server" requires the Next.js compiler (${args.path})`);
+      }
       return { loader: loaderOf(args.path), contents: source };
     });
 
@@ -145,6 +185,7 @@ plugin({
     build.onLoad({ filter: /^(?!.*\/node_modules\/).*\.[cm]?[jt]sx?\?client$/ }, (args) => {
       const path = args.path.slice(0, -CLIENT.length);
       const source = readFileSync(path, "utf8");
+      if (USE_SERVER.test(source)) return { loader: "js", contents: linkClient(serverReferenceModule(path, source), dirname(path)) };
       return { loader: "js", contents: linkClient(transpilers[loaderOf(path)].transformSync(source), dirname(path)) };
     });
   },

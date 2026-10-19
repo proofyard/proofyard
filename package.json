@@ -6,11 +6,12 @@
   "type": "module",
   "repository": "github:proofyard/proofyard",
   "scripts": {
-    "test": "bun run test:poc1 && bun run test:poc2 && bun run test:poc3",
+    "test": "bun run test:poc1 && bun run test:poc2 && bun run test:poc3 && bun run test:poc4",
     "test:poc1": "bun test --conditions react-server tests/poc/poc1-rsc.test.tsx",
     "test:poc2": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/poc/poc2",
     "test:poc3": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/poc/poc3",
-    "bench:dom": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/benchmarks/dom-compare.test.tsx"
+    "bench:dom": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/benchmarks/dom-compare.test.tsx",
+    "test:poc4": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/poc/poc4 tests/poc/shared"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "20",
