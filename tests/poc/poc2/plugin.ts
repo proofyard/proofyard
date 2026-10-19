@@ -14,6 +14,7 @@
 import { plugin } from "bun";
 import { dirname, join } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 export const CLIENT = "?client";
 
@@ -28,17 +29,23 @@ const CLIENT_PACKAGES = [
   "react/jsx-dev-runtime",
   "react-dom",
   "react-dom/server",
+  "react-dom/client",
   "react-server-dom-turbopack/client",
+  "@testing-library/react",
+  "@testing-library/user-event",
 ];
 
-// ponytail: 並列の bun test プロセスが同じディレクトリに書くと競合する。プロセスごとの一時ディレクトリか内容ハッシュに置き換える
-const vendorDir = join(import.meta.dir, "../../../node_modules/.cache/proofyard/client-vendor");
+// 入口のスタブはプロジェクト内に置く（node_modules を解決するため。中身は常に同じなので並列でも衝突しない）。
+// バンドルの出力はプロセスごとの一時ディレクトリに出す
+// ponytail: 毎回ビルドする（約0.1〜0.5秒）。内容ハッシュでキャッシュして再利用できる
+const projectRoot = join(import.meta.dir, "../../..");
+const vendorDir = join(tmpdir(), `proofyard-client-vendor-${process.pid}`);
 
 // spec -> facade モジュールのパス（名前付き export を持つ ESM）
 const clientPackages = await buildClientVendor();
 
 async function buildClientVendor() {
-  const srcDir = join(vendorDir, "src");
+  const srcDir = join(projectRoot, ".proofyard/vendor-src");
   mkdirSync(srcDir, { recursive: true });
   const name = (spec: string) => spec.replaceAll("/", "__");
   for (const spec of CLIENT_PACKAGES) {
@@ -54,13 +61,27 @@ async function buildClientVendor() {
   });
   if (!result.success) throw new AggregateError(result.logs, "[proofyard] client vendor build failed");
 
-  // CJS の default を名前付き export に展開する facade
+  // CJS の default を名前付き export に展開する facade。
+  // export 名は子プロセスで調べる。このプロセスで評価すると、DOM を用意する前に react-dom/client が
+  // `window` の有無を判定して固定してしまうため
+  const entryOutputs = result.outputs.filter((o) => o.kind === "entry-point").map((o) => o.path);
+  const bundles = CLIENT_PACKAGES.map((spec) => {
+    const file = entryOutputs.find((p) => p.endsWith(`/${name(spec)}.js`));
+    if (!file) throw new Error(`[proofyard] no bundle output for ${spec}: ${entryOutputs.join(", ")}`);
+    return [spec, file] as const;
+  });
+  const probe = Bun.spawnSync([
+    process.execPath,
+    "-e",
+    `const r = {}; for (const [s, f] of ${JSON.stringify(bundles)}) r[s] = Object.keys((await import(f)).default); console.log(JSON.stringify(r));`,
+  ]);
+  if (!probe.success) throw new Error(`[proofyard] client vendor probe failed: ${probe.stderr}`);
+  const keysOf: Record<string, string[]> = JSON.parse(probe.stdout.toString());
   const map = new Map<string, string>();
-  for (const spec of CLIENT_PACKAGES) {
-    const bundle = join(out, `${name(spec)}.js`);
-    const keys = Object.keys((await import(bundle)).default).filter((k) => k !== "default" && /^[A-Za-z_$][\w$]*$/.test(k));
+  for (const [spec, bundle] of bundles) {
+    const keys = keysOf[spec]!.filter((k) => k !== "default" && /^[A-Za-z_$][\w$]*$/.test(k));
     const facade = join(vendorDir, `${name(spec)}.facade.js`);
-    writeFileSync(facade, `import m from ${JSON.stringify(bundle)};\nexport const { ${keys.join(", ")} } = m;\nexport default m;\n`);
+    writeFileSync(facade, `import m from ${JSON.stringify(bundle)};\nexport const { ${keys.join(", ")} } = m;\n// ESM パッケージを require() すると本体は default の中にある\nexport default "default" in m ? m.default : m;\n`);
     map.set(spec, facade);
   }
   return map;
