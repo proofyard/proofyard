@@ -8,9 +8,14 @@
   "scripts": {
     "test": "bun run test:poc1 && bun run test:poc2",
     "test:poc1": "bun test --conditions react-server tests/poc/poc1-rsc.test.tsx",
-    "test:poc2": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/poc/poc2"
+    "test:poc2": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/poc/poc2",
+    "test:poc3": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/poc/poc3"
   },
   "devDependencies": {
+    "@miaskiewicz/turbo-dom": "0.5.6",
+    "@testing-library/dom": "10",
+    "@testing-library/react": "16",
+    "@testing-library/user-event": "14",
     "@types/bun": "^1.4.3",
     "@types/react": "19"
   },
