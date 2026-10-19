@@ -1,0 +1,21 @@
+{
+  "name": "proofyard",
+  "version": "0.0.0",
+  "description": "Test React Server Components and Next.js App Router applications with Bun, without launching a browser or Next.js server.",
+  "license": "MIT",
+  "type": "module",
+  "repository": "github:proofyard/proofyard",
+  "scripts": {
+    "test": "bun test",
+    "test:poc1": "bun test --conditions react-server tests/poc/poc1-rsc.test.tsx"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "@types/react": "19"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-server-dom-turbopack": "19.3.1"
+  }
+}
