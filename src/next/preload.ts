@@ -5,7 +5,7 @@
 require("next/dist/server/node-environment-baseline"); // globalThis.AsyncLocalStorage
 // Next.js の runtime バンドル（vendored React を含む）。層をまたいで共有する
 require("next/dist/server/route-modules/app-page/module.compiled");
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -31,7 +31,7 @@ const { getSortedRoutes } = require("next/dist/shared/lib/router/utils/sorted-ro
 const { getRouteRegex } = require("next/dist/shared/lib/router/utils/route-regex");
 const { createRequestResponseMocks } = require("next/dist/server/lib/mock-request");
 const { getDefineEnv } = require("next/dist/build/define-env");
-const { transform, transformSync } = require("next/dist/build/swc");
+const { transformSync } = require("next/dist/build/swc");
 const { getLoaderSWCOptions } = require("next/dist/build/swc/options");
 
 let t = performance.now();
@@ -95,6 +95,15 @@ const nextDefine: Record<string, unknown> = getDefineEnv({
 const define = Object.fromEntries(Object.entries(nextDefine).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]));
 // rsc 層のアプリのソースは next-swc-loader と同じ SWC 変換（"use cache" / "use server" はここで変換される）
 const encryptionKey = randomBytes(32).toString("base64");
+// アプリのソースファイル（node_modules と隠しディレクトリ（.next など）を除く）
+function* appSources(dir: string): Generator<string> {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) yield* appSources(path);
+    else if (/\.[cm]?[jt]sx?$/.test(entry.name) && !entry.name.endsWith(".d.ts")) yield path;
+  }
+}
 const dev = process.env.NODE_ENV === "development";
 const jsConfig = { compilerOptions: {} }; // ponytail: tsconfig の paths / baseUrl は未対応（Next.js は loadJsConfig で読む）
 const swcOptions = (filename: string) =>
@@ -126,31 +135,20 @@ const swcOptions = (filename: string) =>
     trackDynamicImports: !!config.cacheComponents,
     pageExtensions,
   });
-// アプリのソース（プロジェクト内の node_modules 以外）
-const isAppSource = (path: string) => path.startsWith(projectDir + "/") && !path.includes("/node_modules/");
-const swcTransform = async (filename: string, source: string) =>
-  isAppSource(filename)
-    ? ((await transform(source, { ...swcOptions(filename), filename, sourceFileName: filename })).code as string)
-    : undefined;
-// ネイティブ読み込み用は同期（非同期の onLoad を経たモジュールは require できない。route.ts は require で読まれる）
+// ネイティブ読み込み時の SWC 変換（同期。非同期の onLoad を経たモジュールは require できない。route.ts は require で読まれる）
 const swcTransformSync = (filename: string, source: string): string =>
   transformSync(source, { ...swcOptions(filename), filename, sourceFileName: filename }).code;
 const entries = [...routes.values()].map((r) => r.entry);
-// 1 回目: アプリも含めて rsc 層をバンドルし、Client Reference（SSR 層に入れるもの）を集める
-// ponytail: 収集のためだけのバンドル。import グラフの走査で置き換えられる
-await buildLayer("rsc", entries, { define, generatedDir, transform: swcTransform });
-for (const id of clientIds)
-  if (id.includes("/node_modules/") && !id.includes("/node_modules/next/"))
-    throw new Error(`[proofyard] Unsupported: "use client" modules in node_modules are not supported yet (${id})`);
-const ssr = await buildLayer("ssr", [...clientIds], { define });
-// 2 回目: Next.js 本体だけをバンドルし、アプリはネイティブで読み込む（mock.module が効く）
+
+// rsc 層: Next.js 本体だけをバンドルし、アプリはネイティブで読み込む（mock.module が効く）。
 // アプリが import しうる Next.js 本体のモジュール（next/cache などの公開の入口、SWC が出力する private-next-rsc-* など）も
 // 同じバンドルの入口にする。ネイティブで読むと define が効かず（NODE_ENV など）、本番と違うコードが動くため
 const nextFacades = new Map<string, string>(); // 指定子 → ファイル
 for (const [spec, target] of Object.entries(BUNDLED_ALIASES.rsc)) nextFacades.set(spec, Bun.resolveSync(target, process.cwd()));
 // App Router の公開の入口（Pages Router 専用のもの（next/document など）は rsc 層では使わない）
 // ponytail: 一覧にない next/* をネイティブで読むと define が効かない。必要になったら一覧に足す
-const APP_ROUTER_ENTRIES = ["cache", "headers", "server", "image", "script", "og", "root-params", "constants"];
+// （next/og は画像生成で重いので除いている）
+const APP_ROUTER_ENTRIES = ["cache", "headers", "server", "image", "script", "root-params", "constants"];
 for (const name of APP_ROUTER_ENTRIES) {
   const spec = `next/${name}`;
   if (nextFacades.has(spec)) continue;
@@ -168,6 +166,30 @@ for (const file of new Set(nextFacades.values())) {
   facadeEntries.set(file, entry);
 }
 const rsc = await buildLayer("rsc", [...entries, ...facadeEntries.values()], { define, generatedDir, nativeDir: projectDir });
+
+// アプリの "use client" ファイルを Client Reference として登録する（Next.js 本体のものは rsc 層のビルドで登録済み）
+const sourceLoader = (path: string) => (path.match(/\.([jt]sx?)$/)?.[1] ?? "js") as "js" | "jsx" | "ts" | "tsx";
+for (const path of appSources(projectDir)) {
+  const source = readFileSync(path, "utf8");
+  if (USE_CLIENT.test(source)) {
+    clientReferenceStub(path, source);
+    continue;
+  }
+  // サードパーティの "use client" はネイティブで読むとサーバーで実行されてしまうので Fail Closed
+  // ponytail: アプリが直接 import するファイルだけを見る（パッケージの奥の "use client" は検出できない）
+  for (const { path: spec } of new Bun.Transpiler({ loader: sourceLoader(path) }).scanImports(source)) {
+    if (/^(?:\.|\/|node:|bun:|next\/|react)/.test(spec) || spec === "next") continue;
+    let resolved: string;
+    try {
+      resolved = Bun.resolveSync(spec, dirname(path));
+    } catch {
+      continue;
+    }
+    if (resolved.includes("/node_modules/") && USE_CLIENT.test(readFileSync(resolved, "utf8")))
+      throw new Error(`[proofyard] Unsupported: "use client" modules in node_modules are not supported yet (${spec} from ${path})`);
+  }
+}
+const ssr = await buildLayer("ssr", [...clientIds], { define });
 
 // ネイティブで読み込むアプリ（と、その依存）の rsc 層の解決と変換
 // - react などは Next.js 内蔵の React に（build.module は CJS の require も含めて置き換える）

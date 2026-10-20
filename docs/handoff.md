@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0（PoC 1〜6）が完了し、Phase 1 を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit` と PoC 1〜6。51 件）
+- テスト: `bun run test`（`tests/unit` と PoC 1〜6。56 件）
 
 ## 決めたこと
 
@@ -28,9 +28,10 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 ## 公開 API（実装済み）
 
 - `requestRoute(url, { method, headers, cookies })`: Next.js 本体のリクエスト処理に通し、標準の `Response` を返す
-- `renderRSC(element)`: RSC Mode。Flight を往復させた React ツリーを返す。`getByText` / `queryByText` / `getAllByText` / `queryAllByText`、`getClientReference` / `getAllClientReferences`（export 名か、import した Client Component で探す）、`text()`、`root`
-  - Client Component は実行しない（デコード時に目印のモジュールに差し替える）
-  - 描画中の例外は、本番の Flight では digest だけになるので、サーバー側の元のエラーを投げる
+- `renderRSC(element)`: RSC Mode。Flight を往復させた React ツリーを返す（シェルが揃った時点。待っている Suspense は fallback）
+  - クエリ（毎回いまの状態を読む）: `getByText` / `queryByText` / `getAllByText` / `queryAllByText`、`findByText` / `findAllByText`（届くまで待つ）、`waitForComplete()`、`getClientReference` / `getAllClientReferences`（export 名か、import した Client Component で探す）、`text()`、`root`
+  - Client Component は実行しない（デコード時に目印のモジュールに差し替える）。Server Function は `$$id` と `$$bound` を持つ目印になる（呼ぶとエラー）
+  - 描画中の例外は、本番の Flight では digest だけになるので、onError の digest で対応付けてサーバー側の元のエラーを投げる
   - Next.js のリクエスト API（`cookies()` など）は、リクエストの外なので Next.js 自身のエラーになる
 - `getInvalidatedTags()`: このテストで無効化されたキャッシュタグ
 - 使い方: `bun test --preload proofyard/preload`（対象アプリは `PROOFYARD_NEXT_APP`、既定はカレントディレクトリ）
@@ -46,7 +47,8 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
   - `Bun.plugin` の `onLoad` で SWC 変換（同期）、`"use client"` は Client Reference に
   - `react` などは `build.module` で Next.js 内蔵の React に（CJS の `require` も置き換わる）
   - アプリが import する Next.js 本体のモジュール（`next/cache`、`next/navigation`、SWC が出力する `private-next-rsc-*`）はバンドル側に向ける（ネイティブで読むと define が効かない）
-  - SSR 層に入れる Client Component は、事前にアプリも含めたバンドルを 1 回作って集める
+  - SSR 層に入れる Client Component: Next.js 本体のものは rsc 層のビルドで、アプリのものは全ソースの `"use client"` を調べて集める
+  - アプリから使う Next.js 本体のモジュールは固定の一覧（`private-next-rsc-*` などのエイリアスと App Router の公開の入口）。一覧にない `next/*` はネイティブで読まれて define が効かない
 - manifest: `next start` が読む `.next` の最小構成を一時ディレクトリに書く
 - リクエスト: エントリの `handler(req, res)` をモックの req/res で呼ぶ（ステータス、リダイレクト、404 は Next.js 自身が決める）
 - キャッシュ: グローバルな `beforeEach` で、`"use cache"` のハンドラーとタグの記録をテストごとに空にする
@@ -76,7 +78,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 仕様23章のロードマップに沿って、Phase 1 以降で PoC のコードをライブラリにする。
 
 - **土台は Next.js モード**（Next.js 内蔵の React と本体の部品。アプリのコードはネイティブで読み込み、`mock.module` も効く）
-- Phase 1 の残り: Server Function References の検査、`renderRSC` の Suspense の途中状態（シェルだけ）の検査、テストのたびに作るビルドの高速化（初回のみにする）
+- Phase 1 は完了（起動時のビルドは 1〜2 秒。実行をまたいだキャッシュは Phase 8 で）
 - Phase 2: `render()`（SSR Mode / Client Mode。turbo-dom と Testing Library。PoC 3 の部品を Next.js モードに移す）
 
 ## 守ること（仕様27章の要約）
