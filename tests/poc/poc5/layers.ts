@@ -23,14 +23,12 @@ export const ALIASES = {
     "react-server-dom-webpack/server": `${VENDORED}/rsc/react-server-dom-webpack-server`,
     "react-server-dom-webpack/server.node": `${VENDORED}/rsc/react-server-dom-webpack-server`,
     "react-server-dom-webpack/static": `${VENDORED}/rsc/react-server-dom-webpack-static`,
-    "react-server-dom-webpack/client": "next/dist/compiled/react-server-dom-webpack/client.node",
     "server-only": "next/dist/compiled/server-only/empty",
     "client-only": "next/dist/compiled/client-only/error",
     "@opentelemetry/api": "next/dist/compiled/@opentelemetry/api",
   },
   ssr: {
     ...reactAliases("ssr"),
-    "react-dom/server": "next/dist/compiled/react-dom/server.node",
     "react-server-dom-webpack/client": `${VENDORED}/ssr/react-server-dom-webpack-client`,
     "server-only": "next/dist/compiled/server-only/error",
     "client-only": "next/dist/compiled/client-only/index",
@@ -40,8 +38,11 @@ export const ALIASES = {
 // 層のバンドルに含めるエイリアス（create-compiler-aliases.ts）
 // - next/navigation などは層ごとに別実装（createAppRouterApiAliases）
 // - private-next-rsc-*: SWC が "use cache" / "use server" の変換で出力する import
-const BUNDLED_ALIASES = {
+// - 実行時に NODE_ENV で開発版と本番版を選ぶもの（react-server-dom-webpack/client など）。
+//   外部にすると bun test の NODE_ENV=test で開発版になり、本番版の React と混ざる
+export const BUNDLED_ALIASES = {
   rsc: {
+    "react-server-dom-webpack/client": "next/dist/compiled/react-server-dom-webpack/client.node",
     "private-next-rsc-action-validate": "next/dist/build/webpack/loaders/next-flight-loader/action-validate",
     "private-next-rsc-action-client-wrapper": "next/dist/build/webpack/loaders/next-flight-loader/action-client-wrapper",
     "private-next-rsc-server-reference": "next/dist/build/webpack/loaders/next-flight-loader/server-reference",
@@ -56,6 +57,7 @@ const BUNDLED_ALIASES = {
     "next/form": "next/dist/client/app-dir/form",
   },
   ssr: {
+    "react-dom/server": "next/dist/compiled/react-dom/server.node",
     "next/link": "next/dist/client/app-dir/link",
     "next/head": "next/dist/client/components/noop-head",
     "next/dynamic": "next/dist/api/app-dynamic",
@@ -67,7 +69,7 @@ const root = process.cwd();
 const abs = (spec: string) => Bun.resolveSync(spec, root);
 // node_modules 内の "use server" / "use cache"（Next.js は SWC で変換する。ここでは変換しないので Fail Closed）
 const SERVER_DIRECTIVE = /^\s*["']use (?:server|cache(?::\s*[\w-]+)?)["']/m;
-const USE_CLIENT = /^\s*(?:(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:["']use strict["'];?\s*)?["']use client["']/;
+export const USE_CLIENT = /^\s*(?:(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:["']use strict["'];?\s*)?["']use client["']/;
 
 // Client Reference の id（"use client" ファイルの絶対パス）。esmClientIds は ESM（名前空間で渡す）もの
 export const clientIds = new Set<string>();
@@ -76,7 +78,7 @@ export const esmClientIds = new Set<string>();
 const registerStub = (id: string, n: string) =>
   `registerClientReference(function () { throw new Error("[proofyard] client function called on the server"); }, ${id}, ${JSON.stringify(n)})`;
 
-function clientReferenceStub(path: string, source: string) {
+export function clientReferenceStub(path: string, source: string) {
   clientIds.add(path);
   const id = JSON.stringify(path);
   const loader = path.match(/\.([jt]sx?)$/)?.[1] as "js" | "jsx" | "ts" | "tsx" | undefined;
@@ -103,12 +105,15 @@ export type LayerOptions = {
   generatedDir?: string;
   // アプリのソースの変換（rsc 層。Next.js の SWC）。対象外のファイルは undefined を返す
   transform?: (path: string, source: string) => Promise<string | undefined>;
+  // このディレクトリのファイル（node_modules を除く）はバンドルせず外部のまま（実行時にネイティブで読み込む。mock.module が効く）
+  nativeDir?: string;
 };
 
-export async function buildLayer(layer: "rsc" | "ssr", entries: string[], { define, generatedDir, transform }: LayerOptions) {
+let builds = 0;
+export async function buildLayer(layer: "rsc" | "ssr", entries: string[], { define, generatedDir, transform, nativeDir }: LayerOptions) {
   const aliases: Record<string, string> = ALIASES[layer];
   const bundledAliases: Record<string, string> = BUNDLED_ALIASES[layer];
-  const outdir = join(tmpdir(), `proofyard-next-${layer}-${process.pid}`);
+  const outdir = join(tmpdir(), `proofyard-next-${process.pid}-${layer}-${builds++}`);
   const entryPaths = entries.map((e) => (e.startsWith("/") ? e : abs(e)));
   const result = await Bun.build({
     entrypoints: entryPaths,
@@ -141,6 +146,8 @@ export async function buildLayer(layer: "rsc" | "ssr", entries: string[], { defi
               return { path: args.path, external: true };
             }
             if (/\.external(\.js)?$/.test(resolved) || /module\.compiled(\.js)?$/.test(resolved)) return { path: resolved, external: true };
+            if (nativeDir !== undefined && resolved.startsWith(nativeDir + "/") && !resolved.includes("/node_modules/"))
+              return { path: resolved, external: true };
             if (generated) return { path: resolved };
           });
           if (layer === "rsc") {
