@@ -97,9 +97,6 @@ const define = Object.fromEntries(Object.entries(nextDefine).map(([k, v]) => [k,
 const encryptionKey = randomBytes(32).toString("base64");
 const dev = process.env.NODE_ENV === "development";
 const jsConfig = { compilerOptions: {} }; // ponytail: tsconfig の paths / baseUrl は未対応（Next.js は loadJsConfig で読む）
-// アプリ（SWC 変換後）が import する指定子。Next.js 本体のものは rsc 層のバンドルに向ける
-const appImports = new Set<string>();
-const scanner = new Bun.Transpiler({ loader: "js" });
 const swcOptions = (filename: string) =>
   getLoaderSWCOptions({
     filename,
@@ -129,15 +126,11 @@ const swcOptions = (filename: string) =>
     trackDynamicImports: !!config.cacheComponents,
     pageExtensions,
   });
-const collect = (code: string) => {
-  for (const { path } of scanner.scanImports(code)) appImports.add(path);
-  return code;
-};
 // アプリのソース（プロジェクト内の node_modules 以外）
 const isAppSource = (path: string) => path.startsWith(projectDir + "/") && !path.includes("/node_modules/");
 const swcTransform = async (filename: string, source: string) =>
   isAppSource(filename)
-    ? collect((await transform(source, { ...swcOptions(filename), filename, sourceFileName: filename })).code)
+    ? ((await transform(source, { ...swcOptions(filename), filename, sourceFileName: filename })).code as string)
     : undefined;
 // ネイティブ読み込み用は同期（非同期の onLoad を経たモジュールは require できない。route.ts は require で読まれる）
 const swcTransformSync = (filename: string, source: string): string =>
@@ -151,21 +144,21 @@ for (const id of clientIds)
     throw new Error(`[proofyard] Unsupported: "use client" modules in node_modules are not supported yet (${id})`);
 const ssr = await buildLayer("ssr", [...clientIds], { define });
 // 2 回目: Next.js 本体だけをバンドルし、アプリはネイティブで読み込む（mock.module が効く）
-// アプリが import する Next.js 本体のモジュール（next/cache、SWC が出力する private-next-rsc-* など）も同じバンドルの入口にする。
-// ネイティブで読むと define が効かず（NODE_ENV など）、本番と違うコードが動くため
+// アプリが import しうる Next.js 本体のモジュール（next/cache などの公開の入口、SWC が出力する private-next-rsc-* など）も
+// 同じバンドルの入口にする。ネイティブで読むと define が効かず（NODE_ENV など）、本番と違うコードが動くため
 const nextFacades = new Map<string, string>(); // 指定子 → ファイル
-// renderRSC が Flight のデコードに使う（rsc 層のクライアント）
-appImports.add("react-server-dom-webpack/client");
-for (const spec of appImports) {
-  if (/^(?:\.|\/|node:|bun:)/.test(spec) || spec in ALIASES.rsc) continue;
-  const bundled = (BUNDLED_ALIASES.rsc as Record<string, string>)[spec];
-  let file: string;
+for (const [spec, target] of Object.entries(BUNDLED_ALIASES.rsc)) nextFacades.set(spec, Bun.resolveSync(target, process.cwd()));
+// App Router の公開の入口（Pages Router 専用のもの（next/document など）は rsc 層では使わない）
+// ponytail: 一覧にない next/* をネイティブで読むと define が効かない。必要になったら一覧に足す
+const APP_ROUTER_ENTRIES = ["cache", "headers", "server", "image", "script", "og", "root-params", "constants"];
+for (const name of APP_ROUTER_ENTRIES) {
+  const spec = `next/${name}`;
+  if (nextFacades.has(spec)) continue;
   try {
-    file = Bun.resolveSync(bundled ?? spec, bundled ? process.cwd() : projectDir);
+    nextFacades.set(spec, Bun.resolveSync(spec, process.cwd()));
   } catch {
-    continue; // 解決できないものは実行時に通常どおり失敗させる
+    // このバージョンの Next.js にない入口
   }
-  if (file.includes("/node_modules/next/")) nextFacades.set(spec, file);
 }
 // 入口は名前空間を default で渡す小さな ESM（入口を直接使うと、CJS → ESM 変換や export * の再エクスポートで export を取りこぼす）
 const facadeEntries = new Map<string, string>(); // ファイル → 入口

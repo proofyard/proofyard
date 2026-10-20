@@ -1,6 +1,6 @@
 import { expect, mock, test } from "bun:test";
 import { join } from "node:path";
-import { renderRSC } from "proofyard";
+import { renderRSC, type ServerReference } from "proofyard";
 import { UserList } from "../fixtures/next-app/components/user-list";
 import { LikeButton } from "../fixtures/next-app/components/like-button";
 
@@ -55,4 +55,14 @@ test("リクエストの外で cookies() を使うと Next.js 自身のエラー
     return <p>{(await cookies()).get("theme")?.value}</p>;
   }
   await expect(renderRSC(<NeedsCookies />)).rejects.toThrow("outside a request scope");
+});
+
+test("Client Component に渡した Server Function は参照（$$id と bind した引数）として検査できる", async () => {
+  const { renameUser } = await import("../fixtures/next-app/components/actions");
+  const { RenameForm } = await import("../fixtures/next-app/components/rename-form");
+  const result = await renderRSC(<RenameForm action={renameUser.bind(null, "core", 7)} />);
+  const action = result.getClientReference(RenameForm).props.action as ServerReference;
+  expect(action.$$id).toBe((renameUser as unknown as ServerReference).$$id);
+  expect(action.$$bound).toEqual(["core", 7]);
+  expect(() => action(new FormData())).toThrow("Server Functions are not called in renderRSC");
 });
