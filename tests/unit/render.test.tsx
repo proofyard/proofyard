@@ -63,6 +63,8 @@ test("Server → Client（Provider）→ Server → Client（Context を読む�
   );
   const ssr = await render(page, { mode: "ssr" });
   expect(ssr.getByRole("button").textContent).toBe("theme: dark");
+  // Client Mode のクエリは document.body 全体なので、SSR の結果を外してから描画する
+  ssr.unmount();
 
   const client = await render(page);
   expect(client.getByRole("heading").textContent).toBe("Settings");

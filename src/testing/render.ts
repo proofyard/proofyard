@@ -122,9 +122,9 @@ export async function render(ui: unknown, { mode = "client", hydrate = false }: 
   });
   const rendered = utils!;
   containers.add(rendered.container);
-  // クエリはこのコンテナに限る（Testing Library の既定は document.body 全体）
+  // クエリは Testing Library と同じく document.body 全体（Portal で外に描画されたものも見つかる）
   return {
-    ...browser.within(rendered.container),
+    ...browser.within(rendered.baseElement),
     container: rendered.container,
     html,
     user: browser.userEvent.setup(),
