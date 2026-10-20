@@ -1,4 +1,4 @@
-// PoC 5: Next.js App Router のアプリを、Next.js 本体の実装でビルド（層ごと）してリクエストを処理する。
+// Next.js モードのプリロード: App Router のアプリを、Next.js 本体の実装でビルド（層ごと）してリクエストを処理する。
 // - ルートツリーとエントリ: next-app-loader（next build と同じ生成コード）
 // - 設定: loadConfig、manifest: `next start` と同じ形の .next を一時ディレクトリに書く
 // - リクエスト処理: エントリの handler（app-page テンプレート）
@@ -11,8 +11,9 @@ import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { ALIASES, BUNDLED_ALIASES, USE_CLIENT, buildLayer, clientIds, clientReferenceStub, esmClientIds } from "./layers";
 
-// ponytail: 対象アプリは環境変数で受け取る。設定（proofyard.config 等）は Phase 2 の CLI で
-const projectDir = resolve(process.env.PROOFYARD_NEXT_APP ?? join(import.meta.dir, "fixture-app"));
+// 対象アプリ（next.config と app/ のあるディレクトリ）。既定は bun test を実行したディレクトリ
+// ponytail: 環境変数で受け取る。設定ファイル（proofyard.config 等）は必要になったら
+const projectDir = resolve(process.env.PROOFYARD_NEXT_APP ?? process.cwd());
 const appDir = join(projectDir, "app");
 const work = join(tmpdir(), `proofyard-next-${process.pid}`);
 const generatedDir = join(work, "entries");
@@ -258,17 +259,28 @@ for (const { page } of routes.values()) {
 const sorted: string[] = getSortedRoutes([...routes.keys()]);
 const matchers = sorted.map((pathname) => ({ pathname, re: getRouteRegex(pathname).re as RegExp }));
 
-export type NextResponseResult = { status: number; headers: Headers; html: string };
+export type RequestRouteOptions = {
+  method?: string;
+  headers?: Record<string, string>;
+  cookies?: Record<string, string>;
+};
 
-async function request(url: string, init: { headers?: Record<string, string>; method?: string } = {}): Promise<NextResponseResult> {
+// URL へのリクエストを Next.js 本体の handler で処理し、HTTP の応答を返す
+async function requestRoute(url: string, init: RequestRouteOptions = {}): Promise<Response> {
   const pathname = new URL(url, "http://localhost").pathname;
   const match = matchers.find((m) => m.re.test(pathname));
   if (!match) throw new Error(`[proofyard] no route matches ${pathname}`);
   const { handler } = await import(rsc.get(routes.get(match.pathname)!.entry)!);
-  const { req, res } = createRequestResponseMocks({ url, method: init.method, headers: { host: "localhost", ...init.headers } });
+  const headers: Record<string, string> = { host: "localhost", ...init.headers };
+  if (init.cookies) {
+    const cookie = Object.entries(init.cookies).map(([k, v]) => `${k}=${encodeURIComponent(v)}`);
+    headers.cookie = [headers.cookie, ...cookie].filter(Boolean).join("; ");
+  }
+  const { req, res } = createRequestResponseMocks({ url, method: init.method, headers });
   await handler(req, res, { requestMeta: { distDir, relativeProjectDir: relative(process.cwd(), projectDir) } });
   await res.hasStreamed;
-  return { status: res.statusCode, headers: res.headers, html: Buffer.concat(res.buffers).toString("utf8") };
+  const nullBody = [101, 204, 205, 304].includes(res.statusCode);
+  return new Response(nullBody ? null : Buffer.concat(res.buffers), { status: res.statusCode, headers: res.headers });
 }
 
 // アプリのキャッシュ（"use cache" のハンドラーとタグの無効化記録）はテストごとに分離する。
@@ -286,4 +298,8 @@ const invalidatedTags = (): string[] => [...tagsManifest.keys()];
 const { beforeEach } = await import("bun:test");
 beforeEach(resetCache);
 
-(globalThis as any).__proofyardNext = { request, invalidatedTags };
+(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, invalidatedTags } satisfies NextHarness;
+export type NextHarness = {
+  requestRoute: typeof requestRoute;
+  invalidatedTags: typeof invalidatedTags;
+};
