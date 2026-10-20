@@ -62,37 +62,60 @@ const placeholders = new Map<string, Record<string, unknown>>();
 
 const flightEntry = (id: string) => ({ id, name: "*", chunks: [], async: false });
 
-// Flight でデコードしたものを、lazy や Promise を解決しながら RSCNode の列にする
-async function toNodes(node: any): Promise<RSCNode[]> {
+// まだ届いていない Flight のチャンク（中の thenable を待てば進む）
+class Pending {
+  constructor(readonly thenable: PromiseLike<unknown>) {}
+}
+
+// 届いているチャンクだけで、いまのツリーを作る（同期）。
+// 未到着のチャンクに当たったら、一番近い Suspense の fallback を表示し、その thenable を pending に入れる。
+// Suspense の外で未到着なら Pending を投げる（シェルが未完成）
+function snapshot(node: any, pending: Set<PromiseLike<unknown>>): RSCNode[] {
   if (node == null || typeof node === "boolean") return [];
   if (typeof node === "string" || typeof node === "number" || typeof node === "bigint") return [String(node)];
-  if (Array.isArray(node)) return (await Promise.all(node.map(toNodes))).flat();
-  if (typeof node.then === "function") return toNodes(await node);
-  if (node.$$typeof === REACT_LAZY) return toNodes(await resolveLazy(node));
+  if (Array.isArray(node)) return node.flatMap((child) => snapshot(child, pending));
+  if (node.$$typeof === REACT_LAZY) return snapshot(readLazy(node), pending);
+  if (typeof node.then === "function") return snapshot(readThenable(node), pending);
   if (node.$$typeof === REACT_ELEMENT) {
-    const type = node.type?.$$typeof === REACT_LAZY ? await resolveLazy(node.type) : node.type;
-    const { children, ...props } = node.props as Record<string, unknown>;
-    // Suspense は解決後の中身だけを残す（fallback は表示されない）
-    if (type === REACT_FRAGMENT || type === REACT_SUSPENSE) return toNodes(children);
-    if (typeof type === "string") return [{ type, props, children: await toNodes(children) }];
+    const type = node.type?.$$typeof === REACT_LAZY ? readLazy(node.type) : node.type;
+    const { children, fallback, ...props } = node.props as Record<string, unknown>;
+    if (type === REACT_SUSPENSE) {
+      try {
+        return snapshot(children, pending);
+      } catch (thrown) {
+        if (!(thrown instanceof Pending)) throw thrown;
+        pending.add(thrown.thenable);
+        return snapshot(fallback, pending);
+      }
+    }
+    if (fallback !== undefined) props.fallback = fallback;
+    if (type === REACT_FRAGMENT) return snapshot(children, pending);
+    if (typeof type === "string") return [{ type, props, children: snapshot(children, pending) }];
     const reference = type?.[CLIENT_REFERENCE] as ClientReference | undefined;
-    if (reference) return [{ type: reference, props, children: await toNodes(children) }];
+    if (reference) return [{ type: reference, props, children: snapshot(children, pending) }];
     throw new Error(`[proofyard] Unsupported element type in the RSC payload: ${String(type?.toString?.() ?? type)}`);
   }
   throw new Error(`[proofyard] Unsupported value in the RSC payload: ${String(node)}`);
 }
 
-// React.lazy の解決（Flight のチャンクは未到着なら thenable を投げる）
-async function resolveLazy(lazy: any): Promise<unknown> {
-  for (;;) {
-    try {
-      return lazy._init(lazy._payload);
-    } catch (thrown: any) {
-      if (typeof thrown?.then !== "function") throw thrown;
-      await thrown;
-    }
+// React.lazy（Flight のチャンクは未到着なら thenable を投げる）
+function readLazy(lazy: any): unknown {
+  try {
+    return lazy._init(lazy._payload);
+  } catch (thrown: any) {
+    if (typeof thrown?.then === "function") throw new Pending(thrown);
+    throw thrown;
   }
 }
+
+// Flight のチャンク（React の thenable。then を呼ぶと届いているモデルが初期化される）
+function readThenable(thenable: any): unknown {
+  if (thenable.status !== "fulfilled" && thenable.status !== "rejected") thenable.then(noop, noop);
+  if (thenable.status === "fulfilled") return thenable.value;
+  if (thenable.status === "rejected") throw thenable.reason;
+  throw new Pending(thenable);
+}
+const noop = () => {};
 
 const textOf = (node: RSCNode): string => (typeof node === "string" ? node : node.children.map(textOf).join(""));
 const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
@@ -109,29 +132,68 @@ function* elements(nodes: RSCNode[]): Generator<RSCElement> {
 }
 const isClient = (element: RSCElement): element is RSCClientElement => typeof element.type !== "string";
 
+export type WaitOptions = { timeout?: number };
+
 export type RenderRSCResult = {
-  // デコードしたツリー（Fragment と Suspense は展開済み）
-  root: RSCNode[];
+  // いまのツリー（Fragment は展開済み。待っている Suspense は fallback）
+  readonly root: RSCNode[];
   // ツリー全体のテキスト
   text(): string;
   queryAllByText(matcher: TextMatcher): RSCElement[];
   queryByText(matcher: TextMatcher): RSCElement | null;
   getAllByText(matcher: TextMatcher): RSCElement[];
   getByText(matcher: TextMatcher): RSCElement;
+  // 見つかるまで（Flight のチャンクが届くたびに）待つ
+  findAllByText(matcher: TextMatcher, options?: WaitOptions): Promise<RSCElement[]>;
+  findByText(matcher: TextMatcher, options?: WaitOptions): Promise<RSCElement>;
   // Client Reference（export 名、または "use client" モジュールから import したもの）
   getAllClientReferences(component?: string | object): RSCClientElement[];
   getClientReference(component: string | object): RSCClientElement;
+  // すべての Suspense が解決するまで待つ
+  waitForComplete(options?: WaitOptions): Promise<void>;
 };
 
-function createResult(root: RSCNode[]): RenderRSCResult {
-  const dump = () => normalize(root.map(textOf).join(""));
-  const queryAllByText = (matcher: TextMatcher) =>
+const DEFAULT_TIMEOUT = 1000;
+
+function createResult(rootValue: unknown, serverError: (error: unknown) => unknown): RenderRSCResult {
+  const take = () => {
+    const pending = new Set<PromiseLike<unknown>>();
+    try {
+      return { nodes: snapshot(rootValue, pending), pending };
+    } catch (error) {
+      throw serverError(error);
+    }
+  };
+  const current = () => take().nodes;
+  // pending のどれかが進むか、期限まで待って fn をやり直す
+  async function retry<T>(fn: (nodes: RSCNode[]) => T, timeout = DEFAULT_TIMEOUT): Promise<T> {
+    const deadline = performance.now() + timeout;
+    for (;;) {
+      const { nodes, pending } = take();
+      try {
+        return fn(nodes);
+      } catch (error) {
+        const remaining = deadline - performance.now();
+        if (!pending.size || remaining <= 0) throw error;
+        await Promise.race([
+          ...[...pending].map((p) => new Promise((resolve) => p.then(resolve, resolve))),
+          Bun.sleep(remaining),
+        ]);
+      }
+    }
+  }
+  const dump = (nodes: RSCNode[]) => normalize(nodes.map(textOf).join(""));
+  const queryAll = (nodes: RSCNode[], matcher: TextMatcher) =>
     // テキストが一致する要素のうち、一番内側のもの
-    [...elements(root)].filter((el) => matches(el, matcher) && !el.children.some((c) => typeof c !== "string" && matches(c, matcher)));
-  const getAllByText = (matcher: TextMatcher) => {
-    const found = queryAllByText(matcher);
-    if (!found.length) throw new Error(`[proofyard] Unable to find an element with the text: ${matcher}\n\n${dump()}`);
+    [...elements(nodes)].filter((el) => matches(el, matcher) && !el.children.some((c) => typeof c !== "string" && matches(c, matcher)));
+  const getAll = (nodes: RSCNode[], matcher: TextMatcher) => {
+    const found = queryAll(nodes, matcher);
+    if (!found.length) throw new Error(`[proofyard] Unable to find an element with the text: ${matcher}\n\n${dump(nodes)}`);
     return found;
+  };
+  const single = <T>(found: T[], what: string, nodes: RSCNode[]): T => {
+    if (found.length !== 1) throw new Error(`[proofyard] Found ${found.length} elements for ${what} (expected 1)\n\n${dump(nodes)}`);
+    return found[0]!;
   };
   const getAllClientReferences = (component?: string | object) => {
     const match = (ref: ClientReference) => {
@@ -140,36 +202,49 @@ function createResult(root: RSCNode[]): RenderRSCResult {
       // "use client" モジュールを import したもの（registerClientReference の $$id は "パス#export名"）
       return (component as { $$id?: string }).$$id === `${ref.id}#${ref.name}`;
     };
-    return [...elements(root)].filter(isClient).filter((el) => match(el.type));
-  };
-  const single = <T>(found: T[], what: string): T => {
-    if (found.length !== 1) throw new Error(`[proofyard] Found ${found.length} elements for ${what} (expected 1)\n\n${dump()}`);
-    return found[0]!;
+    return [...elements(current())].filter(isClient).filter((el) => match(el.type));
   };
   return {
-    root,
-    text: dump,
-    queryAllByText,
-    queryByText: (matcher) => {
-      const found = queryAllByText(matcher);
-      return found.length ? single(found, `the text: ${matcher}`) : null;
+    get root() {
+      return current();
     },
-    getAllByText,
-    getByText: (matcher) => single(getAllByText(matcher), `the text: ${matcher}`),
+    text: () => dump(current()),
+    queryAllByText: (matcher) => queryAll(current(), matcher),
+    queryByText: (matcher) => {
+      const nodes = current();
+      const found = queryAll(nodes, matcher);
+      return found.length ? single(found, `the text: ${matcher}`, nodes) : null;
+    },
+    getAllByText: (matcher) => getAll(current(), matcher),
+    getByText: (matcher) => {
+      const nodes = current();
+      return single(getAll(nodes, matcher), `the text: ${matcher}`, nodes);
+    },
+    findAllByText: (matcher, options) => retry((nodes) => getAll(nodes, matcher), options?.timeout),
+    findByText: (matcher, options) => retry((nodes) => single(getAll(nodes, matcher), `the text: ${matcher}`, nodes), options?.timeout),
     getAllClientReferences,
-    getClientReference: (component) => single(getAllClientReferences(component), `the client reference: ${typeof component === "string" ? component : (component as any).$$id}`),
+    getClientReference: (component) =>
+      single(getAllClientReferences(component), `the client reference: ${typeof component === "string" ? component : (component as any).$$id}`, current()),
+    waitForComplete: (options) =>
+      retry((nodes) => {
+        if (take().pending.size) throw new Error(`[proofyard] Suspense boundaries are still pending\n\n${dump(nodes)}`);
+      }, options?.timeout),
   };
 }
 
-// Server Components を描画し、Flight を往復させた React ツリーを返す。
+// Server Components を描画し、Flight を往復させた React ツリーを返す（シェルが揃った時点。待っている Suspense は fallback）。
 // 描画中のエラーは（本番の Flight では digest だけになるので）サーバー側の元のエラーとして投げる。
 export async function renderRSC(model: unknown): Promise<RenderRSCResult> {
   const { renderToReadableStream } = require("react-server-dom-webpack/server");
   const { createFromReadableStream } = require("react-server-dom-webpack/client");
   const ids = [...clientIds];
-  const errors: unknown[] = [];
+  const errors = new Map<string, unknown>(); // digest → 元のエラー
   const stream = renderToReadableStream(model, Object.fromEntries(ids.map((id) => [id, flightEntry(id)])), {
-    onError: (error: unknown) => void errors.push(error),
+    onError: (error: unknown) => {
+      const digest = `proofyard-${errors.size}`;
+      errors.set(digest, error);
+      return digest;
+    },
   });
   // Next.js 内蔵の Flight クライアントは globalThis.__next_require__ でモジュールを読む
   (globalThis as any).__next_require__ = (id: string) => (globalThis as any).__proofyardNextRequire(id);
@@ -181,10 +256,22 @@ export async function renderRSC(model: unknown): Promise<RenderRSCResult> {
       moduleLoading: null,
     },
   });
+  const serverError = (error: unknown) => errors.get((error as { digest?: string })?.digest ?? "") ?? error;
+  let rootValue: unknown;
   try {
-    return createResult(await toNodes(response));
+    rootValue = await response;
   } catch (error) {
-    if (errors.length) throw errors[0];
-    throw error;
+    throw serverError(error);
+  }
+  const result = createResult(rootValue, serverError);
+  // シェル（Suspense の外）が揃うまで待つ
+  for (;;) {
+    try {
+      result.root;
+      return result;
+    } catch (thrown) {
+      if (!(thrown instanceof Pending)) throw thrown;
+      await new Promise((resolve) => thrown.thenable.then(resolve, resolve));
+    }
   }
 }
