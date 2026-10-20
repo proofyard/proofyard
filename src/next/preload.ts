@@ -106,11 +106,17 @@ function* appSources(dir: string): Generator<string> {
 }
 const dev = process.env.NODE_ENV === "development";
 const jsConfig = { compilerOptions: {} }; // ponytail: tsconfig の paths / baseUrl は未対応（Next.js は loadJsConfig で読む）
-const swcOptions = (filename: string) =>
+// next-swc-loader と同じ SWC の設定（層ごと。webpack-config.ts の swcLoader の設定）
+// browser は act のために開発版の React にしている（loadBrowser）ので development
+const SWC_LAYERS = {
+  rsc: { isServer: true, bundleLayer: "rsc", development: dev },
+  ssr: { isServer: true, bundleLayer: "ssr", development: dev },
+  browser: { isServer: false, bundleLayer: "app-pages-browser", development: true },
+} as const;
+const swcOptions = (filename: string, layer: keyof typeof SWC_LAYERS = "rsc") =>
   getLoaderSWCOptions({
     filename,
-    development: dev,
-    isServer: true,
+    ...SWC_LAYERS[layer],
     appDir,
     isPageFile: false,
     isCacheComponents: config.cacheComponents,
@@ -127,17 +133,20 @@ const swcOptions = (filename: string) =>
     relativeFilePathFromRoot: relative(projectDir, filename),
     serverComponents: true,
     serverReferenceHashSalt: encryptionKey,
-    bundleLayer: "rsc",
     esm: true,
     cacheHandlers: config.cacheHandlers,
     useCacheEnabled: config.experimental.useCache,
     taintEnabled: config.experimental.taint,
-    trackDynamicImports: !!config.cacheComponents,
+    trackDynamicImports: !!config.cacheComponents && layer !== "browser",
     pageExtensions,
   });
 // ネイティブ読み込み時の SWC 変換（同期。非同期の onLoad を経たモジュールは require できない。route.ts は require で読まれる）
 const swcTransformSync = (filename: string, source: string): string =>
   transformSync(source, { ...swcOptions(filename), filename, sourceFileName: filename }).code;
+// SSR 層・ブラウザ層のアプリのソース（Client Component）の変換（typeof window の置き換えなども Next.js と同じになる）
+const isAppSource = (path: string) => path.startsWith(projectDir + "/") && !path.includes("/node_modules/");
+const swcTransformFor = (layer: "ssr" | "browser") => async (filename: string, source: string) =>
+  isAppSource(filename) ? (transformSync(source, { ...swcOptions(filename, layer), filename, sourceFileName: filename }).code as string) : undefined;
 const entries = [...routes.values()].map((r) => r.entry);
 
 // rsc 層: Next.js 本体だけをバンドルし、アプリはネイティブで読み込む（mock.module が効く）。
@@ -189,7 +198,8 @@ for (const path of appSources(projectDir)) {
       throw new Error(`[proofyard] Unsupported: "use client" modules in node_modules are not supported yet (${spec} from ${path})`);
   }
 }
-const ssr = await buildLayer("ssr", [...clientIds], { define });
+const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
+const ssr = await buildLayer("ssr", [...clientIds, SSR_RUNTIME], { define, transform: swcTransformFor("ssr") });
 
 // ネイティブで読み込むアプリ（と、その依存）の rsc 層の解決と変換
 // - react などは Next.js 内蔵の React に（build.module は CJS の require も含めて置き換える）
@@ -220,7 +230,7 @@ console.log(`[proofyard] rsc+ssr layers: ${(performance.now() - t).toFixed(0)}ms
 const ssrModules = new Map<string, unknown>();
 for (const [id, out] of ssr) {
   const m = await import(out);
-  ssrModules.set(id, esmClientIds.has(id) ? m : m.default);
+  ssrModules.set(id, esmClientIds.has(id) || id === SSR_RUNTIME ? m : m.default);
 }
 (globalThis as any).__proofyardNextRequire = (id: string) => {
   // renderRSC の Client Reference（実行しない代わりのモジュール。src/testing/render-rsc.ts）
@@ -315,11 +325,75 @@ function resetCache() {
 }
 // 無効化されたタグ（revalidateTag / updateTag / revalidatePath が記録したもの）
 const invalidatedTags = (): string[] => [...tagsManifest.keys()];
-const { beforeEach } = await import("bun:test");
+const { afterEach, beforeEach } = await import("bun:test");
 beforeEach(resetCache);
+// render() が作った DOM と React のルートを片付ける（src/testing/render.ts）
+afterEach(() => (globalThis as any)[Symbol.for("proofyard.cleanup")]?.());
 
-(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, invalidatedTags } satisfies NextHarness;
+// ブラウザ層（Client Mode）。使うときに初めてビルドする
+// - Next.js のブラウザ向けの define（getDefineEnv の isClient）
+// - Flight クライアントのモジュール読み込み（globalThis.__next_require__）を SSR と分ける
+const BROWSER_RUNTIME = join(import.meta.dir, "../client/runtime.ts");
+let browser: Promise<typeof import("../client/runtime")> | undefined;
+const loadBrowser = () =>
+  (browser ??= (async () => {
+    const clientDefine: Record<string, unknown> = getDefineEnv({
+      isTurbopack: false,
+      config,
+      dev,
+      distDir,
+      projectPath: projectDir,
+      fetchCacheKeyPrefix: config.experimental.fetchCacheKeyPrefix,
+      hasRewrites: false,
+      isClient: true,
+      isEdgeServer: false,
+      isNodeServer: false,
+      middlewareMatchers: undefined,
+      rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
+    });
+    const outputs = await buildLayer("browser", [...clientIds, BROWSER_RUNTIME], {
+      transform: swcTransformFor("browser"),
+      define: {
+        ...Object.fromEntries(Object.entries(clientDefine).map(([k, v]) => [k, typeof v === "string" ? v : String(v)])),
+        // React の act（Testing Library が使う）は開発版にしかないので、ブラウザ層の React だけ開発版にする（Jest などと同じ）。
+        // Next.js 自身の他の define は本番のまま
+        "process.env.NODE_ENV": '"development"',
+        // ブラウザ用の Flight クライアントは webpack のランタイム（__webpack_require__ と __webpack_chunk_load__）でモジュールを読む
+        __webpack_require__: "globalThis.__proofyardBrowserRequire",
+        __webpack_chunk_load__: "globalThis.__proofyardBrowserChunkLoad",
+        "globalThis.__next_require__": "globalThis.__proofyardBrowserRequire",
+      },
+    });
+    const modules = new Map<string, unknown>();
+    // バンドルのモジュールを評価する前に用意する（Flight クライアントが読み込み時に __webpack_require__.u を書き換える）
+    // モジュールは Flight で参照されたときに初めて評価する（webpack と同じ。App Router の内部のもの（layout-router など）は
+    // ルーターなしでは評価できないので、使われない限り読まない）
+    (globalThis as any).__proofyardBrowserRequire = Object.assign(
+      (id: string) => {
+        if (!modules.has(id)) {
+          const out = outputs.get(id);
+          if (!out) throw new Error(`[proofyard] unknown client module ${id}`);
+          const m = require(out);
+          modules.set(id, esmClientIds.has(id) ? m : m.default);
+        }
+        return modules.get(id);
+      },
+      { u: (chunkId: string) => chunkId },
+    );
+    // Client Reference のチャンクは空なので呼ばれない
+    (globalThis as any).__proofyardBrowserChunkLoad = () => Promise.resolve();
+    return import(outputs.get(BROWSER_RUNTIME)!);
+  })());
+
+const ssrRuntime = (): typeof import("./ssr-runtime") => ssrModules.get(SSR_RUNTIME) as any;
+// SSR 層の Flight デコードの moduleMap（Client Reference の id → SSR 層のモジュール）
+const ssrModuleMap = () => Object.fromEntries([...clientIds].map((id) => [id, { "*": { id, name: "*", chunks: [], async: false } }]));
+
+(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, invalidatedTags, loadBrowser, ssrRuntime, ssrModuleMap } satisfies NextHarness;
 export type NextHarness = {
   requestRoute: typeof requestRoute;
   invalidatedTags: typeof invalidatedTags;
+  loadBrowser: typeof loadBrowser;
+  ssrRuntime: typeof ssrRuntime;
+  ssrModuleMap: typeof ssrModuleMap;
 };
