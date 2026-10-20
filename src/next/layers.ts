@@ -1,9 +1,10 @@
-// Next.js のビルドの層（nodejs 環境）を Bun.build で再現する（node_modules 側だけ）。
-//   rsc: react-server 層。"use client" は Client Reference に置き換える
-//   ssr: SSR 層。Client Component の実装を SSR 用の React で読む
+// Next.js のビルドの層を Bun.build で再現する。
+//   rsc: react-server 層（nodejs）。"use client" は Client Reference に置き換える
+//   ssr: SSR 層（nodejs）。Client Component の実装を SSR 用の React で読む
+//   browser: ブラウザ層。Client Component の実装をブラウザ用の React（next/dist/compiled/react）で読む（Client Mode）
 // 共通:
 // - react 系は Next.js の runtime バンドル内の React（vendored/rsc, vendored/ssr）へ（create-compiler-aliases.ts）
-// - *.shared-runtime は app-page 用の vendored/contexts へ（webpack-config.ts の NormalModuleReplacementPlugin）
+// - *.shared-runtime は app-page 用の vendored/contexts へ（webpack-config.ts の NormalModuleReplacementPlugin。サーバーの層だけ）
 // - *.external.js と runtime バンドルは層をまたいで共有するので外部のまま（handle-externals.ts）
 import { readFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
@@ -29,11 +30,15 @@ export const ALIASES = {
   },
   ssr: {
     ...reactAliases("ssr"),
+    // 同梱の react-dom（server.node など）は next/dist/compiled/react を直接読むので、それも SSR 用の React に
+    "next/dist/compiled/react": `${VENDORED}/ssr/react`,
+    "next/dist/compiled/react-dom": `${VENDORED}/ssr/react-dom`,
     "react-server-dom-webpack/client": `${VENDORED}/ssr/react-server-dom-webpack-client`,
     "server-only": "next/dist/compiled/server-only/error",
     "client-only": "next/dist/compiled/client-only/index",
     "@opentelemetry/api": "next/dist/compiled/@opentelemetry/api",
   },
+  browser: {},
 } as const;
 // 層のバンドルに含めるエイリアス（create-compiler-aliases.ts）
 // - next/navigation などは層ごとに別実装（createAppRouterApiAliases）
@@ -58,6 +63,26 @@ export const BUNDLED_ALIASES = {
   },
   ssr: {
     "react-dom/server": "next/dist/compiled/react-dom/server.node",
+    "react-dom/static": "next/dist/compiled/react-dom/static.node",
+    "next/link": "next/dist/client/app-dir/link",
+    "next/head": "next/dist/client/components/noop-head",
+    "next/dynamic": "next/dist/api/app-dynamic",
+    "next/form": "next/dist/client/app-dir/form",
+  },
+  // createVendoredReactAliases の browser / client と createAppRouterApiAliases
+  browser: {
+    react: "next/dist/compiled/react",
+    "react/compiler-runtime": "next/dist/compiled/react/compiler-runtime",
+    "react/jsx-runtime": "next/dist/compiled/react/jsx-runtime",
+    "react/jsx-dev-runtime": "next/dist/compiled/react/jsx-dev-runtime",
+    "react-dom": "next/dist/compiled/react-dom",
+    "react-dom/client": "next/dist/compiled/react-dom/client",
+    "react-dom/server": "next/dist/compiled/react-dom/server.browser",
+    "react-dom/test-utils": join(import.meta.dir, "../client/react-dom-test-utils.ts"),
+    "react-server-dom-webpack/client": "next/dist/compiled/react-server-dom-webpack/client.browser",
+    scheduler: "next/dist/compiled/scheduler",
+    "server-only": "next/dist/compiled/server-only/error",
+    "client-only": "next/dist/compiled/client-only/index",
     "next/link": "next/dist/client/app-dir/link",
     "next/head": "next/dist/client/components/noop-head",
     "next/dynamic": "next/dist/api/app-dynamic",
@@ -107,14 +132,16 @@ export type LayerOptions = {
   define: Record<string, string>;
   // next-app-loader が生成したエントリの置き場所。そこからの import はプロジェクトルートから解決する
   generatedDir?: string;
-  // アプリのソースの変換（rsc 層。Next.js の SWC）。対象外のファイルは undefined を返す
+  // アプリのソースの変換（Next.js の SWC）。対象外のファイルは undefined を返す
   transform?: (path: string, source: string) => Promise<string | undefined>;
   // このディレクトリのファイル（node_modules を除く）はバンドルせず外部のまま（実行時にネイティブで読み込む。mock.module が効く）
   nativeDir?: string;
 };
 
 let builds = 0;
-export async function buildLayer(layer: "rsc" | "ssr", entries: string[], { define, generatedDir, transform, nativeDir }: LayerOptions) {
+export type Layer = "rsc" | "ssr" | "browser";
+
+export async function buildLayer(layer: Layer, entries: string[], { define, generatedDir, transform, nativeDir }: LayerOptions) {
   const aliases: Record<string, string> = ALIASES[layer];
   const bundledAliases: Record<string, string> = BUNDLED_ALIASES[layer];
   const outdir = join(tmpdir(), `proofyard-next-${process.pid}-${layer}-${builds++}`);
@@ -122,9 +149,9 @@ export async function buildLayer(layer: "rsc" | "ssr", entries: string[], { defi
   const result = await Bun.build({
     entrypoints: entryPaths,
     outdir,
-    target: "bun",
+    target: layer === "browser" ? "browser" : "bun",
     format: "esm",
-    conditions: layer === "rsc" ? ["react-server"] : [],
+    conditions: layer === "rsc" ? ["react-server"] : layer === "browser" ? ["browser"] : [],
     splitting: true,
     naming: "[dir]/[name]-[hash].[ext]",
     root: "/",
@@ -137,7 +164,7 @@ export async function buildLayer(layer: "rsc" | "ssr", entries: string[], { defi
         setup(build) {
           build.onResolve({ filter: /.*/ }, (args) => {
             if (args.path in aliases) return { path: abs(aliases[args.path]!), external: true };
-            const shared = args.path.match(/\.\/(?:.+\/)?([^/]+)\.shared-runtime$/);
+            const shared = layer !== "browser" && args.path.match(/\.\/(?:.+\/)?([^/]+)\.shared-runtime$/);
             if (shared) return { path: abs(`${VENDORED}/contexts/${shared[1]}`), external: true };
             if (args.path in bundledAliases) return { path: abs(bundledAliases[args.path]!) };
             if (args.path.startsWith("node:") || !args.importer) return;
@@ -167,6 +194,12 @@ export async function buildLayer(layer: "rsc" | "ssr", entries: string[], { defi
                 return;
               }
               const code = await transform?.(args.path, source);
+              if (code !== undefined) return { loader: "js", contents: code };
+            });
+          } else if (transform) {
+            build.onLoad({ filter: /\.(?:[cm]?js|jsx|tsx?)$/ }, async (args) => {
+              if (args.path.includes("/node_modules/")) return;
+              const code = await transform(args.path, readFileSync(args.path, "utf8"));
               if (code !== undefined) return { loader: "js", contents: code };
             });
           }

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { installDom } from "./dom";
+import { installDom } from "../../src/dom/environment";
 
 installDom();
 

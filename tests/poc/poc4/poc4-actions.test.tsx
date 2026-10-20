@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { ReactNode } from "react";
 import { decodeReply, renderToReadableStream } from "react-server-dom-turbopack/server";
-import { installDom } from "../shared/dom";
+import { installDom } from "../../../src/dom/environment";
 import { CLIENT, clientModules } from "../poc2/plugin";
 import UsersPage from "./fixtures/page";
 import { db } from "./fixtures/db";

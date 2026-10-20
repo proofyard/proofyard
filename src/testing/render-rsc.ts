@@ -232,31 +232,37 @@ function createResult(rootValue: unknown, serverError: (error: unknown) => unkno
   };
 }
 
-// Server Components を描画し、Flight を往復させた React ツリーを返す（シェルが揃った時点。待っている Suspense は fallback）。
-// 描画中のエラーは（本番の Flight では digest だけになるので）サーバー側の元のエラーとして投げる。
-export async function renderRSC(model: unknown): Promise<RenderRSCResult> {
+// Server Components を React 公式の RSC Renderer で Flight にする（Client Reference の id は "use client" モジュールのパス）。
+// serverError: デコード側で受け取ったエラーを、サーバー側の元のエラーに戻す（本番の Flight では digest だけになるので onError の digest で対応付ける）
+export function renderFlight(model: unknown) {
   const { renderToReadableStream } = require("react-server-dom-webpack/server");
-  const { createFromReadableStream } = require("react-server-dom-webpack/client");
-  const ids = [...clientIds];
   const errors = new Map<string, unknown>(); // digest → 元のエラー
-  const stream = renderToReadableStream(model, Object.fromEntries(ids.map((id) => [id, flightEntry(id)])), {
+  const stream: ReadableStream<Uint8Array> = renderToReadableStream(model, Object.fromEntries([...clientIds].map((id) => [id, flightEntry(id)])), {
     onError: (error: unknown) => {
       const digest = `proofyard-${errors.size}`;
       errors.set(digest, error);
       return digest;
     },
   });
+  const serverError = (error: unknown) => errors.get((error as { digest?: string })?.digest ?? "") ?? error;
+  return { stream, serverError };
+}
+
+// Server Components を描画し、Flight を往復させた React ツリーを返す（シェルが揃った時点。待っている Suspense は fallback）。
+// 描画中のエラーはサーバー側の元のエラーとして投げる。
+export async function renderRSC(model: unknown): Promise<RenderRSCResult> {
+  const { createFromReadableStream } = require("react-server-dom-webpack/client");
+  const { stream, serverError } = renderFlight(model);
   // Next.js 内蔵の Flight クライアントは globalThis.__next_require__ でモジュールを読む
   (globalThis as any).__next_require__ = (id: string) => (globalThis as any).__proofyardNextRequire(id);
   const response = createFromReadableStream(stream, {
     serverConsumerManifest: {
-      moduleMap: Object.fromEntries(ids.map((id) => [id, { "*": flightEntry(PLACEHOLDER_PREFIX + id) }])),
+      moduleMap: Object.fromEntries([...clientIds].map((id) => [id, { "*": flightEntry(PLACEHOLDER_PREFIX + id) }])),
       // Server Function の id はハッシュで事前に分からないので、どの id も目印のモジュールにする
       serverModuleMap: new Proxy({}, { get: (_, id) => (typeof id === "string" ? { id: SERVER_PLACEHOLDER_PREFIX + id, chunks: [], name: "" } : undefined) }),
       moduleLoading: null,
     },
   });
-  const serverError = (error: unknown) => errors.get((error as { digest?: string })?.digest ?? "") ?? error;
   let rootValue: unknown;
   try {
     rootValue = await response;
