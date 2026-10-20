@@ -23,8 +23,25 @@ export type RSCElement = RSCHostElement | RSCClientElement;
 export type RSCNode = RSCElement | string;
 export type TextMatcher = string | RegExp;
 
+// Server Function の参照（"use server"）。React の Server Reference と同じ $$id / $$bound を持ち、呼ぶとエラー
+const SERVER_PLACEHOLDER_PREFIX = "proofyard-server-reference:";
+export type ServerReference = ((...args: unknown[]) => never) & { $$id: string; $$bound: unknown[] | null };
+function serverReference(id: string, bound: unknown[] | null): ServerReference {
+  const reference = (() => {
+    throw new Error("[proofyard] Server Functions are not called in renderRSC");
+  }) as unknown as ServerReference;
+  Object.assign(reference, {
+    $$id: id,
+    $$bound: bound,
+    // Flight のデコードは bound 引数を .bind で付ける
+    bind: (_this: unknown, ...args: unknown[]) => serverReference(id, [...(bound ?? []), ...args]),
+  });
+  return reference;
+}
+
 const placeholders = new Map<string, Record<string, unknown>>();
 (globalThis as any)[Symbol.for("proofyard.clientReferencePlaceholder")] = (id: string) => {
+  if (id.startsWith(SERVER_PLACEHOLDER_PREFIX)) return serverReference(id.slice(SERVER_PLACEHOLDER_PREFIX.length), null);
   if (!id.startsWith(PLACEHOLDER_PREFIX)) return undefined;
   const moduleId = id.slice(PLACEHOLDER_PREFIX.length);
   let module = placeholders.get(moduleId);
@@ -159,7 +176,8 @@ export async function renderRSC(model: unknown): Promise<RenderRSCResult> {
   const response = createFromReadableStream(stream, {
     serverConsumerManifest: {
       moduleMap: Object.fromEntries(ids.map((id) => [id, { "*": flightEntry(PLACEHOLDER_PREFIX + id) }])),
-      serverModuleMap: null,
+      // Server Function の id はハッシュで事前に分からないので、どの id も目印のモジュールにする
+      serverModuleMap: new Proxy({}, { get: (_, id) => (typeof id === "string" ? { id: SERVER_PLACEHOLDER_PREFIX + id, chunks: [], name: "" } : undefined) }),
       moduleLoading: null,
     },
   });
