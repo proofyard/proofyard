@@ -37,9 +37,17 @@ export const ALIASES = {
     "@opentelemetry/api": "next/dist/compiled/@opentelemetry/api",
   },
 } as const;
-// next/navigation などは層ごとに別実装（create-compiler-aliases.ts の createAppRouterApiAliases）。外部にせず層のバンドルに含める
-const APP_ROUTER_ALIASES = {
+// 層のバンドルに含めるエイリアス（create-compiler-aliases.ts）
+// - next/navigation などは層ごとに別実装（createAppRouterApiAliases）
+// - private-next-rsc-*: SWC が "use cache" / "use server" の変換で出力する import
+const BUNDLED_ALIASES = {
   rsc: {
+    "private-next-rsc-action-validate": "next/dist/build/webpack/loaders/next-flight-loader/action-validate",
+    "private-next-rsc-action-client-wrapper": "next/dist/build/webpack/loaders/next-flight-loader/action-client-wrapper",
+    "private-next-rsc-server-reference": "next/dist/build/webpack/loaders/next-flight-loader/server-reference",
+    "private-next-rsc-action-encryption": "next/dist/server/app-render/encryption",
+    "private-next-rsc-cache-wrapper": "next/dist/build/webpack/loaders/next-flight-loader/cache-wrapper",
+    "private-next-rsc-track-dynamic-import": "next/dist/build/webpack/loaders/next-flight-loader/track-dynamic-import",
     "next/navigation": "next/dist/api/navigation.react-server",
     "next/error": "next/dist/api/error.react-server",
     "next/link": "next/dist/client/app-dir/link.react-server",
@@ -57,6 +65,8 @@ const APP_ROUTER_ALIASES = {
 
 const root = process.cwd();
 const abs = (spec: string) => Bun.resolveSync(spec, root);
+// node_modules 内の "use server" / "use cache"（Next.js は SWC で変換する。ここでは変換しないので Fail Closed）
+const SERVER_DIRECTIVE = /^\s*["']use (?:server|cache(?::\s*[\w-]+)?)["']/m;
 const USE_CLIENT = /^\s*(?:(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:["']use strict["'];?\s*)?["']use client["']/;
 
 // Client Reference の id（"use client" ファイルの絶対パス）。esmClientIds は ESM（名前空間で渡す）もの
@@ -86,11 +96,18 @@ function clientReferenceStub(path: string, source: string) {
   return `import { registerClientReference } from "react-server-dom-webpack/server";\nmodule.exports = { __esModule: true, ${lines.join(",\n")} };\n`;
 }
 
-// define: Next.js の getDefineEnv の結果（環境で決まる分岐を next build と同じく畳む）
-// generatedDir: next-app-loader が生成したエントリの置き場所。そこからの import はプロジェクトルートから解決する
-export async function buildLayer(layer: "rsc" | "ssr", entries: string[], define: Record<string, string>, generatedDir?: string) {
+export type LayerOptions = {
+  // Next.js の getDefineEnv の結果（環境で決まる分岐を next build と同じく畳む）
+  define: Record<string, string>;
+  // next-app-loader が生成したエントリの置き場所。そこからの import はプロジェクトルートから解決する
+  generatedDir?: string;
+  // アプリのソースの変換（rsc 層。Next.js の SWC）。対象外のファイルは undefined を返す
+  transform?: (path: string, source: string) => Promise<string | undefined>;
+};
+
+export async function buildLayer(layer: "rsc" | "ssr", entries: string[], { define, generatedDir, transform }: LayerOptions) {
   const aliases: Record<string, string> = ALIASES[layer];
-  const appRouterAliases: Record<string, string> = APP_ROUTER_ALIASES[layer];
+  const bundledAliases: Record<string, string> = BUNDLED_ALIASES[layer];
   const outdir = join(tmpdir(), `proofyard-next-${layer}-${process.pid}`);
   const entryPaths = entries.map((e) => (e.startsWith("/") ? e : abs(e)));
   const result = await Bun.build({
@@ -113,7 +130,7 @@ export async function buildLayer(layer: "rsc" | "ssr", entries: string[], define
             if (args.path in aliases) return { path: abs(aliases[args.path]!), external: true };
             const shared = args.path.match(/\.\/(?:.+\/)?([^/]+)\.shared-runtime$/);
             if (shared) return { path: abs(`${VENDORED}/contexts/${shared[1]}`), external: true };
-            if (args.path in appRouterAliases) return { path: abs(appRouterAliases[args.path]!) };
+            if (args.path in bundledAliases) return { path: abs(bundledAliases[args.path]!) };
             if (args.path.startsWith("node:") || !args.importer) return;
             const generated = generatedDir !== undefined && args.importer.startsWith(generatedDir);
             let resolved: string;
@@ -127,11 +144,19 @@ export async function buildLayer(layer: "rsc" | "ssr", entries: string[], define
             if (generated) return { path: resolved };
           });
           if (layer === "rsc") {
-            // node_modules の JS とアプリのソース（"use client" は Client Reference に）
-            build.onLoad({ filter: /\.(?:[cm]?js|jsx|tsx?)$/ }, (args) => {
-              if (args.path.includes("/node_modules/") && !/\.[cm]?js$/.test(args.path)) return;
+            // node_modules の JS とアプリのソース（"use client" は Client Reference に、それ以外のアプリのソースは SWC に）
+            build.onLoad({ filter: /\.(?:[cm]?js|jsx|tsx?)$/ }, async (args) => {
+              const inNodeModules = args.path.includes("/node_modules/");
+              if (inNodeModules && !/\.[cm]?js$/.test(args.path)) return;
               const source = readFileSync(args.path, "utf8");
               if (USE_CLIENT.test(source)) return { loader: "js", contents: clientReferenceStub(args.path, source) };
+              if (inNodeModules) {
+                if (SERVER_DIRECTIVE.test(source))
+                  throw new Error(`Unsupported Next.js feature: "use server" / "use cache" in node_modules is not compiled by the current runtime (${args.path})`);
+                return;
+              }
+              const code = await transform?.(args.path, source);
+              if (code !== undefined) return { loader: "js", contents: code };
             });
           }
         },

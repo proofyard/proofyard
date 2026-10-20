@@ -6,13 +6,13 @@ require("next/dist/server/node-environment-baseline"); // globalThis.AsyncLocalS
 // Next.js の runtime バンドル（vendored React を含む）。層をまたいで共有する
 require("next/dist/server/route-modules/app-page/module.compiled");
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { buildLayer, clientIds, esmClientIds } from "./layers";
 
-// ponytail: 対象アプリは固定。設定（proofyard.config 等）で受け取るのは Phase 2 の CLI で
-const projectDir = join(import.meta.dir, "fixture-app");
+// ponytail: 対象アプリは環境変数で受け取る。設定（proofyard.config 等）は Phase 2 の CLI で
+const projectDir = resolve(process.env.PROOFYARD_NEXT_APP ?? join(import.meta.dir, "fixture-app"));
 const appDir = join(projectDir, "app");
 const work = join(tmpdir(), `proofyard-next-${process.pid}`);
 const generatedDir = join(work, "entries");
@@ -30,13 +30,15 @@ const { getSortedRoutes } = require("next/dist/shared/lib/router/utils/sorted-ro
 const { getRouteRegex } = require("next/dist/shared/lib/router/utils/route-regex");
 const { createRequestResponseMocks } = require("next/dist/server/lib/mock-request");
 const { getDefineEnv } = require("next/dist/build/define-env");
+const { transform } = require("next/dist/build/swc");
+const { getLoaderSWCOptions } = require("next/dist/build/swc/options");
 
 let t = performance.now();
 const config = await loadConfig(PHASE_PRODUCTION_BUILD, projectDir, { silent: true });
 const pageExtensions: string[] = config.pageExtensions;
 
-// app/ の page ファイル → next build のエントリ（page は "/dashboard/users/[id]/page" の形）
-const pageFiles = [...new Bun.Glob(`**/page.{${pageExtensions.join(",")}}`).scanSync(appDir)];
+// app/ の page / route ファイル → next build のエントリ（page は "/dashboard/users/[id]/page" の形）
+const pageFiles = [...new Bun.Glob(`**/{page,route}.{${pageExtensions.join(",")}}`).scanSync(appDir)];
 const pages = pageFiles.map((file) => ({ file, page: "/" + file.replace(/\.[^.]+$/, "") }));
 const routes = new Map<string, { page: string; entry: string }>(); // pathname → エントリ
 for (const [i, { file, page }] of pages.entries()) {
@@ -53,6 +55,7 @@ for (const [i, { file, page }] of pages.entries()) {
       isDev: false,
       basePath: config.basePath,
       middlewareConfig: Buffer.from("{}").toString("base64"),
+      nextConfigOutput: config.output ?? "", // webpack ではクエリ文字列で渡るので未設定は ""
     }),
     addMissingDependency() {},
     addDependency() {},
@@ -89,8 +92,45 @@ const nextDefine: Record<string, unknown> = getDefineEnv({
 });
 // webpack の DefinePlugin と同じく undefined は undefined に（Bun.build は文字列だけ受け付ける）
 const define = Object.fromEntries(Object.entries(nextDefine).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]));
-const rsc = await buildLayer("rsc", [...routes.values()].map((r) => r.entry), define, generatedDir);
-const ssr = await buildLayer("ssr", [...clientIds], define);
+// rsc 層のアプリのソースは next-swc-loader と同じ SWC 変換（"use cache" / "use server" はここで変換される）
+const encryptionKey = randomBytes(32).toString("base64");
+const dev = process.env.NODE_ENV === "development";
+const jsConfig = { compilerOptions: {} }; // ponytail: tsconfig の paths / baseUrl は未対応（Next.js は loadJsConfig で読む）
+const swcTransform = async (filename: string, source: string) => {
+  if (!filename.startsWith(projectDir + "/")) return undefined;
+  const options = getLoaderSWCOptions({
+    filename,
+    development: dev,
+    isServer: true,
+    appDir,
+    isPageFile: false,
+    isCacheComponents: config.cacheComponents,
+    hasReactRefresh: false,
+    configDir: projectDir,
+    modularizeImports: config.modularizeImports,
+    optimizePackageImports: config.experimental.optimizePackageImports,
+    swcPlugins: config.experimental.swcPlugins,
+    compilerOptions: config.compiler,
+    optimizeServerReact: config.experimental.optimizeServerReact,
+    jsConfig,
+    supportedBrowsers: undefined,
+    swcCacheDir: join(work, "swc"),
+    relativeFilePathFromRoot: relative(projectDir, filename),
+    serverComponents: true,
+    serverReferenceHashSalt: encryptionKey,
+    bundleLayer: "rsc",
+    esm: true,
+    cacheHandlers: config.cacheHandlers,
+    useCacheEnabled: config.experimental.useCache,
+    taintEnabled: config.experimental.taint,
+    trackDynamicImports: !!config.cacheComponents,
+    pageExtensions,
+  });
+  const out = await transform(source, { ...options, filename, sourceFileName: filename });
+  return out.code as string;
+};
+const rsc = await buildLayer("rsc", [...routes.values()].map((r) => r.entry), { define, generatedDir, transform: swcTransform });
+const ssr = await buildLayer("ssr", [...clientIds], { define });
 console.log(`[proofyard] rsc+ssr layers: ${(performance.now() - t).toFixed(0)}ms, client references: ${clientIds.size}`);
 
 // SSR 層の Client Component（webpack の require と同じく CJS は module.exports、ESM は名前空間）
@@ -140,7 +180,7 @@ write(join(distDir, "build-manifest.json"), {
   pages: { "/_app": [] },
 });
 write(join(distDir, "server/next-font-manifest.json"), { pages: {}, app: {}, appUsingSizeAdjust: false, pagesUsingSizeAdjust: false });
-write(join(distDir, "server/server-reference-manifest.json"), { node: {}, edge: {}, encryptionKey: randomBytes(32).toString("base64") });
+write(join(distDir, "server/server-reference-manifest.json"), { node: {}, edge: {}, encryptionKey });
 write(join(distDir, "required-server-files.json"), { version: 1, config, appDir: projectDir, relativeAppDir: "", files: [], ignore: [] });
 for (const { page } of routes.values()) {
   write(
@@ -166,4 +206,19 @@ async function request(url: string, init: { headers?: Record<string, string>; me
   return { status: res.statusCode, headers: res.headers, html: Buffer.concat(res.buffers).toString("utf8") };
 }
 
-(globalThis as any).__proofyardNext = { request };
+// アプリのキャッシュ（"use cache" のハンドラーとタグの無効化記録）はテストごとに分離する。
+// ハンドラーは次のリクエストで Next.js 自身が作り直す（use-cache/handlers.ts の initializeCacheHandlers）
+const { tagsManifest } = require("next/dist/server/lib/incremental-cache/tags-manifest.external");
+function resetCache() {
+  const g = globalThis as any;
+  if (g[Symbol.for("@next/cache-handlers")])
+    throw new Error("[proofyard] Unsupported: custom cacheHandlers cannot be isolated between tests by the current runtime");
+  for (const name of ["@next/cache-handlers-map", "@next/cache-handlers-set", "@next/cache-handlers-built-in"]) delete g[Symbol.for(name)];
+  tagsManifest.clear();
+}
+// 無効化されたタグ（revalidateTag / updateTag / revalidatePath が記録したもの）
+const invalidatedTags = (): string[] => [...tagsManifest.keys()];
+const { beforeEach } = await import("bun:test");
+beforeEach(resetCache);
+
+(globalThis as any).__proofyardNext = { request, invalidatedTags };
