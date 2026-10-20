@@ -154,6 +154,8 @@ const ssr = await buildLayer("ssr", [...clientIds], { define });
 // アプリが import する Next.js 本体のモジュール（next/cache、SWC が出力する private-next-rsc-* など）も同じバンドルの入口にする。
 // ネイティブで読むと define が効かず（NODE_ENV など）、本番と違うコードが動くため
 const nextFacades = new Map<string, string>(); // 指定子 → ファイル
+// renderRSC が Flight のデコードに使う（rsc 層のクライアント）
+appImports.add("react-server-dom-webpack/client");
 for (const spec of appImports) {
   if (/^(?:\.|\/|node:|bun:)/.test(spec) || spec in ALIASES.rsc) continue;
   const bundled = (BUNDLED_ALIASES.rsc as Record<string, string>)[spec];
@@ -206,6 +208,9 @@ for (const [id, out] of ssr) {
   ssrModules.set(id, esmClientIds.has(id) ? m : m.default);
 }
 (globalThis as any).__proofyardNextRequire = (id: string) => {
+  // renderRSC の Client Reference（実行しない代わりのモジュール。src/testing/render-rsc.ts）
+  const placeholder = (globalThis as any)[Symbol.for("proofyard.clientReferencePlaceholder")]?.(id);
+  if (placeholder) return placeholder;
   if (!ssrModules.has(id)) throw new Error(`[proofyard] unknown client module ${id}`);
   return ssrModules.get(id);
 };
