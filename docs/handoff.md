@@ -5,8 +5,8 @@
 Next.js App Router の React Server Components を、ブラウザも Next.js サーバーも起動せず、Bun（`bun test`）の中だけでテストするフレームワーク。
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
-- 現状: Phase 0（PoC 1〜6）が完了。コードは `tests/poc/` にあり、まだライブラリの形にはなっていない
-- テスト: `bun run test`（PoC 1〜6 をすべて実行。45 件）
+- 現状: Phase 0（PoC 1〜6）が完了し、Phase 1 を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
+- テスト: `bun run test`（`tests/unit` と PoC 1〜6。51 件）
 
 ## 決めたこと
 
@@ -25,9 +25,19 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 | 5 App Router | 成功 | `tests/poc/poc5`（下記「Next.js モード」） |
 | 6 Cache Components | 成功 | `tests/poc/poc6`。同じテストを本物の `next build` + `next start` に流して結果が一致 |
 
+## 公開 API（実装済み）
+
+- `requestRoute(url, { method, headers, cookies })`: Next.js 本体のリクエスト処理に通し、標準の `Response` を返す
+- `renderRSC(element)`: RSC Mode。Flight を往復させた React ツリーを返す。`getByText` / `queryByText` / `getAllByText` / `queryAllByText`、`getClientReference` / `getAllClientReferences`（export 名か、import した Client Component で探す）、`text()`、`root`
+  - Client Component は実行しない（デコード時に目印のモジュールに差し替える）
+  - 描画中の例外は、本番の Flight では digest だけになるので、サーバー側の元のエラーを投げる
+  - Next.js のリクエスト API（`cookies()` など）は、リクエストの外なので Next.js 自身のエラーになる
+- `getInvalidatedTags()`: このテストで無効化されたキャッシュタグ
+- 使い方: `bun test --preload proofyard/preload`（対象アプリは `PROOFYARD_NEXT_APP`、既定はカレントディレクトリ）
+
 ## Next.js モード（PoC 5・6）の仕組み
 
-Next.js の動作を推測で再現せず、Next.js 本体の部品をそのまま呼ぶ。`tests/poc/poc5/preload.ts` と `layers.ts`。
+Next.js の動作を推測で再現せず、Next.js 本体の部品をそのまま呼ぶ。`src/next/preload.ts` と `layers.ts`。
 
 - ルートツリーとエントリ: `next-app-loader`（`next build` と同じ生成コード。`page` と `route` の両方）
 - 設定: `loadConfig`。define: `getDefineEnv`。アプリのソースの変換: `getLoaderSWCOptions` + ネイティブの SWC
@@ -66,6 +76,8 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 仕様23章のロードマップに沿って、Phase 1 以降で PoC のコードをライブラリにする。
 
 - **土台は Next.js モード**（Next.js 内蔵の React と本体の部品。アプリのコードはネイティブで読み込み、`mock.module` も効く）
+- Phase 1 の残り: Server Function References の検査、`renderRSC` の Suspense の途中状態（シェルだけ）の検査、テストのたびに作るビルドの高速化（初回のみにする）
+- Phase 2: `render()`（SSR Mode / Client Mode。turbo-dom と Testing Library。PoC 3 の部品を Next.js モードに移す）
 
 ## 守ること（仕様27章の要約）
 

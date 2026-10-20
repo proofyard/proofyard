@@ -74,6 +74,8 @@ export const USE_CLIENT = /^\s*(?:(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:["']u
 // Client Reference の id（"use client" ファイルの絶対パス）。esmClientIds は ESM（名前空間で渡す）もの
 export const clientIds = new Set<string>();
 export const esmClientIds = new Set<string>();
+// Client Reference の id → export 名
+export const clientExports = new Map<string, string[]>();
 
 const registerStub = (id: string, n: string) =>
   `registerClientReference(function () { throw new Error("[proofyard] client function called on the server"); }, ${id}, ${JSON.stringify(n)})`;
@@ -85,6 +87,7 @@ export function clientReferenceStub(path: string, source: string) {
   const esmExports = new Bun.Transpiler({ loader: loader ?? "js" }).scan(source).exports;
   if (esmExports.length) {
     esmClientIds.add(path);
+    clientExports.set(path, esmExports);
     const lines = esmExports.map((n) => (n === "default" ? `export default ${registerStub(id, n)};` : `export const ${n} = ${registerStub(id, n)};`));
     return `import { registerClientReference } from "react-server-dom-webpack/server";\n${lines.join("\n")}\n`;
   }
@@ -94,6 +97,7 @@ export function clientReferenceStub(path: string, source: string) {
   const exportBlock = source.match(/_export\(exports,\s*\{([\s\S]*?)\}\);/);
   if (exportBlock) for (const m of exportBlock[1]!.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*:/gm)) names.add(m[1]!);
   names.delete("__esModule");
+  clientExports.set(path, [...names]);
   const lines = [...names].map((n) => `${JSON.stringify(n)}: ${registerStub(id, n)}`);
   return `import { registerClientReference } from "react-server-dom-webpack/server";\nmodule.exports = { __esModule: true, ${lines.join(",\n")} };\n`;
 }
