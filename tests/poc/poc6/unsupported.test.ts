@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildLayer } from "../poc5/layers";
+import { buildLayer } from "../../../src/next/layers";
 
 test('node_modules 内の "use cache" は変換できないのでビルドを失敗させる', async () => {
   const dir = mkdtempSync(join(tmpdir(), "proofyard-unsupported-"));

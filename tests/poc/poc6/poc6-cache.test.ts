@@ -1,19 +1,15 @@
 // PoC 6: "use cache" を Next.js 本体の SWC 変換と実行時（cache-wrapper / キャッシュハンドラー）で動かす。
 import { expect, test } from "bun:test";
-import type { NextResponseResult } from "../poc5/preload";
+import { getInvalidatedTags, requestRoute } from "proofyard";
 
 // PROOFYARD_COMPARE_URL を指定すると、同じテストを本物の `next start` に HTTP で流す（Next.js 本体との比較）
 const compareUrl = process.env.PROOFYARD_COMPARE_URL;
-const harness = (globalThis as any).__proofyardNext as {
-  request: (url: string, init?: { method?: string }) => Promise<NextResponseResult>;
-  invalidatedTags: () => string[];
+const send = (url: string, init: { method?: string } = {}): Promise<Response> =>
+  compareUrl ? fetch(compareUrl + url, { method: init.method, redirect: "manual" }) : requestRoute(url, init);
+const request = async (url: string, init?: { method?: string }) => {
+  const res = await send(url, init);
+  return { status: res.status, html: await res.text() };
 };
-const request = compareUrl
-  ? async (url: string, init: { method?: string } = {}): Promise<NextResponseResult> => {
-      const res = await fetch(compareUrl + url, { method: init.method, redirect: "manual" });
-      return { status: res.status, headers: res.headers, html: await res.text() };
-    }
-  : harness.request;
 
 // "use cache" の関数の実行回数（ページに出る "call N"）
 async function product(id: string) {
@@ -39,7 +35,7 @@ test.skipIf(!!compareUrl)("テストごとにキャッシュは分離される�
   const before = await product("2");
   // 前のテストで product 1 はキャッシュ済みだが、分離されているので再実行される
   expect(await product("1")).toBe(before + 1);
-  expect(harness.invalidatedTags()).toEqual([]);
+  expect(getInvalidatedTags()).toEqual([]);
 });
 
 test("revalidateTag(tag, { expire: 0 }) で次のリクエストから再実行", async () => {
@@ -48,7 +44,7 @@ test("revalidateTag(tag, { expire: 0 }) で次のリクエストから再実行"
   const res = await revalidate("product-1");
   expect(res.status).toBe(200);
   expect(JSON.parse(res.html)).toEqual({ revalidated: "product-1" });
-  if (!compareUrl) expect(harness.invalidatedTags()).toEqual(["product-1"]);
+  if (!compareUrl) expect(getInvalidatedTags()).toEqual(["product-1"]);
   const fresh = await product("1");
   expect(fresh).toBeGreaterThan(other);
   expect(await product("1")).toBe(fresh);

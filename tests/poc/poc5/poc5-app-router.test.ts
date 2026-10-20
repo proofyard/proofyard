@@ -1,10 +1,12 @@
 // PoC 5: 実際の Next.js App Router アプリを、Next.js サーバーなしで Next.js 本体の handler に通す。
 // 期待値は Next.js 本体の挙動（本番モード）をそのまま確認する。
 import { expect, test } from "bun:test";
-import type { NextResponseResult } from "./preload";
+import { requestRoute, type RequestRouteOptions } from "proofyard";
 
-const { request } = (globalThis as any).__proofyardNext as {
-  request: (url: string, init?: { headers?: Record<string, string> }) => Promise<NextResponseResult>;
+type NextResponseResult = { status: number; headers: Headers; html: string };
+const request = async (url: string, options?: RequestRouteOptions): Promise<NextResponseResult> => {
+  const res = await requestRoute(url, options);
+  return { status: res.status, headers: res.headers, html: await res.text() };
 };
 
 // HTML 本体（script と React のテキスト区切りコメントを除く）
@@ -29,7 +31,7 @@ test("ルートグループ (marketing) は URL に出ない", async () => {
 });
 
 test("ネストしたレイアウト・動的ルート・searchParams・cookies・headers・Client Component の SSR", async () => {
-  const res = await request("/dashboard/users/123?tab=x", { headers: { cookie: "theme=dark", "user-agent": "proofyard-test" } });
+  const res = await request("/dashboard/users/123?tab=x", { cookies: { theme: "dark" }, headers: { "user-agent": "proofyard-test" } });
   expect(res.status).toBe(200);
   expect(body(res)).toContain(
     "<header>root layout</header><section><nav>dashboard nav (proofyard-test)</nav>" +
