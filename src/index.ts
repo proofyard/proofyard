@@ -17,4 +17,4 @@ export const getInvalidatedTags = (): string[] => harness().invalidatedTags();
 
 // Server Components を RSC Mode で描画する（仕様 4.1 / 18.2）
 export { renderRSC } from "./testing/render-rsc";
-export type { ClientReference, ServerReference, RenderRSCResult, RSCClientElement, RSCElement, RSCHostElement, RSCNode, TextMatcher } from "./testing/render-rsc";
+export type { ClientReference, ServerReference, RenderRSCResult, WaitOptions, RSCClientElement, RSCElement, RSCHostElement, RSCNode, TextMatcher } from "./testing/render-rsc";
