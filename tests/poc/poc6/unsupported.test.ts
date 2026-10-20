@@ -16,3 +16,23 @@ test('node_modules 内の "use cache" は変換できないのでビルドを失
     'Unsupported Next.js feature: "use server" / "use cache" in node_modules is not compiled by the current runtime',
   );
 });
+
+test('アプリが import する node_modules の "use client" は、サーバーで実行しないようにプリロードで止める', async () => {
+  const app = mkdtempSync(join(tmpdir(), "proofyard-third-party-client-"));
+  mkdirSync(join(app, "app"));
+  mkdirSync(join(app, "node_modules/fake-ui"), { recursive: true });
+  writeFileSync(join(app, "node_modules/fake-ui/package.json"), JSON.stringify({ name: "fake-ui", main: "index.js" }));
+  writeFileSync(join(app, "node_modules/fake-ui/index.js"), `"use client";\nexports.Button = function Button() { return null; };\n`);
+  writeFileSync(join(app, "app/layout.tsx"), `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`);
+  writeFileSync(join(app, "app/page.tsx"), `import { Button } from "fake-ui";\nexport default function P() { return <Button />; }\n`);
+  writeFileSync(join(app, "noop.test.ts"), `import { test } from "bun:test";\ntest("noop", () => {});\n`);
+  const proc = Bun.spawn(["bun", "test", "--preload", join(import.meta.dir, "../../../src/next/preload.ts"), join(app, "noop.test.ts")], {
+    cwd: process.cwd(),
+    env: { ...process.env, PROOFYARD_NEXT_APP: app },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const output = (await new Response(proc.stdout).text()) + (await new Response(proc.stderr).text());
+  expect(await proc.exited).not.toBe(0);
+  expect(output).toContain('Unsupported: "use client" modules in node_modules are not supported yet (fake-ui');
+}, 60_000);
