@@ -102,3 +102,14 @@ test("Suspense の中で起きた例外は、待っている側に元のエラ�
   users.reject(new Error("users service unavailable"));
   await expect(result.waitForComplete()).rejects.toThrow("users service unavailable");
 });
+
+test("mock.module の差し替えはテストの後に戻る（仕様 19 章）: 差し替える", async () => {
+  mock.module(join(import.meta.dir, "../fixtures/next-app/components/users.ts"), () => ({ getUsers: async () => [{ id: 9, name: "Leaked" }] }));
+  expect(await renderRSC(<UserList />).then((r) => r.findByText("Leaked"))).toBeTruthy();
+});
+
+test("mock.module の差し替えはテストの後に戻る（仕様 19 章）: 次のテストは本物", async () => {
+  const result = await renderRSC(<UserList />);
+  expect(await result.findByText("Alice")).toBeTruthy();
+  expect(result.queryByText("Leaked")).toBeNull();
+});

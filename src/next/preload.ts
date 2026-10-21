@@ -412,6 +412,7 @@ const ssr = await buildLayer("ssr", [...clientIds, SSR_RUNTIME], { define, trans
 // ネイティブで読み込むアプリ（と、その依存）の rsc 層の解決と変換
 // - react などは Next.js 内蔵の React に（build.module は CJS の require も含めて置き換える）
 // - アプリのソースは SWC で変換し、"use client" は Client Reference に
+const withoutRestore = (path: string) => path.replace(/\?proofyard-restore=\d+$/, "");
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 Bun.plugin({
   name: "proofyard-next-rsc-native",
@@ -436,15 +437,17 @@ Bun.plugin({
         return { exports, loader: "object" };
       });
     build.onLoad({ filter: STYLE_FILE }, (args) => style(args.path));
+    // ?proofyard-restore=N は mock.module を戻すときの読み込み直し（下）
     if (nativeReplacements.size)
-      build.onLoad({ filter: new RegExp(`^(?:${[...nativeReplacements.keys()].map(escape).join("|")})$`) }, (args) => ({
-        contents: nativeReplacements.get(args.path)!,
+      build.onLoad({ filter: new RegExp(`^(?:${[...nativeReplacements.keys()].map(escape).join("|")})(?:\\?proofyard-restore=\\d+)?$`) }, (args) => ({
+        contents: nativeReplacements.get(withoutRestore(args.path))!,
         loader: "js",
       }));
-    build.onLoad({ filter: new RegExp(`^${escape(projectDir)}/(?!.*/node_modules/).*\\.[jt]sx?$`) }, (args) => {
-      const source = readFileSync(args.path, "utf8");
-      if (USE_CLIENT.test(source)) return { contents: clientReferenceStub(args.path, source), loader: "js" };
-      return { contents: swcTransformSync(args.path, source), loader: "js" };
+    build.onLoad({ filter: new RegExp(`^${escape(projectDir)}/(?!.*/node_modules/).*\\.[jt]sx?(?:\\?proofyard-restore=\\d+)?$`) }, (args) => {
+      const path = withoutRestore(args.path);
+      const source = readFileSync(path, "utf8");
+      if (USE_CLIENT.test(source)) return { contents: clientReferenceStub(path, source), loader: "js" };
+      return { contents: swcTransformSync(path, source), loader: "js" };
     });
   },
 });
@@ -799,7 +802,69 @@ async function flushAfter() {
   // after() の中で after() を呼ぶと増える
   while (pendingAfter.size > 0) await Promise.all(pendingAfter);
 }
-const { afterEach, beforeEach } = await import("bun:test");
+const { afterAll, afterEach, beforeEach, mock } = await import("bun:test");
+
+// mock.module の差し替えは、テストの中ならテストの後、ファイルの直下ならファイルの後に戻す（仕様 19 章の Mock State）。
+// Bun は戻さない（mock.restore() も）。戻すときは本物を別のキー（?proofyard-restore=N）で読み込み直し、その中身で差し替える。
+// 差し替えるときには読み込まない（Bun は読み込みの失敗を覚えていて、後で差し替えても同じエラーになる。server-only などが差し替えられなくなる）。
+// ponytail: 戻した後は読み込み直した別のインスタンス（モジュールの状態は初期に戻り、読み込みの副作用はもう一度起きる）
+// current: いまの差し替えの中身（テストの中の差し替えは、ファイルの直下の差し替えがあればそれに戻す）
+type Restore = { key: string; names: string[]; snapshot?: object; current?: object };
+const testMocks = new Map<string, Restore>();
+const fileMocks = new Map<string, Restore>();
+const mockModule = mock.module;
+let restores = 0;
+let fileRestoreRegistered = false;
+let testsStarted = 0;
+mock.module = (spec: string, factory: () => object | Promise<object>) => {
+  // build.module の別名（react、next/* など）は、その名前のまま。本物はファイルではないので、先に写しておく
+  const virtual = spec in ALIASES.rsc || nextFacades.has(spec) || spec === "next";
+  const caller = /\(?(\/[^()]+?):\d+:\d+\)?$/.exec(new Error().stack!.split("\n")[2] ?? "")?.[1];
+  let key = spec;
+  try {
+    if (!virtual && caller) key = Bun.resolveSync(spec, dirname(caller));
+  } catch {} // 存在しないモジュールの差し替え
+  const scope = runningTests > 0 ? testMocks : fileMocks;
+  if (scope === fileMocks && !fileRestoreRegistered) {
+    // ファイルの読み込み中に登録した afterAll は、そのファイル（describe の中ならその describe）の後に動く。
+    // プリロードの afterAll は全部のファイルの後に 1 回だけ。beforeAll の中で登録するとすぐに動くので、テストが始まっていなければ戻さない
+    // ponytail: beforeAll の中の差し替えは、次のファイルの直下の差し替えか、全部のファイルの後まで残る
+    fileRestoreRegistered = true;
+    const started = testsStarted;
+    afterAll(() => {
+      fileRestoreRegistered = false;
+      if (testsStarted > started) restoreMocks(fileMocks);
+    });
+  }
+  const restore: Restore = scope.get(key) ?? { key, names: [], snapshot: virtual ? { ...require(spec) } : undefined };
+  scope.set(key, restore);
+  return mockModule(key, () => {
+    const result = factory();
+    const record = (m: object) => ((restore.names = Object.keys(m)), (restore.current = m));
+    return result instanceof Promise ? result.then(record) : record(result);
+  });
+};
+function restoreMocks(scope: Map<string, Restore>) {
+  const list = [...scope.values()];
+  scope.clear();
+  for (const { key, names, snapshot } of list) {
+    let exports: object;
+    try {
+      exports = (scope === testMocks && fileMocks.get(key)?.current) || snapshot || { ...require(`${key}?proofyard-restore=${restores++}`) };
+    } catch (error) {
+      // 本物を読み込めない（server-only など）。使うとそのエラーになる値にする（Bun は差し替えのときに値を読むので、getter で投げると戻せない）
+      // ponytail: typeof と真偽の判定はエラーにならない（Proxy で止められない）
+      const fail = new Proxy(function () {}, Object.fromEntries(
+        ["get", "apply", "construct", "has", "set", "ownKeys", "getPrototypeOf"].map((trap) => [trap, () => {
+          throw new Error(`[proofyard] ${key} was replaced by mock.module in an earlier test, and the real module cannot be loaded: ${error}`);
+        }]),
+      ));
+      exports = Object.fromEntries(names.map((name) => [name, fail]));
+    }
+    mockModule(key, () => exports);
+  }
+}
+afterAll(() => restoreMocks(fileMocks));
 // 生成物（エントリ、層のビルド、.next。layers.ts の出力もこの下）は、テストの後には消さず、次の実行の起動時に消す（上）。
 // bun test は process の exit を出さない。afterAll で消すと、--watch では読み込んだファイルの変更として再実行が止まらず、
 // --parallel --no-isolate では afterAll がファイルごとに動いて次のファイルが失敗する
@@ -807,6 +872,7 @@ const { afterEach, beforeEach } = await import("bun:test");
 // 並列にするならプロセスを分ける（--parallel）
 let runningTests = 0;
 beforeEach(() => {
+  testsStarted++;
   if (runningTests++ > 0)
     throw new Error("[proofyard] Unsupported: concurrent tests in one process (test.concurrent / --concurrent) share the DOM and the app cache. Use --parallel");
   resetCache();
@@ -819,6 +885,7 @@ afterEach(() => {
   (globalThis as any)[Symbol.for("proofyard.cleanup")]?.();
   (globalThis as any)[Symbol.for("proofyard.routeCleanup")]?.();
   if (typeof document !== "undefined") document.body.innerHTML = "";
+  restoreMocks(testMocks);
 });
 
 // ブラウザ層（Client Mode）。使うときに初めてビルドする
