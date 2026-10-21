@@ -1,7 +1,24 @@
 // renderRoute のバンドルの react-dom/client。Next.js（app-index.tsx）が作った React のルートを記録し、テストの後片付けで外す。
 // React はルートの container（Next.js では document）に付けたイベントのリスナーを unmount しても外さない。
 // ブラウザならページの移動で消えるので、ここで記録して unmount のときに外す（次のテストの document に残さない）
-import ReactDOMClient from "next/dist/compiled/react-dom/client";
+//
+// React の作業（Suspense の中のハイドレーションの続きなど）が残っているか（src/testing/render-route.ts が待つ）。
+// react-dom はスケジューラーの関数を読み込み時に取り出すので、react-dom/client より先に包む。
+// スケジューラーは終わった（または取り消された）タスクの callback を null にする
+// （バンドラーは require した CJS を名前空間で包むので、元の module.exports（default）を包む）
+const Scheduler = require("scheduler").default;
+const tasks = new Set<{ callback: unknown }>();
+const scheduleCallback = Scheduler.unstable_scheduleCallback;
+Scheduler.unstable_scheduleCallback = (...args: unknown[]) => {
+  const task = scheduleCallback(...args);
+  tasks.add(task);
+  return task;
+};
+(globalThis as any)[Symbol.for("proofyard.routeReactBusy")] = () => {
+  for (const task of tasks) if (task.callback === null) tasks.delete(task);
+  return tasks.size > 0;
+};
+const ReactDOMClient: typeof import("next/dist/compiled/react-dom/client") = require("next/dist/compiled/react-dom/client");
 
 type Root = { unmount(): void };
 const roots: Set<Root> = ((globalThis as any)[Symbol.for("proofyard.routeRoots")] ??= new Set());

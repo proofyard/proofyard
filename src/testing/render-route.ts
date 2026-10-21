@@ -40,7 +40,15 @@ export type RenderRouteResult = Queries & {
     // after() に渡された処理が終わるまで待つ（仕様 16.2）
     flushAfter(): Promise<void>;
   };
+  // いまの文書の <head> にある Next.js が描画した metadata（仕様 16.1。遷移すると変わる）
+  metadata: RouteMetadata;
   unmount(): void;
+};
+export type RouteMetadata = {
+  readonly title: string;
+  readonly description: string | null;
+  // <meta name> または <meta property>（og:title など）の content。同じ名前が複数あれば最初のもの
+  get(name: string): string | null;
 };
 type NavigateOptions = { scroll?: boolean };
 export type RouteRouter = {
@@ -172,6 +180,19 @@ function streamDocument(body: ReadableStream<Uint8Array> | null, scripts: boolea
   return { shell: shell.promise, done, html: () => html };
 }
 
+const metaContent = (name: string) =>
+  (Array.from(document.head.getElementsByTagName("meta")).find((meta) => meta.getAttribute("name") === name || meta.getAttribute("property") === name)?.getAttribute("content")) ??
+  null;
+const metadata: RouteMetadata = {
+  get title() {
+    return document.title;
+  },
+  get description() {
+    return metaContent("description");
+  },
+  get: metaContent,
+};
+
 // 待っている Suspense（<!--$?-->）と、中身の表示待ち（<!--$~-->）の目印
 function pendingBoundaries() {
   const walker = document.createTreeWalker(document.documentElement, 128 /* NodeFilter.SHOW_COMMENT */);
@@ -183,9 +204,11 @@ const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 同じオリジンへの進行中の fetch（ルーターの先読みの完了を待つため）
 let inflight = 0;
+// React のスケジューラーに残っている作業（src/client/route-react-dom-client.ts）
+const reactBusy = (): boolean => (globalThis as any)[Symbol.for("proofyard.routeReactBusy")]?.() ?? false;
 const settled = async () => {
-  do await new Promise((resolve) => setTimeout(resolve, 0));
-  while (inflight > 0);
+  do await tick();
+  while (inflight > 0 || reactBusy());
 };
 
 // ルーターの操作。Next.js の useRouter のインスタンス（app-router-instance.ts の window.next.router）を使う
@@ -199,6 +222,7 @@ function routeRouter(): RouteRouter {
     const written = nextHistoryWrite();
     navigate();
     await written;
+    await settled();
   };
   return {
     get pathname() {
@@ -299,6 +323,7 @@ export async function renderRoute(url: string, { mode = "client", streaming = fa
     waitFor: browser.waitFor,
     errors,
     lifecycle: { flushAfter: h.flushAfter },
+    metadata,
     unmount: cleanup,
   } as unknown as RenderRouteResult;
 }
