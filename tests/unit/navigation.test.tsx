@@ -114,3 +114,28 @@ test("Streaming Navigation: 遷移先の Suspense は fallback が先に出て�
   await app.findByRole("listitem");
   expect(app.queryByText("Loading list")).toBeNull();
 });
+
+test("usePathname / useSearchParams / useParams / useSelectedLayoutSegment(s) は遷移に追従する", async () => {
+  const app = await renderRoute("/dashboard");
+  expect(app.getByText("Segment: (none)")).toBeTruthy();
+  expect(app.getByText("Search: (none)")).toBeTruthy();
+
+  await app.router.push("/dashboard/teams/blue?sort=name");
+  expect(app.getByText("Path: /dashboard/teams/blue")).toBeTruthy();
+  expect(app.getByText("Search: sort=name")).toBeTruthy();
+  expect(app.getByText('Params: {"team":"blue"}')).toBeTruthy();
+  expect(app.getByText("Segment: teams")).toBeTruthy();
+  expect(app.getByText("Segments: teams/blue")).toBeTruthy();
+});
+
+test("Router Cache: 戻る / 進むはキャッシュから、Link の遷移は（dynamic の staleTime 0 なので）取り直す", async () => {
+  const app = await renderRoute("/dashboard");
+  await app.router.push("/dashboard/settings");
+  db.users.push("Bob");
+  await app.router.back();
+  expect(app.getByText("1 users")).toBeTruthy();
+  await app.user.click(app.getByRole("link", { name: "Settings" }));
+  await app.findByRole("heading", { name: "Settings" });
+  await app.user.click(app.getByRole("link", { name: "Home" }));
+  await app.findByText("2 users");
+});
