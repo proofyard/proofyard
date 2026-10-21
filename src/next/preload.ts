@@ -1,11 +1,11 @@
 // Next.js モードのプリロード: App Router のアプリを、Next.js 本体の実装でビルド（層ごと）してリクエストを処理する。
-// - ルートツリーとエントリ: next-app-loader（next build と同じ生成コード）
+// - ルートとエントリ: discoverRoutes / createEntrypoints と各ローダー（next build と同じ生成コード）
 // - 設定: loadConfig、manifest: `next start` と同じ形の .next を一時ディレクトリに書く
-// - リクエスト処理: エントリの handler（app-page テンプレート）
+// - リクエスト処理: next start と同じ router-server（Proxy、next.config の redirects / rewrites / headers を含む）
 require("next/dist/server/node-environment-baseline"); // globalThis.AsyncLocalStorage
 // Next.js の runtime バンドル（vendored React を含む）。層をまたいで共有する
 require("next/dist/server/route-modules/app-page/module.compiled");
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -17,6 +17,16 @@ import { ALIASES, BUNDLED_ALIASES, USE_CLIENT, buildLayer, clientIds, clientRefe
 const projectDir = resolve(process.env.PROOFYARD_NEXT_APP ?? process.cwd());
 const appDir = join(projectDir, "app");
 const work = join(tmpdir(), `proofyard-next-${process.pid}`);
+// 前の実行の生成物のうち、afterAll まで行かなかったもの（プリロードの Fail Closed など）を消す
+for (const name of readdirSync(tmpdir())) {
+  const pid = Number(name.match(/^proofyard-next-(\d+)$/)?.[1]);
+  if (!pid) continue;
+  try {
+    process.kill(pid, 0); // まだ動いているプロセスのもの
+  } catch {
+    rmSync(join(tmpdir(), name), { recursive: true, force: true });
+  }
+}
 const generatedDir = join(work, "entries");
 const distDir = join(work, "dist");
 const write = (path: string, data: unknown) => {
@@ -28,37 +38,66 @@ const { default: nextAppLoader } = require("next/dist/build/webpack/loaders/next
 const { default: loadConfig } = require("next/dist/server/config");
 const { PHASE_PRODUCTION_BUILD } = require("next/dist/shared/lib/constants");
 const { normalizeAppPath } = require("next/dist/shared/lib/router/utils/app-paths");
-const { getSortedRoutes } = require("next/dist/shared/lib/router/utils/sorted-routes");
-const { getRouteRegex } = require("next/dist/shared/lib/router/utils/route-regex");
 const { createRequestResponseMocks } = require("next/dist/server/lib/mock-request");
 const { getDefineEnv } = require("next/dist/build/define-env");
 const { transformSync } = require("next/dist/build/swc");
 const { getLoaderSWCOptions } = require("next/dist/build/swc/options");
+const { default: loadCustomRoutes } = require("next/dist/lib/load-custom-routes");
+const { default: nextMiddlewareLoader } = require("next/dist/build/webpack/loaders/next-middleware-loader");
+const { discoverRoutes, createPagesMapping } = require("next/dist/build/route-discovery");
+const { createEntrypoints } = require("next/dist/build/entries");
+const querystring = require("node:querystring");
+const { generateRoutesManifest } = require("next/dist/build/generate-routes-manifest");
 
 let t = performance.now();
 const config = await loadConfig(PHASE_PRODUCTION_BUILD, projectDir, { silent: true });
 const pageExtensions: string[] = config.pageExtensions;
 
-// app/ の page / route ファイル → next build のエントリ（page は "/dashboard/users/[id]/page" の形）
-const pageFiles = [...new Bun.Glob(`**/{page,route}.{${pageExtensions.join(",")}}`).scanSync(appDir)];
-const pages = pageFiles.map((file) => ({ file, page: "/" + file.replace(/\.[^.]+$/, "") }));
+// next build と同じルートの発見とエントリ（build/index.ts の discoverRoutes / createPagesMapping / createEntrypoints）
+// - app/ のページ・Route Handler と、組み込みの _not-found / _global-error: next-app-loader
+// - Proxy（proxy.ts / middleware.ts）: next-middleware-loader
+const customRoutes = await loadCustomRoutes(config);
+const ROOT_FILE = new RegExp(`^(?:proxy|middleware|instrumentation)\\.(?:${pageExtensions.join("|")})$`);
+const rootPaths = readdirSync(projectDir)
+  .filter((file) => ROOT_FILE.test(file))
+  .map((file) => `/${file}`);
+if (rootPaths.some((path) => path.startsWith("/instrumentation.")))
+  throw new Error("[proofyard] Unsupported Next.js feature: instrumentation.* is not supported yet");
+if (rootPaths.some((path) => path.startsWith("/proxy.")) && rootPaths.some((path) => path.startsWith("/middleware.")))
+  throw new Error('[proofyard] Both "middleware" and "proxy" files are detected. Please use "proxy" only (same as next build)');
+const discovery = await discoverRoutes({ appDir, pageExtensions, isDev: false, baseDir: projectDir, isSrcDir: false, appDirOnly: true });
+const entrypoints = await createEntrypoints({
+  buildId: "proofyard",
+  config,
+  envFiles: [],
+  isDev: false,
+  pages: discovery.mappedPages ?? {},
+  rootDir: projectDir,
+  rootPaths: await createPagesMapping({ isDev: false, pageExtensions, pagePaths: rootPaths, pagesType: "root", appDir, appDirOnly: true }),
+  appDir,
+  appPaths: discovery.mappedAppPages,
+  appDefaultPaths: discovery.mappedAppDefaults,
+  pageExtensions,
+  previewMode: {},
+  hasInstrumentationHook: false,
+});
+if (Object.keys(entrypoints.edgeServer).length > 0)
+  throw new Error(`[proofyard] Unsupported Next.js feature: the edge runtime (${Object.keys(entrypoints.edgeServer).join(", ")})`);
+const middlewareMatchers = entrypoints.middlewareMatchers;
+// webpack と同じく、ローダーのオプションはクエリ文字列（getOptions は querystring.parse）
+const LOADERS: Record<string, Function> = { "next-app-loader": nextAppLoader, "next-middleware-loader": nextMiddlewareLoader };
 const routes = new Map<string, { page: string; entry: string }>(); // pathname → エントリ
-for (const [i, { file, page }] of pages.entries()) {
-  const code: string = await nextAppLoader.call({
-    getOptions: () => ({
-      name: `app${page}`,
-      page,
-      appDir,
-      appPaths: [page],
-      allNormalizedAppPaths: pages.map((p) => normalizeAppPath(p.page)),
-      pagePath: `private-next-app-dir/${file}`,
-      pageExtensions,
-      rootDir: projectDir,
-      isDev: false,
-      basePath: config.basePath,
-      middlewareConfig: Buffer.from("{}").toString("base64"),
-      nextConfigOutput: config.output ?? "", // webpack ではクエリ文字列で渡るので未設定は ""
-    }),
+let middlewareEntry: string | undefined;
+for (const [i, [name, value]] of Object.entries(entrypoints.server as Record<string, string | { import: string }>).entries()) {
+  const request = typeof value === "string" ? value : value.import;
+  const [, loader, query] = request.match(/^([^?!]+)\?(.*)!$/) ?? [];
+  if (!loader || !LOADERS[loader]) throw new Error(`[proofyard] Unsupported Next.js entry: ${name} (${request})`);
+  const options = querystring.parse(query!);
+  const code: string = await LOADERS[loader]!.call({
+    getOptions: () => options,
+    context: projectDir,
+    rootContext: projectDir,
+    utils: { contextify: (context: string, request: string) => (request.startsWith("/") ? `./${relative(context, request)}` : request) },
     addMissingDependency() {},
     addDependency() {},
     addContextDependency() {},
@@ -70,14 +109,18 @@ for (const [i, { file, page }] of pages.entries()) {
     code
       .replace(/\s+with\s*\{\s*'turbopack-transition'[^}]*\}/g, "") // Turbopack 用の import 属性
       // Client Component の読み込み（webpack の __webpack_require__ の代わり）
-      .replace("const __next_app_require__ = __webpack_require__", "const __next_app_require__ = (id) => globalThis.__proofyardNextRequire(id)"),
+      .replace("const __next_app_require__ = __webpack_require__", "const __next_app_require__ = (id) => globalThis.__proofyardNextRequire(id)")
+      // webpack の resolve.alias（private-next-root-dir → プロジェクト）
+      .replace(/(["'])private-next-root-dir\//g, `$1${projectDir}/`),
   );
-  routes.set(normalizeAppPath(page), { page, entry });
+  if (loader === "next-middleware-loader") middlewareEntry = entry;
+  else routes.set(normalizeAppPath(options.page as string), { page: options.page as string, entry });
 }
-console.log(`[proofyard] next-app-loader: ${routes.size} routes ${(performance.now() - t).toFixed(0)}ms`);
+console.log(`[proofyard] entries: ${routes.size} routes${middlewareEntry ? " + proxy" : ""} ${(performance.now() - t).toFixed(0)}ms`);
 
 t = performance.now();
 // next build と同じ define（nodejs のサーバー。bun test の NODE_ENV=test は production 扱い）
+const hasRewrites = Object.values(customRoutes.rewrites as Record<string, unknown[]>).some((r) => r.length > 0);
 const nextDefine: Record<string, unknown> = getDefineEnv({
   isTurbopack: false,
   config,
@@ -85,12 +128,12 @@ const nextDefine: Record<string, unknown> = getDefineEnv({
   distDir,
   projectPath: projectDir,
   fetchCacheKeyPrefix: config.experimental.fetchCacheKeyPrefix,
-  hasRewrites: false,
+  hasRewrites,
   isClient: false,
   isEdgeServer: false,
   isNodeServer: true,
-  middlewareMatchers: undefined,
-  rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
+  middlewareMatchers,
+  rewrites: customRoutes.rewrites,
 });
 // webpack の DefinePlugin と同じく undefined は undefined に（Bun.build は文字列だけ受け付ける）
 const define = Object.fromEntries(Object.entries(nextDefine).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]));
@@ -149,7 +192,7 @@ const swcTransformSync = (filename: string, source: string): string =>
 const isAppSource = (path: string) => path.startsWith(projectDir + "/") && !path.includes("/node_modules/");
 const swcTransformFor = (layer: "ssr" | "browser" | "route") => async (filename: string, source: string) =>
   isAppSource(filename) ? (transformSync(source, { ...swcOptions(filename, layer), filename, sourceFileName: filename }).code as string) : undefined;
-const entries = [...routes.values()].map((r) => r.entry);
+const entries = [...routes.values()].map((r) => r.entry).concat(middlewareEntry ?? []);
 
 // rsc 層: Next.js 本体だけをバンドルし、アプリはネイティブで読み込む（mock.module が効く）。
 // アプリが import しうる Next.js 本体のモジュール（next/cache などの公開の入口、SWC が出力する private-next-rsc-* など）も
@@ -283,17 +326,33 @@ const clientReferenceManifest = {
   entryJSFiles: {},
 };
 write(join(distDir, "BUILD_ID"), "proofyard");
-write(join(distDir, "routes-manifest.json"), {
-  version: 3,
-  caseSensitive: false,
-  basePath: config.basePath,
-  redirects: [],
-  headers: [],
-  rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
-  dynamicRoutes: [],
-  staticRoutes: [],
-  dataRoutes: [],
+// ルートの一覧と next.config の redirects / rewrites / headers（next build と同じ生成処理。build/index.ts）
+const { routesManifest } = generateRoutesManifest({
+  appType: "app",
+  pageKeys: { pages: [], app: [...routes.keys()] },
+  config,
+  redirects: customRoutes.redirects,
+  headers: customRoutes.headers,
+  onMatchHeaders: customRoutes.onMatchHeaders,
+  rewrites: customRoutes.rewrites,
+  restrictedRedirectPaths: ["/_next"].map((p) => (config.basePath ? `${config.basePath}${p}` : p)),
+  isAppPPREnabled: !!config.cacheComponents,
+  deploymentId: config.deploymentId,
 });
+write(join(distDir, "routes-manifest.json"), routesManifest);
+// ページのモジュール（next start は server/app/<page>.js を require する）は rsc 層のビルド結果
+write(join(distDir, "server/app-paths-manifest.json"), Object.fromEntries([...routes.values()].map(({ page }) => [page, `app${page}.js`])));
+write(join(distDir, "app-path-routes-manifest.json"), Object.fromEntries([...routes].map(([pathname, { page }]) => [page, pathname])));
+for (const { page, entry } of routes.values()) write(join(distDir, `server/app${page}.js`), `module.exports = require(${JSON.stringify(rsc.get(entry))});\n`);
+write(join(distDir, "server/pages-manifest.json"), {});
+mkdirSync(join(distDir, "static"), { recursive: true });
+write(join(distDir, "server/middleware-manifest.json"), { version: 3, middleware: {}, functions: {}, sortedMiddleware: [] });
+// Node.js の Proxy は server/middleware.js（next-server.ts の loadNodeMiddleware）。matcher は functions-config-manifest に
+write(
+  join(distDir, "server/functions-config-manifest.json"),
+  { version: 1, functions: middlewareEntry ? { "/_middleware": { runtime: "nodejs", matchers: middlewareMatchers } } : {} },
+);
+if (middlewareEntry) write(join(distDir, "server/middleware.js"), `module.exports = require(${JSON.stringify(rsc.get(middlewareEntry))});\n`);
 write(join(distDir, "prerender-manifest.json"), { version: 4, routes: {}, dynamicRoutes: {}, notFoundRoutes: [], preview });
 write(join(distDir, "server/preview-props.json"), preview);
 write(join(distDir, "build-manifest.json"), {
@@ -335,10 +394,6 @@ require(rsc.get(facadeEntries.get(MANIFESTS_SINGLETON)!)!).default.setManifestsS
   serverActionsManifest,
 });
 
-// URL → ルート（Next.js のルート並び順と正規表現で照合）
-const sorted: string[] = getSortedRoutes([...routes.keys()]);
-const matchers = sorted.map((pathname) => ({ pathname, re: getRouteRegex(pathname).re as RegExp }));
-
 export type RequestRouteOptions = {
   method?: string;
   headers?: Record<string, string>;
@@ -346,12 +401,9 @@ export type RequestRouteOptions = {
   body?: BodyInit | null;
 };
 
-// URL へのリクエストを Next.js 本体の handler で処理し、HTTP の応答を返す
+// URL へのリクエストを Next.js 本体のルーター（next start と同じ router-server）で処理し、HTTP の応答を返す
 async function requestRoute(url: string, init: RequestRouteOptions = {}): Promise<Response> {
-  const pathname = new URL(url, "http://localhost").pathname;
-  const match = matchers.find((m) => m.re.test(pathname));
-  if (!match) throw new Error(`[proofyard] no route matches ${pathname}`);
-  const { handler } = await import(rsc.get(routes.get(match.pathname)!.entry)!);
+  const handler = await getRouter();
   // 本文と content-type（FormData の boundary など）は Request に作らせる
   const request = new Request(new URL(url, "http://localhost"), { method: init.method, headers: { host: "localhost", ...init.headers }, body: init.body });
   if (init.cookies) {
@@ -366,11 +418,26 @@ async function requestRoute(url: string, init: RequestRouteOptions = {}): Promis
       this.push(body);
       this.push(null);
     };
-  await handler(req, res, { requestMeta: { distDir, relativeProjectDir: relative(process.cwd(), projectDir), initURL: request.url } });
+  await handler(req, res);
   await res.hasStreamed;
   const nullBody = [101, 204, 205, 304].includes(res.statusCode);
   return new Response(nullBody ? null : Buffer.concat(res.buffers), { status: res.statusCode, headers: res.headers });
 }
+
+// next start のルーター（Proxy、next.config の redirects / rewrites / headers、ルートの解決）
+let router: Promise<(req: unknown, res: unknown) => Promise<void>> | undefined;
+const getRouter = () =>
+  (router ??= (async () => {
+    const { initialize } = require("next/dist/server/lib/router-server");
+    // 設定は読み込み済みのものを渡す（distDir は一時ディレクトリ。standalone の server.js と同じ仕組み）
+    process.env.__NEXT_PRIVATE_STANDALONE_CONFIG = JSON.stringify({ ...config, distDir: relative(projectDir, distDir) });
+    try {
+      const { requestHandler } = await initialize({ dir: projectDir, port: 80, hostname: "localhost", dev: false, minimalMode: false, quiet: false, onDevServerCleanup: undefined });
+      return requestHandler;
+    } finally {
+      delete process.env.__NEXT_PRIVATE_STANDALONE_CONFIG;
+    }
+  })());
 
 // サーバー側の、テストのオリジン（http://localhost）への fetch はメモリ内の handler へ。
 // Next.js は Server Action の redirect 先の RSC を自分自身に fetch して取る（action-handler.ts の createRedirectRenderResult）。
@@ -402,7 +469,9 @@ function resetCache() {
 }
 // 無効化されたタグ（revalidateTag / updateTag / revalidatePath が記録したもの）
 const invalidatedTags = (): string[] => [...tagsManifest.keys()];
-const { afterEach, beforeEach } = await import("bun:test");
+const { afterAll, afterEach, beforeEach } = await import("bun:test");
+// 生成物（エントリ、層のビルド、.next）は全テストの後に消す（layers.ts の出力もこの下）。bun test は process の exit を出さない
+afterAll(() => rmSync(work, { recursive: true, force: true }));
 beforeEach(resetCache);
 // テストごとに DOM を分離する（仕様 19 章）。render() の React のルートを外し（src/testing/render.ts）、body を空にする
 afterEach(() => {
@@ -446,12 +515,12 @@ const clientDefine = Object.fromEntries(
       distDir,
       projectPath: projectDir,
       fetchCacheKeyPrefix: config.experimental.fetchCacheKeyPrefix,
-      hasRewrites: false,
+      hasRewrites,
       isClient: true,
       isEdgeServer: false,
       isNodeServer: false,
-      middlewareMatchers: undefined,
-      rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
+      middlewareMatchers,
+      rewrites: customRoutes.rewrites,
     }) as Record<string, unknown>,
   ).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]),
 );

@@ -157,7 +157,7 @@ export async function buildLayer(layer: Layer, entries: string[], { define, gene
   const bundledAliases = Object.fromEntries(
     Object.entries({ ...BUNDLED_ALIASES[layer], ...override }).filter((e): e is [string, string] => e[1] !== undefined),
   );
-  const outdir = join(tmpdir(), `proofyard-next-${process.pid}-${layer}-${builds++}`);
+  const outdir = join(tmpdir(), `proofyard-next-${process.pid}`, `${layer}-${builds++}`);
   const entryPaths = entries.map((e) => (e.startsWith("/") ? e : abs(e)));
   const result = await Bun.build({
     entrypoints: entryPaths,

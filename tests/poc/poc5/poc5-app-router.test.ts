@@ -70,6 +70,9 @@ test("Server Component の例外は 500 で、dashboard/error.tsx の Error Boun
   expect(res.html).not.toContain("user load failed");
 });
 
-test("どのルートにも一致しない URL は Fail Closed", async () => {
-  await expect(request("/nope/a/b")).rejects.toThrow("[proofyard] no route matches /nope/a/b");
+test("どのルートにも一致しない URL は 404 とルートの not-found（next start と同じく _not-found ページ）", async () => {
+  const res = await request("/nope/a/b");
+  expect(res.status).toBe(404);
+  expect(body(res)).toContain("<header>root layout</header>");
+  expect(body(res)).toContain("custom not found");
 });
