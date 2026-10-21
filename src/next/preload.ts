@@ -137,6 +137,8 @@ async function loadMetadataFiles(code: string, prefix: string) {
   if (unknown) throw new Error(`[proofyard] Unsupported Next.js loader in the generated code: ${unknown[1]}`);
   return code;
 }
+// webpack の compilation（next-app-loader はこれごとにディレクトリの中身をキャッシュする。ないと確認のたびに readdir する）
+const compilation = {};
 const loaded = await Promise.all(
   Object.entries(entrypoints.server as Record<string, string | { import: string; layer?: string }>).map(async ([name, value], i) => {
     const entry = join(generatedDir, `${i}.js`);
@@ -158,6 +160,7 @@ const loaded = await Promise.all(
       addDependency() {},
       addContextDependency() {},
       _module: { buildInfo: {} },
+      _compilation: compilation,
     }), String(i));
     write(
       entry,
