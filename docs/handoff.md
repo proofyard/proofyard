@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。136 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。139 件）
 
 ## 決めたこと
 
@@ -97,6 +97,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - Bun の `expect(promise).rejects` / `.resolves` は、待つ間にイベントループを入れ子で回す。Next.js の fast-set-immediate（`runInSequentialTasks`）のタスクの順番の前提が崩れ、`Invariant: Cannot start capturing immediates again` になる。`prerenderRoute` などは `await p.catch((e) => e)` で受けてから調べる
 - rsc 層の Flight クライアント（プリレンダリング、`"use cache"`）は Client Reference を rsc 層のものに戻す（`rscModuleMapping`。`proofyard-rsc-client:` の id で `registerClientReference`）
 - ページのエントリの `export * from entry-base`（CJS）の名前は Bun.build の ESM の出力で消える。`__proofyardEntryBase` の名前空間でも出し、`server/app/*.js` で混ぜる（`ComponentMod.patchFetch` など。next build の ComponentMod と同じ名前）
+- サードパーティの状態管理（zustand・jotai・Redux Toolkit）は追加の対応なしで動く（`tests/unit/state-libraries.test.tsx`）。モジュールのスコープのストアも、テストごとにクライアントのバンドルを読み直すので、前のテストの状態は残らない
 - `node_modules` は Read と Bash で読めない設定。Next.js のソースは `/tmp/nextjs-v16.4.2`（v16.4.2 の sparse clone）を読む。無ければ取り直す
 
 ## 未対応（Fail Closed にしているもの・まだのもの）
