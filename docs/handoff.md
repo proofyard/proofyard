@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）。113 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）。114 件）
 
 ## 決めたこと
 
@@ -35,7 +35,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
   - Link のクリック、`useRouter()`、Layout / Template、loading.tsx、Parallel / Intercepting Routes、Suspense を伴う遷移は Next.js 本体のクライアントルーターがそのまま動く
   - `location` / `history` は DOM アダプターの自前の実装（turbo-dom のものは固定）。ページの再読み込み（`location.assign` など）は Fail Closed
   - `app.errors`: window に報告されたエラー（Next.js は Hydration Mismatch などを `reportError` で報告する。DOM アダプターの `reportError` はブラウザと同じく window に `error` イベントを送り、取り消されなければ console.error。Bun のものは捕まえられなかった例外になる）。`app.waitFor`: Testing Library の `waitFor`
-  - Phase 7 で確認したもの（Next.js 本体の処理のまま動く）: Metadata（`title.template`、`generateMetadata`、遷移後の `document.title`。Next.js 16 は metadata を本文と別に流すので、遷移の完了より後に変わる）、`after()`（応答のあと）、`next/dynamic`（`ssr: false`）と `import()`、Hydration Mismatch。StrictMode は Next.js の define（`__NEXT_STRICT_MODE_APP`）のまま。本番版の React なので二重の描画などは起きない
+  - Phase 7 で確認したもの（Next.js 本体の処理のまま動く）: Metadata（`title.template`、`generateMetadata`、遷移後の `document.title`。Next.js 16 は metadata を本文と別に流すので、遷移の完了より後に変わる）、`after()`（応答のあと）、`next/dynamic`（`ssr: false`）と `import()`、Hydration Mismatch、`useDeferredValue` / `startTransition` の中の `router.push`。StrictMode は Next.js の define（`__NEXT_STRICT_MODE_APP`）のまま。本番版の React なので二重の描画などは起きない
 - `renderRSC(element)`: RSC Mode。Flight を往復させた React ツリーを返す（シェルが揃った時点。待っている Suspense は fallback）
   - クエリ（毎回いまの状態を読む）: `getByText` / `queryByText` / `getAllByText` / `queryAllByText`、`findByText` / `findAllByText`（届くまで待つ）、`waitForComplete()`、`getClientReference` / `getAllClientReferences`（export 名か、import した Client Component で探す）、`text()`、`root`
   - Client Component は実行しない（デコード時に目印のモジュールに差し替える）。Server Function は `$$id` と `$$bound` を持つ目印になる（呼ぶとエラー）
