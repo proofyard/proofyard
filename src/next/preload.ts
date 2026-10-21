@@ -46,6 +46,7 @@ const { default: loadCustomRoutes } = require("next/dist/lib/load-custom-routes"
 const { default: nextMiddlewareLoader } = require("next/dist/build/webpack/loaders/next-middleware-loader");
 const { discoverRoutes, createPagesMapping } = require("next/dist/build/route-discovery");
 const { createEntrypoints } = require("next/dist/build/entries");
+const { generateInterceptionRoutesRewrites } = require("next/dist/lib/generate-interception-routes-rewrites");
 const querystring = require("node:querystring");
 const { generateRoutesManifest } = require("next/dist/build/generate-routes-manifest");
 
@@ -66,6 +67,9 @@ if (rootPaths.some((path) => path.startsWith("/instrumentation.")))
 if (rootPaths.some((path) => path.startsWith("/proxy.")) && rootPaths.some((path) => path.startsWith("/middleware.")))
   throw new Error('[proofyard] Both "middleware" and "proxy" files are detected. Please use "proxy" only (same as next build)');
 const discovery = await discoverRoutes({ appDir, pageExtensions, isDev: false, baseDir: projectDir, isSrcDir: false, appDirOnly: true });
+// next build と同じく、ページの一覧（URL の形）と Intercepting Routes の rewrite（beforeFiles）
+const appPaths = [...new Set(Object.keys(discovery.mappedAppPages).map((page) => normalizeAppPath(page)))];
+customRoutes.rewrites.beforeFiles.push(...generateInterceptionRoutesRewrites(appPaths, config.basePath));
 const entrypoints = await createEntrypoints({
   buildId: "proofyard",
   config,
@@ -329,7 +333,7 @@ write(join(distDir, "BUILD_ID"), "proofyard");
 // ルートの一覧と next.config の redirects / rewrites / headers（next build と同じ生成処理。build/index.ts）
 const { routesManifest } = generateRoutesManifest({
   appType: "app",
-  pageKeys: { pages: [], app: [...routes.keys()] },
+  pageKeys: { pages: [], app: appPaths },
   config,
   redirects: customRoutes.redirects,
   headers: customRoutes.headers,
@@ -411,17 +415,44 @@ async function requestRoute(url: string, init: RequestRouteOptions = {}): Promis
     request.headers.set("cookie", [request.headers.get("cookie"), ...cookie].filter(Boolean).join("; "));
   }
   const body = request.body ? Buffer.from(await request.arrayBuffer()) : undefined;
-  const { req, res } = createRequestResponseMocks({ url, method: request.method, headers: Object.fromEntries(request.headers) });
+  // 本文はストリームで返す（ブラウザと同じく、Suspense の fallback などが先に届く）。
+  // ステータスとヘッダーは、Node.js と同じく最初の書き込み（または終わり）の時点のもの
+  const head = Promise.withResolvers<void>();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({ start: (c) => void (controller = c) });
+  let written = false;
+  const { req, res } = createRequestResponseMocks({
+    url,
+    method: request.method,
+    headers: Object.fromEntries(request.headers),
+    resWriter: (chunk: Uint8Array | string) => {
+      written = true;
+      head.resolve();
+      controller.enqueue(typeof chunk === "string" ? Buffer.from(chunk) : new Uint8Array(chunk));
+      return true;
+    },
+  });
   // MockedRequest の bodyReadable は、その _read を呼ぶだけで req にデータが流れない。本文は req 自身に流す
   if (body)
     req._read = function (this: import("node:stream").Readable) {
       this.push(body);
       this.push(null);
     };
-  await handler(req, res);
-  await res.hasStreamed;
+  let failure: { error: unknown } | undefined;
+  handler(req, res)
+    .then(() => res.hasStreamed)
+    .then(
+      () => controller.close(),
+      (error) => {
+        failure = { error };
+        controller.error(error);
+      },
+    )
+    .finally(head.resolve);
+  await head.promise;
+  if (failure && !written) throw failure.error;
   const nullBody = [101, 204, 205, 304].includes(res.statusCode);
-  return new Response(nullBody ? null : Buffer.concat(res.buffers), { status: res.statusCode, headers: res.headers });
+  return new Response(nullBody ? null : stream, { status: res.statusCode, headers: res.headers });
 }
 
 // next start のルーター（Proxy、next.config の redirects / rewrites / headers、ルートの解決）

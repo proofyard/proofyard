@@ -2,7 +2,7 @@
 //   ssr:    HTML だけ（JavaScript は動かさない。JavaScript を切ったブラウザと同じ）
 //   client: HTML の script（self.__next_f など）を実行し、Next.js 本体のクライアント（app-next.js）でハイドレーションする
 // クエリは Testing Library（document.body 全体）。
-import { resetLocation } from "../dom/environment";
+import { nextHistoryWrite, resetLocation } from "../dom/environment";
 import { ensureDom, harness } from "./render";
 
 type BrowserRuntime = typeof import("../client/runtime");
@@ -23,7 +23,21 @@ export type RenderRouteResult = Queries & {
   user: ReturnType<BrowserRuntime["userEvent"]["setup"]>;
   // ブラウザが送る cookie（応答の Set-Cookie を反映したもの）
   cookies: Map<string, string>;
+  // Next.js のクライアントルーター（useRouter と同じもの）。遷移は新しい状態がコミットされるまで待つ
+  router: RouteRouter;
   unmount(): void;
+};
+type NavigateOptions = { scroll?: boolean };
+export type RouteRouter = {
+  readonly pathname: string;
+  readonly searchParams: URLSearchParams;
+  push(href: string, options?: NavigateOptions): Promise<void>;
+  replace(href: string, options?: NavigateOptions): Promise<void>;
+  refresh(): Promise<void>;
+  back(): Promise<void>;
+  forward(): Promise<void>;
+  // 先読みのリクエストが終わるまで待つ
+  prefetch(href: string): Promise<void>;
 };
 
 const ORIGIN = "http://localhost";
@@ -88,6 +102,44 @@ function runScripts() {
   }
 }
 
+// 同じオリジンへの進行中の fetch（ルーターの先読みの完了を待つため）
+let inflight = 0;
+const settled = async () => {
+  do await new Promise((resolve) => setTimeout(resolve, 0));
+  while (inflight > 0);
+};
+
+// ルーターの操作。Next.js の useRouter のインスタンス（app-router-instance.ts の window.next.router）を使う
+function routeRouter(): RouteRouter {
+  const next = () => {
+    const router = (globalThis as any).next?.router;
+    if (!router) throw new Error('[proofyard] the Next.js router is not running (use renderRoute with mode: "client")');
+    return router;
+  };
+  const commit = async (navigate: () => void) => {
+    const written = nextHistoryWrite();
+    navigate();
+    await written;
+  };
+  return {
+    get pathname() {
+      return location.pathname;
+    },
+    get searchParams() {
+      return new URLSearchParams(location.search);
+    },
+    push: (href, options) => commit(() => next().push(href, options)),
+    replace: (href, options) => commit(() => next().replace(href, options)),
+    refresh: () => commit(() => next().refresh()),
+    back: () => commit(() => next().back()),
+    forward: () => commit(() => next().forward()),
+    prefetch: async (href) => {
+      next().prefetch(href);
+      await settled();
+    },
+  };
+}
+
 // クライアントの fetch。cookie はこの入れ物から送り、応答の Set-Cookie を反映する。
 // 同じオリジン（http://localhost）への fetch は、プリロードがメモリ内の Next.js の handler に回す
 function routeFetch(jar: Map<string, string>, headers?: Record<string, string>) {
@@ -96,9 +148,14 @@ function routeFetch(jar: Map<string, string>, headers?: Record<string, string>) 
     if (new URL(request.url).origin !== ORIGIN) return fetch(request);
     for (const [name, value] of Object.entries(headers ?? {})) if (!request.headers.has(name)) request.headers.set(name, value);
     if (jar.size) request.headers.set("cookie", [...jar].map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("; "));
-    const response = await fetch(request);
-    storeCookies(jar, response);
-    return response;
+    inflight++;
+    try {
+      const response = await fetch(request);
+      storeCookies(jar, response);
+      return response;
+    } finally {
+      inflight--;
+    }
   };
 }
 
@@ -134,6 +191,7 @@ export async function renderRoute(url: string, { mode = "client", headers, cooki
     url: finalUrl,
     user: browser.userEvent.setup({ document }),
     cookies: jar,
+    router: routeRouter(),
     unmount: cleanup,
   } as unknown as RenderRouteResult;
 }
