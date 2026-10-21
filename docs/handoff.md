@@ -129,6 +129,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - DOM アダプター（`src/dom/environment.ts`）: turbo-dom が上書きする Bun 本来のグローバルのうち、DOM に固有でないもの（タイマー、`queueMicrotask`、`fetch`、`URL`、`performance`、`atob`/`btoa` など）は Bun のままにする（サーバー側のコードも使う。turbo-dom 0.5.6 の `btoa` はバイナリで無限ループした）。`installDom` は 1 プロセスに 1 回（入れ直すと user-event が古い document を使い続ける）
 - 後片付け（プリロードの `afterEach`）: フォーカスを外してから React のルートを外し、body を空にする（turbo-dom は取り除いた要素を activeElement に残す）
 - テストの期限: Next.js モードのテストは `--timeout 20000`（マシンの負荷が高いと最初のリクエストなどが 5 秒を超える）。ブラウザ層のビルドはプリロードで待つ
+- 速度（Phase 8）: `bun run bench:api` で 1 テストあたりの時間（後片付けを含む中央値）。2026-10 の測定（2 コアで他のビルドが動いている負荷の高い状態。値は大きく揺れる）: `requestRoute` 約 24ms、`renderRoute` ssr 約 80ms、client 約 200ms、client + 入力 + Server Action 約 1s。起動（プリロード）は数秒で、大半は next-app-loader（エントリの生成）と層のビルド。next-app-loader は webpack と同じく `_compilation` を共有してディレクトリの中身をキャッシュする（共有しないと 30 ルートで約 4 秒余計にかかっていた）。実行をまたいだビルドのキャッシュはまだ（入力のすべてで無効化を決める必要がある）
 
 ## 守ること（仕様27章の要約）
 
