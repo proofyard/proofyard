@@ -73,7 +73,6 @@ const KEEP_NATIVE = [
   "clearInterval",
   "queueMicrotask",
   "structuredClone",
-  "reportError",
   "fetch",
   "URL",
   "performance",
@@ -91,7 +90,29 @@ export function installDom(html = "<!doctype html><html><head></head><body></bod
   globalThis.FormData = ProofyardFormData as typeof FormData;
   installLocation();
   resolveUrlAttributes();
+  installReportError();
   return installed;
+}
+
+// ブラウザの reportError: window に error イベントを送り、取り消されなければコンソールに出す
+// （Bun のものは捕まえられなかった例外になり、テストが落ちる。Next.js は Hydration Mismatch などをこれで報告する）
+// turbo-dom 0.5.6 には ErrorEvent がない（グローバルの ErrorEvent は Bun のもので、turbo-dom の window には送れない）
+// https://html.spec.whatwg.org/multipage/webappapis.html#dom-reporterror
+function installReportError() {
+  class ErrorEvent extends Event {
+    readonly error: unknown;
+    readonly message: string;
+    constructor(type: string, init: EventInit & { error?: unknown; message?: string } = {}) {
+      super(type, init);
+      this.error = init.error;
+      this.message = init.message ?? "";
+    }
+  }
+  (globalThis as any).ErrorEvent = ErrorEvent;
+  globalThis.reportError = (error: unknown) => {
+    const event = new ErrorEvent("error", { error, message: error instanceof Error ? error.message : String(error), cancelable: true });
+    if (window.dispatchEvent(event)) console.error(error);
+  };
 }
 
 // turbo-dom 0.5.6 の src / href は属性の値をそのまま返す。HTML の要素ではブラウザと同じく文書の URL で解決する

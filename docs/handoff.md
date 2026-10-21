@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）。105 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）。112 件）
 
 ## 決めたこと
 
@@ -34,6 +34,8 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
   - `app.router`（仕様 18.6）: `push` / `replace` / `refresh` / `back` / `forward` / `prefetch`、`pathname` / `searchParams`。Next.js の `useRouter` と同じインスタンス（`window.next.router`）を呼び、新しい状態がコミットされるまで待つ（Next.js がコミットのたびに書く `history` の pushState / replaceState で分かる。`prefetch` は fetch が終わるまで）
   - Link のクリック、`useRouter()`、Layout / Template、loading.tsx、Parallel / Intercepting Routes、Suspense を伴う遷移は Next.js 本体のクライアントルーターがそのまま動く
   - `location` / `history` は DOM アダプターの自前の実装（turbo-dom のものは固定）。ページの再読み込み（`location.assign` など）は Fail Closed
+  - `app.errors`: window に報告されたエラー（Next.js は Hydration Mismatch などを `reportError` で報告する。DOM アダプターの `reportError` はブラウザと同じく window に `error` イベントを送り、取り消されなければ console.error。Bun のものは捕まえられなかった例外になる）。`app.waitFor`: Testing Library の `waitFor`
+  - Phase 7 で確認したもの（Next.js 本体の処理のまま動く）: Metadata（`title.template`、`generateMetadata`、遷移後の `document.title`。Next.js 16 は metadata を本文と別に流すので、遷移の完了より後に変わる）、`after()`（応答のあと）、`next/dynamic`（`ssr: false`）と `import()`、Hydration Mismatch。StrictMode は Next.js の define（`__NEXT_STRICT_MODE_APP`）のまま。本番版の React なので二重の描画などは起きない
 - `renderRSC(element)`: RSC Mode。Flight を往復させた React ツリーを返す（シェルが揃った時点。待っている Suspense は fallback）
   - クエリ（毎回いまの状態を読む）: `getByText` / `queryByText` / `getAllByText` / `queryAllByText`、`findByText` / `findAllByText`（届くまで待つ）、`waitForComplete()`、`getClientReference` / `getAllClientReferences`（export 名か、import した Client Component で探す）、`text()`、`root`
   - Client Component は実行しない（デコード時に目印のモジュールに差し替える）。Server Function は `$$id` と `$$bound` を持つ目印になる（呼ぶとエラー）
@@ -95,7 +97,9 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - `instrumentation.*`（Node.js）: 対応。next build と同じく `server/instrumentation.js` に置き、`register` と `onRequestError` は Next.js 本体が呼ぶ。注意: このファイルの読み込みで「モジュールが見つからない」エラーは Next.js 本体が無視する（ファイルなしと同じ扱い）
 - `instrumentation-client.*`: 未対応
 - Pages Router: 未対応（Fail Closed）
-- `"use cache: private"` / `"use cache: remote"`、metadata: 未検証
+- `"use cache: private"` / `"use cache: remote"`: 未検証
+- Edge Runtime: Fail Closed
+- 遷移後の head に、最初の HTML の `<title>` が残る（`document.title` は新しいもの）。実ブラウザとの比較は未実施
 - スクロール（`scroll` オプション、ハッシュへのスクロール）: turbo-dom にレイアウトがないので検証していない
 - turbo-dom 0.5.6 の `<template>` は `content` がない（HTML の続きの塊は div で解析している）
 - ブラウザ層は `__NEXT_TEST_MODE` を有効にしている（ハイドレーションの完了の通知のため）。そのため先読みのリクエストに `next-test-fetch-priority` ヘッダーが付く
