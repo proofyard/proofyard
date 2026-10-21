@@ -5,8 +5,8 @@
 Next.js App Router の React Server Components を、ブラウザも Next.js サーバーも起動せず、Bun（`bun test`）の中だけでテストするフレームワーク。
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
-- 現状: Phase 0〜3 が完了し、Phase 4（Next.js Integration）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit` と PoC 1〜6。86 件）
+- 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
+- テスト: `bun run test`（`tests/unit` と PoC 1〜6。96 件）
 
 ## 決めたこと
 
@@ -31,6 +31,8 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 - `renderRoute(url, { mode: "ssr" | "client", headers, cookies })`: ルートの HTML を document に入れる。リダイレクトはたどる（最大 20 回、他のオリジンは Fail Closed）
   - client: Next.js 本体のクライアント（`app-next.js`）で HTML をハイドレーションする。React は本番版（`act` がないので `findBy` / `waitFor` で待つ。エラーのメッセージは本番と同じく短縮形）
   - Server Actions、`revalidatePath`、`redirect()` は Next.js のルーター経由で動く（ブラウザの fetch とサーバー側の `http://localhost` への fetch はメモリ内のルーターへ）
+  - `app.router`（仕様 18.6）: `push` / `replace` / `refresh` / `back` / `forward` / `prefetch`、`pathname` / `searchParams`。Next.js の `useRouter` と同じインスタンス（`window.next.router`）を呼び、新しい状態がコミットされるまで待つ（Next.js がコミットのたびに書く `history` の pushState / replaceState で分かる。`prefetch` は fetch が終わるまで）
+  - Link のクリック、`useRouter()`、Layout / Template、loading.tsx、Parallel / Intercepting Routes、Suspense を伴う遷移は Next.js 本体のクライアントルーターがそのまま動く
   - `location` / `history` は DOM アダプターの自前の実装（turbo-dom のものは固定）。ページの再読み込み（`location.assign` など）は Fail Closed
 - `renderRSC(element)`: RSC Mode。Flight を往復させた React ツリーを返す（シェルが揃った時点。待っている Suspense は fallback）
   - クエリ（毎回いまの状態を読む）: `getByText` / `queryByText` / `getAllByText` / `queryAllByText`、`findByText` / `findAllByText`（届くまで待つ）、`waitForComplete()`、`getClientReference` / `getAllClientReferences`（export 名か、import した Client Component で探す）、`text()`、`root`
@@ -67,8 +69,8 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
   - アプリのソースは SSR 層・ブラウザ層でも Next.js の SWC で変換する（`typeof window` の置き換えなど）
   - SSR 層に入れる Client Component: Next.js 本体のものは rsc 層のビルドで、アプリのものは全ソースの `"use client"` を調べて集める
   - アプリから使う Next.js 本体のモジュールは固定の一覧（`private-next-rsc-*` などのエイリアスと App Router の公開の入口）。一覧にない `next/*` はネイティブで読まれて define が効かない
-- manifest: `next start` が読む `.next` の最小構成を一時ディレクトリに書く（routes-manifest は `loadCustomRoutes` + `generateRoutesManifest`、Proxy は `server/middleware.js` と functions-config-manifest の matcher、Server Actions は SWC の変換結果から server-reference-manifest）
-- リクエスト: router-server の `initialize`（設定は `__NEXT_PRIVATE_STANDALONE_CONFIG` で渡す）の `requestHandler` をモックの req/res で呼ぶ。サーバーのエラーは `next start` と同じくログに出る
+- manifest: `next start` が読む `.next` の最小構成を一時ディレクトリに書く（routes-manifest は `loadCustomRoutes` + Intercepting Routes の rewrite（`generateInterceptionRoutesRewrites`）+ `generateRoutesManifest`、Proxy は `server/middleware.js` と functions-config-manifest の matcher、Server Actions は SWC の変換結果から server-reference-manifest）
+- リクエスト: 本文はストリームで返す（ステータスとヘッダーは最初の書き込みの時点）。router-server の `initialize`（設定は `__NEXT_PRIVATE_STANDALONE_CONFIG` で渡す）の `requestHandler` をモックの req/res で呼ぶ。サーバーのエラーは `next start` と同じくログに出る
 - 生成物は `/tmp/proofyard-next-<pid>` に置き、全テストの後（プリロードの `afterAll`）に消す。途中で終わったものは次の起動時に消す
 - キャッシュ: グローバルな `beforeEach` で、`"use cache"` のハンドラーとタグの記録をテストごとに空にする
 - 対象アプリは環境変数 `PROOFYARD_NEXT_APP` で指定する（未指定なら PoC 5 のフィクスチャ）
@@ -91,7 +93,8 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - ビルド時のプリレンダリング、PPR の静的シェル: 再現していない（毎回リクエスト時に描画）
 - `instrumentation.*`、`instrumentation-client.*`、`src/` ディレクトリ、Pages Router: 未対応（instrumentation は Fail Closed）
 - `"use cache: private"` / `"use cache: remote"`、tsconfig の `paths`、metadata: 未検証
-- `renderRoute` は HTML を最後まで待ってから入れる（ストリーミングの途中の状態は見られない。仕様 6.3/6.4）
+- `renderRoute` の最初の表示は HTML を最後まで待ってから入れる（最初の HTML のストリーミングの途中の状態は見られない。仕様 6.3/6.4）。遷移の RSC はストリームで届く
+- ブラウザ層は `__NEXT_TEST_MODE` を有効にしている（ハイドレーションの完了の通知のため）。そのため先読みのリクエストに `next-test-fetch-priority` ヘッダーが付く
 
 ## 次のタスク
 
@@ -100,7 +103,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - **土台は Next.js モード**（Next.js 内蔵の React と本体の部品。アプリのコードはネイティブで読み込み、`mock.module` も効く）
 - Phase 1 は完了（起動時のビルドは 1〜2 秒。実行をまたいだキャッシュは Phase 8 で）
 - Phase 3 は完了: Server Actions（`useActionState`、`useFormStatus`、`useOptimistic`、`.bind()`、クロージャ、シリアライズ、例外、RSC Refresh）。`useActionState` などの Next.js のルーター経由の動き（redirect、revalidatePath で画面を更新）はルートの描画（Phase 4/5）で
-- Phase 4 を進行中: `renderRoute`（ハイドレーション、Error Boundary、notFound、redirect）、Route Handler、Proxy、next.config の redirects / rewrites / headers は完了。次は Phase 5（クライアントの画面遷移、`router.push`、Link の prefetch）
+- Phase 4 を進行中: `renderRoute`（ハイドレーション、Error Boundary、notFound、redirect）、Route Handler、Proxy、next.config の redirects / rewrites / headers は完了。Phase 5 の残り: Router Cache の検証（staleTimes）、スクロール、`useSelectedLayoutSegment(s)`、`useParams` / `useSearchParams` のテスト、最初の HTML のストリーミング
 - Phase 2 は完了: `render()`（SSR / Client / Hydration、Context、イベント、Portal、Client Mode の Suspense（Server のデータ待ち、`use()`））。フォームと `useActionState` などは Server Actions と一緒に Phase 3
 - 注意: DOM を入れた後は、ネイティブで読むサードパーティのライブラリ（SSR 層・rsc 層）にも `window` が見える（Next.js の SWC で変換するアプリのコードは置き換え済み）
 - DOM アダプター（`src/dom/environment.ts`）: turbo-dom が上書きする Bun 本来のグローバルのうち、DOM に固有でないもの（タイマー、`queueMicrotask`、`fetch`、`URL`、`performance`、`atob`/`btoa` など）は Bun のままにする（サーバー側のコードも使う。turbo-dom 0.5.6 の `btoa` はバイナリで無限ループした）。`installDom` は 1 プロセスに 1 回（入れ直すと user-event が古い document を使い続ける）

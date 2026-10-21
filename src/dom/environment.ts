@@ -168,7 +168,12 @@ function move(url: string | URL | null | undefined, state: unknown, push: boolea
   if (push) entries.splice(++index, Infinity, { url: next, state: structuredClone(state) });
   else entries[index] = { url: next, state: structuredClone(state) };
   current = next;
+  for (const resolve of historyWaiters.splice(0)) resolve();
 }
+
+// 次の pushState / replaceState を待つ。Next.js のルーターは状態をコミットするたびに書く（app-router.tsx の HistoryUpdater）
+const historyWaiters: (() => void)[] = [];
+export const nextHistoryWrite = () => new Promise<void>((resolve) => historyWaiters.push(resolve));
 
 const history = {
   get length() {
