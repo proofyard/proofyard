@@ -74,3 +74,22 @@ test("createTestContext: テストが変われば分離される", async () => {
 test("createTestContext: \"isolated\" 以外のキャッシュは未対応（Fail Closed）", () => {
   expect(() => createTestContext({ cache: "shared" as "isolated" })).toThrow('Unsupported: createTestContext({ cache: "shared" })');
 });
+
+test("\"use cache: private\" は静的シェルに入らず、\"use cache: remote\" は入る（next build の private.html と同じ）", async () => {
+  const result = await prerenderRoute("/private");
+  expect(result.shell).toContain("<main><h1>Private</h1><p>Count: <!-- -->7</p><!--$?--><template id=\"B:0\"></template><p>Loading greeting</p><!--/$--></main>");
+  expect(result.postponed).toBe(true);
+});
+
+test("\"use cache: private\" はリクエストの cookies() を読み、\"use cache: remote\" はリクエストをまたいで再利用する", async () => {
+  const ctx = createTestContext();
+  const remote = stats.remoteCalls;
+  const before = stats.privateCalls;
+  const ann = await (await ctx.requestRoute("/private", { cookies: { name: "Ann" } })).text();
+  const bob = await (await ctx.requestRoute("/private", { cookies: { name: "Bob" } })).text();
+  expect(ann).toContain("Hello, Ann");
+  expect(bob).toContain("Hello, Bob");
+  expect(stats.remoteCalls - remote).toBe(1);
+  // private はリクエストをまたいで共有しない
+  expect(stats.privateCalls - before).toBe(2);
+});
