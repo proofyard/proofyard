@@ -131,6 +131,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - テストの期限: Next.js モードのテストは `--timeout 20000`（マシンの負荷が高いと最初のリクエストなどが 5 秒を超える）。ブラウザ層のビルドはプリロードで待つ
 - 速度（Phase 8）: `bun run bench:api` で 1 テストあたりの時間（後片付けを含む中央値）。2026-10 の測定（2 コアで他のビルドが動いている負荷の高い状態。値は大きく揺れる）: `requestRoute` 約 24ms、`renderRoute` ssr 約 80ms、client 約 200ms、client + 入力 + Server Action 約 1s。起動（プリロード）は数秒で、大半は next-app-loader（エントリの生成）と層のビルド。next-app-loader は webpack と同じく `_compilation` を共有してディレクトリの中身をキャッシュする（共有しないと 30 ルートで約 4 秒余計にかかっていた）。実行をまたいだビルドのキャッシュは見送り（ビルドの副作用（Client Reference の記録など）も保存が要り、解決できなかった依存がインストールで解決できるようになる変化は入力のハッシュでは分からない。正確性を優先）
 - 並列（仕様 20.4）: `bun test --parallel`（プロセスを分ける）は動く。`--parallel` の既定（`--isolate`）はファイルごとにプリロードをやり直すので遅い。`--no-isolate` ならワーカーごとに 1 回（ファイルどうしでモジュールを共有する）。生成物（`/tmp/proofyard-next-<pid>`）はテストの後に消さず、次の実行の起動時に、終わったプロセスのものを消す（`afterAll` で消すと、`--no-isolate` では `afterAll` がファイルごとに動いて次のファイルが失敗し、`--watch` では読み込んだファイルの変更として再実行が止まらなかった。bun test は exit のイベントを出さない）。`bun test --watch` は変更なしで 1 回だけ動くことを確かめた（ファイルを変えたときの再実行はまだ確かめていない）。同じプロセスで同時に動くテスト（`test.concurrent` / `--concurrent`）は、DOM とキャッシュの分離ができないので `beforeEach` で Fail Closed（`afterEach` は `beforeEach` が失敗しても動くので数は合う）
+- メモリ（Phase 8）: `renderRoute` の Client Mode はテストごとに Next.js のクライアントのバンドルを読み込み直す（`?route=N`。ページの読み込みと同じく状態を分ける）。後片付けで、ページの読み込みから付いた window / document のイベントリスナーと `setInterval` を外し、バンドルを `require.cache` から消す（ブラウザでページを離れたときと同じ）。両方そろって初めて解放される（以前は 1 テストあたり約 2.6MB 増え、60 テストでヒープが 45MB → 203MB。いまは 43MB → 51MB）
 
 ## 守ること（仕様27章の要約）
 
