@@ -257,7 +257,7 @@ export async function renderRoute(url: string, { mode = "client", streaming = fa
     const hydrated = new Promise<void>((resolve) => ((globalThis as any).__NEXT_HYDRATED_CB = resolve));
     // Next.js のクライアントは読み込み中の <script>（document.currentScript）から assetPrefix を求める（client/asset-prefix.ts）
     const main = document.querySelector('script[src^="/_next/static/chunks/main-app"]');
-    if (!main) throw new Error("[proofyard] the HTML has no Next.js client script (main-app)");
+    if (!main) throw new Error(`[proofyard] the HTML (status ${response.status}) has no Next.js client script (main-app)`);
     Object.defineProperty(document, "currentScript", { configurable: true, get: () => main });
     try {
       await import(`${await h.routeBundle()}?route=${bundles++}`);

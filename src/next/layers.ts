@@ -9,6 +9,7 @@
 import { readFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
+import { STYLE_FILE } from "./css";
 
 const VENDORED = "next/dist/server/route-modules/app-page/vendored";
 const reactAliases = (layer: "rsc" | "ssr") => ({
@@ -145,6 +146,8 @@ export type LayerOptions = {
   redirect?: (resolved: string) => string | undefined;
   // 層のエイリアスの上書き（BUNDLED_ALIASES に足す。値が undefined なら外す）
   aliases?: Record<string, string | undefined>;
+  // CSS の import（src/next/css.ts）
+  style?: (path: string) => Promise<{ loader: "js"; contents: string }>;
   // false なら 1 つのファイルにまとめる（クエリ付きの import で評価し直すと、モジュールの状態ごと新しくなる）
   splitting?: boolean;
 };
@@ -152,7 +155,7 @@ export type LayerOptions = {
 let builds = 0;
 export type Layer = "rsc" | "ssr" | "browser";
 
-export async function buildLayer(layer: Layer, entries: string[], { define, generatedDir, transform, nativeDir, redirect, aliases: override, splitting = true }: LayerOptions) {
+export async function buildLayer(layer: Layer, entries: string[], { define, generatedDir, transform, nativeDir, redirect, aliases: override, style, splitting = true }: LayerOptions) {
   const aliases: Record<string, string> = ALIASES[layer];
   const bundledAliases = Object.fromEntries(
     Object.entries({ ...BUNDLED_ALIASES[layer], ...override }).filter((e): e is [string, string] => e[1] !== undefined),
@@ -196,6 +199,7 @@ export async function buildLayer(layer: Layer, entries: string[], { define, gene
             if (redirected) return { path: redirected };
             if (generated) return { path: resolved };
           });
+          if (style) build.onLoad({ filter: STYLE_FILE }, (args) => style(args.path));
           if (layer === "rsc") {
             // node_modules の JS とアプリのソース（"use client" は Client Reference に、それ以外のアプリのソースは SWC に）
             build.onLoad({ filter: /\.(?:[cm]?js|jsx|tsx?)$/ }, async (args) => {

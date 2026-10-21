@@ -115,3 +115,20 @@ test("next/image の画像の最適化（/_next/image）", async () => {
   expect(res.status).toBe(200);
   expect(res.headers.get("content-type")).toBe("image/webp");
 });
+
+test("CSS: CSS Modules のクラス名は next build と同じ（Server / Client Component）。普通の CSS は読み込むだけ", async () => {
+  const html = await (await requestRoute("/styled")).text();
+  expect(html).toContain('<h1 class="page_title__NlRtp">');
+  const app = await renderRoute("/styled");
+  expect(app.getByRole("heading").className).toBe("page_title__NlRtp");
+  expect(app.getByRole("button", { name: "Styled" }).className).toBe("styled-button_button__wkz7j");
+  expect(app.errors).toEqual([]);
+});
+
+test("next/font/local: クラス名とフォント名は Next.js のローダーが作る", async () => {
+  const app = await renderRoute("/fonts");
+  const text = app.getByText("Branded");
+  expect(text.className).toMatch(/^__className_[0-9a-f]{6} __variable_[0-9a-f]{6}$/);
+  expect(text.dataset.family).toBe("'brand'");
+  expect(app.errors).toEqual([]);
+});
