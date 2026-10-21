@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。135 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。136 件）
 
 ## 決めたこと
 
@@ -130,6 +130,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - 後片付け（プリロードの `afterEach`）: フォーカスを外してから React のルートを外し、body を空にする（turbo-dom は取り除いた要素を activeElement に残す）
 - テストの期限: Next.js モードのテストは `--timeout 20000`（マシンの負荷が高いと最初のリクエストなどが 5 秒を超える）。ブラウザ層のビルドはプリロードで待つ
 - 速度（Phase 8）: `bun run bench:api` で 1 テストあたりの時間（後片付けを含む中央値）。2026-10 の測定（2 コアで他のビルドが動いている負荷の高い状態。値は大きく揺れる）: `requestRoute` 約 24ms、`renderRoute` ssr 約 80ms、client 約 200ms、client + 入力 + Server Action 約 1s。起動（プリロード）は数秒で、大半は next-app-loader（エントリの生成）と層のビルド。next-app-loader は webpack と同じく `_compilation` を共有してディレクトリの中身をキャッシュする（共有しないと 30 ルートで約 4 秒余計にかかっていた）。実行をまたいだビルドのキャッシュはまだ（入力のすべてで無効化を決める必要がある）
+- 並列（仕様 20.4）: `bun test --parallel`（プロセスを分ける）は動く。`--parallel` の既定（`--isolate`）はファイルごとにプリロードをやり直すので遅い。`--no-isolate` ならワーカーごとに 1 回（ファイルどうしでモジュールを共有する）。ワーカー（`BUN_TEST_WORKER_ID`）では `afterAll` で生成物を消さない（`--no-isolate` では `afterAll` がファイルごとに動く。bun test は exit のイベントを出さないので、次の実行の起動時に消す）。同じプロセスで同時に動くテスト（`test.concurrent` / `--concurrent`）は、DOM とキャッシュの分離ができないので `beforeEach` で Fail Closed（`afterEach` は `beforeEach` が失敗しても動くので数は合う）
 
 ## 守ること（仕様27章の要約）
 

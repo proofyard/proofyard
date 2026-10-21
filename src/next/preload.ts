@@ -800,11 +800,20 @@ async function flushAfter() {
   while (pendingAfter.size > 0) await Promise.all(pendingAfter);
 }
 const { afterAll, afterEach, beforeEach } = await import("bun:test");
-// 生成物（エントリ、層のビルド、.next）は全テストの後に消す（layers.ts の出力もこの下）。bun test は process の exit を出さない
-afterAll(() => rmSync(work, { recursive: true, force: true }));
-beforeEach(resetCache);
+// 生成物（エントリ、層のビルド、.next）は全テストの後に消す（layers.ts の出力もこの下）。bun test は process の exit を出さない。
+// --parallel のワーカー（--no-isolate なら 1 つのプリロードで複数のファイル。afterAll はファイルごと）では消さず、次の実行の起動時に消す（上）
+if (!process.env.BUN_TEST_WORKER_ID) afterAll(() => rmSync(work, { recursive: true, force: true }));
+// 同じプロセスで同時に動くテスト（test.concurrent / --concurrent）は、DOM とキャッシュの分離（仕様 20.4）ができないので Fail Closed。
+// 並列にするならプロセスを分ける（--parallel）
+let runningTests = 0;
+beforeEach(() => {
+  if (runningTests++ > 0)
+    throw new Error("[proofyard] Unsupported: concurrent tests in one process (test.concurrent / --concurrent) share the DOM and the app cache. Use --parallel");
+  resetCache();
+});
 // テストごとに DOM を分離する（仕様 19 章）。render() の React のルートを外し（src/testing/render.ts）、body を空にする
 afterEach(() => {
+  runningTests--;
   // 先にフォーカスを外す（turbo-dom は取り除いた要素を activeElement に残す。ブラウザなら body に戻る）
   if (typeof document !== "undefined") (document.activeElement as HTMLElement | null)?.blur?.();
   (globalThis as any)[Symbol.for("proofyard.cleanup")]?.();
