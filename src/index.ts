@@ -1,7 +1,7 @@
 // Proofyard の公開 API
-import type { NextHarness, RequestRouteOptions } from "./next/preload";
+import type { NextHarness, PrerenderRouteResult, RequestRouteOptions } from "./next/preload";
 
-export type { RequestRouteOptions };
+export type { PrerenderRouteResult, RequestRouteOptions };
 
 function harness(): NextHarness {
   const h = (globalThis as any)[Symbol.for("proofyard.next")] as NextHarness | undefined;
@@ -11,6 +11,9 @@ function harness(): NextHarness {
 
 // URL へのリクエストを Next.js 本体のリクエスト処理に通し、HTTP の応答を返す（仕様 18.1 requestRoute）
 export const requestRoute = (url: string, options?: RequestRouteOptions): Promise<Response> => harness().requestRoute(url, options);
+
+// next build と同じ prerender で、Partial Prerendering の静的シェルを作る（仕様 12 章。cacheComponents が必要）
+export const prerenderRoute = (url: string): Promise<PrerenderRouteResult> => harness().prerenderRoute(url);
 
 // このテストで無効化されたキャッシュタグ（revalidateTag / updateTag / revalidatePath）
 export const getInvalidatedTags = (): string[] => harness().invalidatedTags();
