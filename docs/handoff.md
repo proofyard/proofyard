@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0（PoC 1〜6）が完了し、Phase 1 を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit` と PoC 1〜6。63 件）
+- テスト: `bun run test`（`tests/unit` と PoC 1〜6。73 件）
 
 ## 決めたこと
 
@@ -37,6 +37,11 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
   - ssr: Flight → SSR 層の React（`react-dom/static` の prerender）→ HTML → turbo-dom
   - client: Flight → ブラウザ層の React（`createRoot`、非同期の act）。`hydrate: true` は同じ Flight を SSR とブラウザに流して `hydrateRoot`
   - DOM（turbo-dom）は最初の `render()` で入れる（プリロードでは入れない）。後片付けはプリロードの `afterEach`
+- Server Actions（Client Mode の `render()`）: Client Component から呼ぶと、引数を `encodeReply` → サーバーで `decodeReply` → 実行 → 戻り値と描画し直した Server Components を Flight で返して画面を更新する（RSC Refresh）。`result.actions.getCalls(nameOrAction)` で呼び出しを検査
+  - Action の id → 関数は、SWC の変換結果が呼ぶ `registerServerReference` を記録して引く（`src/testing/actions.ts`）
+  - Client Component から import した `"use server"` は、Next.js のルーターの `callServer`（`next/dist/client/app-call-server`）の代わりに `render()` のものを使う（`src/client/app-call-server.ts`。ルートの描画では本物のルーターを使う予定）
+  - クロージャの値の暗号化の鍵は、プリロードで Next.js の manifests singleton に入れる
+  - redirect() はルーターがないので Fail Closed
 - `getInvalidatedTags()`: このテストで無効化されたキャッシュタグ
 - 使い方: `bun test --preload proofyard/preload`（対象アプリは `PROOFYARD_NEXT_APP`、既定はカレントディレクトリ）
 
@@ -54,7 +59,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
   - ブラウザ層（Client Mode）: Next.js のブラウザ用 React（`next/dist/compiled/react`）と Testing Library（`/pure`）を一緒にバンドルする（`src/client/runtime.ts`）。最初の `render()` でビルドし、Client Component は Flight で参照されたときに評価する
     - React は**開発版**（`act` は開発版にしかない）。Next.js の他の define は本番のまま
     - Flight クライアントの `__webpack_require__` / `__next_require__` は define で別の関数に向ける（SSR と混ざらないように）
-    - 本番の Flight サーバー + 開発版の Flight クライアントでは、サーバーで作られた要素の子の配列すべてに key の警告が出る（検証済みの情報は開発版のサーバーしか送らない）。その形の警告（"Check the top-level render call"）だけ捨てている
+    - Flight クライアントは本番版（Flight を作るサーバーと揃える）。開発版のクライアントは開発版のサーバーだけが送る情報（key の検証済みの印、エラーのスタック）を前提にしていて、偽の key の警告やエラーの復元の失敗が起きた
   - アプリのソースは SSR 層・ブラウザ層でも Next.js の SWC で変換する（`typeof window` の置き換えなど）
   - SSR 層に入れる Client Component: Next.js 本体のものは rsc 層のビルドで、アプリのものは全ソースの `"use client"` を調べて集める
   - アプリから使う Next.js 本体のモジュールは固定の一覧（`private-next-rsc-*` などのエイリアスと App Router の公開の入口）。一覧にない `next/*` はネイティブで読まれて define が効かない
@@ -88,8 +93,12 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 
 - **土台は Next.js モード**（Next.js 内蔵の React と本体の部品。アプリのコードはネイティブで読み込み、`mock.module` も効く）
 - Phase 1 は完了（起動時のビルドは 1〜2 秒。実行をまたいだキャッシュは Phase 8 で）
+- Phase 3 は完了: Server Actions（`useActionState`、`useFormStatus`、`useOptimistic`、`.bind()`、クロージャ、シリアライズ、例外、RSC Refresh）。`useActionState` などの Next.js のルーター経由の動き（redirect、revalidatePath で画面を更新）はルートの描画（Phase 4/5）で
 - Phase 2 は完了: `render()`（SSR / Client / Hydration、Context、イベント、Portal、Client Mode の Suspense（Server のデータ待ち、`use()`））。フォームと `useActionState` などは Server Actions と一緒に Phase 3
 - 注意: DOM を入れた後は、ネイティブで読むサードパーティのライブラリ（SSR 層・rsc 層）にも `window` が見える（Next.js の SWC で変換するアプリのコードは置き換え済み）
+- DOM アダプター（`src/dom/environment.ts`）: turbo-dom が上書きする Bun 本来のグローバルのうち、DOM に固有でないもの（タイマー、`queueMicrotask`、`fetch`、`URL`、`performance`、`atob`/`btoa` など）は Bun のままにする（サーバー側のコードも使う。turbo-dom 0.5.6 の `btoa` はバイナリで無限ループした）。`installDom` は 1 プロセスに 1 回（入れ直すと user-event が古い document を使い続ける）
+- 後片付け（プリロードの `afterEach`）: フォーカスを外してから React のルートを外し、body を空にする（turbo-dom は取り除いた要素を activeElement に残す）
+- テストの期限: Next.js モードのテストは `--timeout 20000`（マシンの負荷が高いと最初のリクエストなどが 5 秒を超える）。ブラウザ層のビルドはプリロードで待つ
 
 ## 守ること（仕様27章の要約）
 

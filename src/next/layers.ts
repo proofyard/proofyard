@@ -79,7 +79,9 @@ export const BUNDLED_ALIASES = {
     "react-dom/client": "next/dist/compiled/react-dom/client",
     "react-dom/server": "next/dist/compiled/react-dom/server.browser",
     "react-dom/test-utils": join(import.meta.dir, "../client/react-dom-test-utils.ts"),
-    "react-server-dom-webpack/client": "next/dist/compiled/react-server-dom-webpack/client.browser",
+    // Flight クライアントは、Flight を作るサーバー（本番版）と揃えて本番版にする（React 本体は act のために開発版。src/next/preload.ts）。
+    // 開発版のクライアントは開発版のサーバーだけが送る情報（key の検証済みの印、エラーのスタック）を前提にしていて、本番版のサーバーとは組み合わせられない
+    "react-server-dom-webpack/client": "next/dist/compiled/react-server-dom-webpack/cjs/react-server-dom-webpack-client.browser.production.js",
     scheduler: "next/dist/compiled/scheduler",
     "server-only": "next/dist/compiled/server-only/error",
     "client-only": "next/dist/compiled/client-only/index",
@@ -87,6 +89,9 @@ export const BUNDLED_ALIASES = {
     "next/head": "next/dist/client/components/noop-head",
     "next/dynamic": "next/dist/api/app-dynamic",
     "next/form": "next/dist/client/app-dir/form",
+    // SWC が Client Component から import した "use server" を変換したもの
+    "private-next-rsc-action-client-wrapper": "next/dist/build/webpack/loaders/next-flight-loader/action-client-wrapper",
+    "next/dist/client/app-call-server": join(import.meta.dir, "../client/app-call-server.ts"),
   },
 } as const;
 

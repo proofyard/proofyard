@@ -58,8 +58,36 @@ class ProofyardFormData extends NativeFormData {
   }
 }
 
+// 1 プロセスに 1 つだけ入れる。2 回目以降は入れ直さない（document を差し替えると、先に読み込んだライブラリ
+// （user-event は読み込み時の document を既定にする）と食い違う）
+let installed: ReturnType<typeof installGlobals> | undefined;
+// turbo-dom が上書きする Bun 本来のグローバルのうち、DOM に固有でないものは Bun のままにする。
+// 同じプロセスで動くサーバー側のコード（Next.js、React の Flight）も使うので、ブラウザ用の実装に差し替えると壊れる
+// （例: turbo-dom 0.5.6 の btoa はバイナリの文字列で無限ループする。Server Action のクロージャの暗号化が止まった）
+const KEEP_NATIVE = [
+  "atob",
+  "btoa",
+  "setTimeout",
+  "clearTimeout",
+  "setInterval",
+  "clearInterval",
+  "queueMicrotask",
+  "structuredClone",
+  "reportError",
+  "fetch",
+  "URL",
+  "performance",
+  "MessageChannel",
+  "MessagePort",
+  "Worker",
+  "File",
+] as const;
+
 export function installDom(html = "<!doctype html><html><head></head><body></body></html>") {
-  const dom = installGlobals(globalThis, { html });
+  if (installed) return installed;
+  const native = Object.fromEntries(KEEP_NATIVE.map((name) => [name, (globalThis as any)[name]]));
+  installed = installGlobals(globalThis, { html });
+  for (const name of KEEP_NATIVE) if (native[name] !== undefined) (globalThis as any)[name] = native[name];
   globalThis.FormData = ProofyardFormData as typeof FormData;
-  return dom;
+  return installed;
 }

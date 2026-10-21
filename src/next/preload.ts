@@ -9,6 +9,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
+import { actionModule, serverActions } from "../testing/actions";
 import { ALIASES, BUNDLED_ALIASES, USE_CLIENT, buildLayer, clientIds, clientReferenceStub, esmClientIds } from "./layers";
 
 // 対象アプリ（next.config と app/ のあるディレクトリ）。既定は bun test を実行したディレクトリ
@@ -168,8 +169,10 @@ for (const name of APP_ROUTER_ENTRIES) {
   }
 }
 // 入口は名前空間を default で渡す小さな ESM（入口を直接使うと、CJS → ESM 変換や export * の再エクスポートで export を取りこぼす）
+// プリロード自身が使う Next.js 本体のモジュール（バンドルの中のものを使う。ネイティブで読むと別の複製になる）
+const MANIFESTS_SINGLETON = Bun.resolveSync("next/dist/server/app-render/manifests-singleton", process.cwd());
 const facadeEntries = new Map<string, string>(); // ファイル → 入口
-for (const file of new Set(nextFacades.values())) {
+for (const file of new Set([...nextFacades.values(), MANIFESTS_SINGLETON])) {
   const entry = join(generatedDir, `facade-${facadeEntries.size}.mjs`);
   write(entry, `import * as m from ${JSON.stringify(file)};\nexport default m;\n`);
   facadeEntries.set(file, entry);
@@ -215,7 +218,16 @@ Bun.plugin({
       build.module(spec, () => {
         const m = require(rsc.get(facadeEntries.get(file)!)!).default;
         const cjs = m.default !== null && typeof m.default === "object" ? m.default : {};
-        return { exports: { ...cjs, ...m }, loader: "object" };
+        const exports = { ...cjs, ...m };
+        // SWC の "use server" の変換結果が呼ぶ。Action の id → 関数を記録する（src/testing/actions.ts）
+        if (spec === "private-next-rsc-server-reference") {
+          const register = exports.registerServerReference;
+          exports.registerServerReference = (action: Function, id: string, exportName: string | null) => {
+            serverActions.set(id, action);
+            return register(action, id, exportName);
+          };
+        }
+        return { exports, loader: "object" };
       });
     build.onLoad({ filter: new RegExp(`^${escape(projectDir)}/(?!.*/node_modules/).*\\.[jt]sx?$`) }, (args) => {
       const source = readFileSync(args.path, "utf8");
@@ -225,6 +237,7 @@ Bun.plugin({
   },
 });
 console.log(`[proofyard] rsc+ssr layers: ${(performance.now() - t).toFixed(0)}ms, client references: ${clientIds.size}`);
+t = performance.now();
 
 // SSR 層の Client Component（webpack の require と同じく CJS は module.exports、ESM は名前空間）
 const ssrModules = new Map<string, unknown>();
@@ -234,6 +247,9 @@ for (const [id, out] of ssr) {
 }
 (globalThis as any).__proofyardNextRequire = (id: string) => {
   // renderRSC の Client Reference（実行しない代わりのモジュール。src/testing/render-rsc.ts）
+  // Server Action（decodeReply が引数の中の Server Reference を読むとき）
+  const action = actionModule(id);
+  if (action) return action;
   const placeholder = (globalThis as any)[Symbol.for("proofyard.clientReferencePlaceholder")]?.(id);
   if (placeholder) return placeholder;
   if (!ssrModules.has(id)) throw new Error(`[proofyard] unknown client module ${id}`);
@@ -285,6 +301,14 @@ for (const { page } of routes.values()) {
   );
 }
 
+// リクエストの外（renderRSC / render）で描画するときの manifest。リクエストの処理中は Next.js 自身が設定し直す。
+// クロージャの Server Action の値の暗号化（encryption.ts）がここから鍵を読む
+require(rsc.get(facadeEntries.get(MANIFESTS_SINGLETON)!)!).default.setManifestsSingleton({
+  page: "/_proofyard/page",
+  clientReferenceManifest,
+  serverActionsManifest: { node: {}, edge: {}, encryptionKey },
+});
+
 // URL → ルート（Next.js のルート並び順と正規表現で照合）
 const sorted: string[] = getSortedRoutes([...routes.keys()]);
 const matchers = sorted.map((pathname) => ({ pathname, re: getRouteRegex(pathname).re as RegExp }));
@@ -327,16 +351,22 @@ function resetCache() {
 const invalidatedTags = (): string[] => [...tagsManifest.keys()];
 const { afterEach, beforeEach } = await import("bun:test");
 beforeEach(resetCache);
-// render() が作った DOM と React のルートを片付ける（src/testing/render.ts）
-afterEach(() => (globalThis as any)[Symbol.for("proofyard.cleanup")]?.());
+// テストごとに DOM を分離する（仕様 19 章）。render() の React のルートを外し（src/testing/render.ts）、body を空にする
+afterEach(() => {
+  // 先にフォーカスを外す（turbo-dom は取り除いた要素を activeElement に残す。ブラウザなら body に戻る）
+  if (typeof document !== "undefined") (document.activeElement as HTMLElement | null)?.blur?.();
+  (globalThis as any)[Symbol.for("proofyard.cleanup")]?.();
+  if (typeof document !== "undefined") document.body.innerHTML = "";
+});
 
 // ブラウザ層（Client Mode）。使うときに初めてビルドする
 // - Next.js のブラウザ向けの define（getDefineEnv の isClient）
 // - Flight クライアントのモジュール読み込み（globalThis.__next_require__）を SSR と分ける
 const BROWSER_RUNTIME = join(import.meta.dir, "../client/runtime.ts");
-let browser: Promise<typeof import("../client/runtime")> | undefined;
-const loadBrowser = () =>
-  (browser ??= (async () => {
+// ビルドはプリロードで済ませる。読み込み（評価）は最初の render() で DOM を入れた後（react-dom は読み込み時に window を見る）
+let browserBuild: ReturnType<typeof buildLayer> | undefined;
+const buildBrowser = () =>
+  (browserBuild ??= (async () => {
     const clientDefine: Record<string, unknown> = getDefineEnv({
       isTurbopack: false,
       config,
@@ -351,7 +381,7 @@ const loadBrowser = () =>
       middlewareMatchers: undefined,
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
     });
-    const outputs = await buildLayer("browser", [...clientIds, BROWSER_RUNTIME], {
+    return buildLayer("browser", [...clientIds, BROWSER_RUNTIME], {
       transform: swcTransformFor("browser"),
       define: {
         ...Object.fromEntries(Object.entries(clientDefine).map(([k, v]) => [k, typeof v === "string" ? v : String(v)])),
@@ -364,6 +394,11 @@ const loadBrowser = () =>
         "globalThis.__next_require__": "globalThis.__proofyardBrowserRequire",
       },
     });
+  })());
+let browser: Promise<typeof import("../client/runtime")> | undefined;
+const loadBrowser = () =>
+  (browser ??= (async () => {
+    const outputs = await buildBrowser();
     const modules = new Map<string, unknown>();
     // バンドルのモジュールを評価する前に用意する（Flight クライアントが読み込み時に __webpack_require__.u を書き換える）
     // モジュールは Flight で参照されたときに初めて評価する（webpack と同じ。App Router の内部のもの（layout-router など）は
@@ -389,6 +424,9 @@ const ssrRuntime = (): typeof import("./ssr-runtime") => ssrModules.get(SSR_RUNT
 // SSR 層の Flight デコードの moduleMap（Client Reference の id → SSR 層のモジュール）
 const ssrModuleMap = () => Object.fromEntries([...clientIds].map((id) => [id, { "*": { id, name: "*", chunks: [], async: false } }]));
 
+// テストが始まる前にビルドを終える（最初の render() のテストがビルドの時間でタイムアウトしないように）
+await buildBrowser();
+console.log(`[proofyard] browser layer: ${(performance.now() - t).toFixed(0)}ms`);
 (globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, invalidatedTags, loadBrowser, ssrRuntime, ssrModuleMap } satisfies NextHarness;
 export type NextHarness = {
   requestRoute: typeof requestRoute;
