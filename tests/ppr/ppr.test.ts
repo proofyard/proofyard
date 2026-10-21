@@ -34,8 +34,14 @@ test("Suspense の外の cookies() は next build と同じエラー", async () 
   expect(String(error)).toContain('Route "/blocking": Next.js encountered uncached or runtime data during prerendering');
 });
 
-test("動的なルート（generateStaticParams とフォールバックのシェル）は未対応（Fail Closed）", async () => {
-  await expect(prerenderRoute("/products/1")).rejects.toThrow("Unsupported: prerenderRoute for dynamic routes (/products/[id])");
+test("動的なルート: ルートのパスならフォールバックのシェル（params を使うところは fallback のまま。next build の [id].html と同じ）", async () => {
+  const result = await prerenderRoute("/products/[id]");
+  expect(result.shell).toContain("<main><h1>Product page</h1><!--$?--><template id=\"B:0\"></template><p>Loading product</p><!--/$--></main>");
+  expect(result.postponed).toBe(true);
+});
+
+test("動的なルートの具体的な URL（generateStaticParams で決まる）は未対応（Fail Closed）", async () => {
+  await expect(prerenderRoute("/products/1")).rejects.toThrow("Unsupported: prerenderRoute for a concrete URL of a dynamic route (/products/[id])");
 });
 
 test("createTestContext: 同じテストの中では \"use cache\" の結果を再利用する（仕様 11.5）", async () => {

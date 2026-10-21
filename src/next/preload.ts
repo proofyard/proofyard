@@ -635,12 +635,15 @@ const { format } = require("node:util");
 async function prerenderRoute(url: string): Promise<PrerenderRouteResult> {
   if (!config.cacheComponents) throw new Error("[proofyard] Unsupported: prerenderRoute requires cacheComponents (Partial Prerendering)");
   const target = new URL(url, "http://localhost");
-  // 動的なルートは、next build では generateStaticParams とフォールバックのシェルで決まる（まだ扱わない）
+  // 動的なルートは、ルートのパス（/products/[id]）ならフォールバックのシェル（パラメーターを使うところは Suspense の fallback のまま）。
+  // Next.js の静的シェルのデバッグの fallback を使う（next build の [id].html と同じ）。
+  // 具体的な URL（/products/1）は generateStaticParams で決まる（まだ扱わない）
+  const fallback = routes.has(target.pathname) && isDynamicRoute(target.pathname);
   if (!routes.has(target.pathname))
     for (const path of routes.keys())
       if (isDynamicRoute(path) && getRouteRegex(path).re.test(target.pathname))
-        throw new Error(`[proofyard] Unsupported: prerenderRoute for dynamic routes (${path})`);
-  target.searchParams.set("__nextppronly", "1");
+        throw new Error(`[proofyard] Unsupported: prerenderRoute for a concrete URL of a dynamic route (${path}). Pass the route path for the fallback shell`);
+  target.searchParams.set("__nextppronly", fallback ? "fallback" : "1");
   // prerender の失敗（Suspense の外の動的なデータなど）は、Next.js がログに出す（next build と同じ文面）
   const logged: string[] = [];
   const consoleError = console.error;
