@@ -39,3 +39,24 @@ test('node_modules の CommonJS の "use client" は未対応。サーバーで�
   expect(output).toContain("1 pass");
   expect(await proc.exited).toBe(0);
 }, 60_000);
+
+test("同じプロセスで同時に動くテスト（test.concurrent）は、DOM とキャッシュを分けられないので Fail Closed", async () => {
+  const app = mkdtempSync(join(tmpdir(), "proofyard-concurrent-"));
+  mkdirSync(join(app, "app"));
+  writeFileSync(join(app, "app/layout.tsx"), `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`);
+  writeFileSync(join(app, "app/page.tsx"), `export default function P() { return <p>home</p>; }\n`);
+  writeFileSync(
+    join(app, "page.test.ts"),
+    `import { test } from "bun:test";\nfor (const name of ["a", "b"]) test.concurrent(name, () => Bun.sleep(50));\n`,
+  );
+  const proc = Bun.spawn(["bun", "test", "--preload", join(import.meta.dir, "../../../src/next/preload.ts"), join(app, "page.test.ts")], {
+    cwd: process.cwd(),
+    env: { ...process.env, PROOFYARD_NEXT_APP: app },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const output = (await new Response(proc.stdout).text()) + (await new Response(proc.stderr).text());
+  expect(output).toContain("Unsupported: concurrent tests in one process");
+  expect(output).toContain("1 fail");
+  expect(await proc.exited).toBe(1);
+}, 60_000);
