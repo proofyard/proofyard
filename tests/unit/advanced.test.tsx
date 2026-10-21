@@ -100,3 +100,18 @@ test("Concurrent Rendering: useDeferredValue と startTransition の中の route
   await app.findByRole("heading", { name: "Slow page" });
   expect(location.pathname).toBe("/slow");
 });
+
+test("環境変数（.env）、server-only、next/image", async () => {
+  const app = await renderRoute("/compat");
+  // サーバーは .env の値（テストでは Next.js と同じく .env.local を読まない）。NEXT_PUBLIC_* はブラウザのバンドルに埋め込まれる
+  expect(app.getByText(/Server secret/).textContent).toBe("Server secret: from-dotenv");
+  expect(app.getByText(/Client label/).textContent).toBe("Client label: Fixture site");
+  expect(app.getByRole("img", { name: "Logo" }).getAttribute("src")).toBe("/logo.svg");
+  expect(app.errors).toEqual([]);
+});
+
+test("next/image の画像の最適化（/_next/image）", async () => {
+  const res = await requestRoute("/_next/image?url=%2Fdot.png&w=32&q=75", { headers: { accept: "image/webp" } });
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toBe("image/webp");
+});
