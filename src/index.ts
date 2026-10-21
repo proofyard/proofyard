@@ -31,5 +31,21 @@ export type { RenderOptions, RenderResult } from "./testing/render";
 export type { ActionCall } from "./testing/actions";
 
 // ルートを HTML にし、Client Mode では Next.js 本体のクライアントでハイドレーションする（仕様 18.3 / 18.4）
-export { renderRoute } from "./testing/render-route";
+import { renderRoute } from "./testing/render-route";
+export { renderRoute };
 export type { RenderRouteOptions, RenderRouteResult, RouteMetadata, RouteRouter } from "./testing/render-route";
+
+// テストのコンテキスト（仕様 11.5 / 18.1。提案 API）。アプリのキャッシュ（Cache Components、タグ）は、作らなくてもテストごとに分離している。
+// これは同じテストの中の呼び出しをまとめるだけ（同じテストのコンテキストはキャッシュを共有する）
+export type TestContextOptions = { cache?: "isolated" };
+export function createTestContext(options: TestContextOptions = {}) {
+  if (options.cache !== undefined && options.cache !== "isolated")
+    throw new Error(`[proofyard] Unsupported: createTestContext({ cache: ${JSON.stringify(options.cache)} }). Only "isolated" (per test) is supported`);
+  return {
+    renderRoute,
+    requestRoute,
+    prerenderRoute,
+    flushAfter,
+    cache: { getInvalidatedTags },
+  };
+}

@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。129 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。132 件）
 
 ## 決めたこと
 
@@ -54,6 +54,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
   - クロージャの値の暗号化の鍵は、プリロードで Next.js の manifests singleton に入れる
   - redirect() はルーターがないので Fail Closed（`renderRoute` では動く）
 - `getInvalidatedTags()`: このテストで無効化されたキャッシュタグ
+- `createTestContext({ cache: "isolated" })`（仕様 11.5 の提案 API）: `renderRoute` / `requestRoute` / `prerenderRoute` / `flushAfter` / `cache.getInvalidatedTags()` をまとめるだけ。キャッシュは作らなくてもテストごとに分離していて、同じテストのコンテキストは共有する。`"isolated"` 以外は Fail Closed
 - `prerenderRoute(url)`（仕様 12 章、`cacheComponents` のとき）: ビルド時のプリレンダリングの静的シェル。`{ status, shell, postponed, dynamicBoundaries }`。Next.js 本体の静的シェルのデバッグ（`?__nextppronly=1`。`__NEXT_EXPERIMENTAL_STATIC_SHELL_DEBUGGING` は define で埋め込まれるので設定の読み込みの直後に立て、ルートの PPR は `experimentalTestProxy` で有効にする）で、`isBuildTimePrerendering` の描画をそのまま使う。`/dashboard`（`"use cache"`、`cookies()` / `connection()` の Suspense）のシェルの本文は本物の `next build`（webpack）の `.html` と同じだった。Suspense の外の `cookies()` は next build と同じエラーで reject。動的なルート（`generateStaticParams`、フォールバックのシェル）は Fail Closed
 - `renderRoute` の結果の `metadata`（仕様 16.1）: いまの `<head>` にある、Next.js が描画したもの（`title`、`description`、`get(name)`（`<meta name>` か `<meta property>`））。metadata を解決し直さない
 - React の作業が落ち着くまで待つ（`waitForComplete()`、ルーターの操作）: 進行中の fetch に加え、React のスケジューラーに残っているタスクがなくなるまで（`src/client/route-react-dom-client.ts` が react-dom より先に `unstable_scheduleCallback` を包んで数える）。これがないと、metadata の Suspense のハイドレーションの前に返り、すぐ遷移すると最初の HTML の `<title>` などが head に残った
@@ -121,7 +122,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - **土台は Next.js モード**（Next.js 内蔵の React と本体の部品。アプリのコードはネイティブで読み込み、`mock.module` も効く）
 - Phase 1 は完了（起動時のビルドは 1〜2 秒。実行をまたいだキャッシュは Phase 8 で）
 - Phase 3 は完了: Server Actions（`useActionState`、`useFormStatus`、`useOptimistic`、`.bind()`、クロージャ、シリアライズ、例外、RSC Refresh）。`useActionState` などの Next.js のルーター経由の動き（redirect、revalidatePath で画面を更新）はルートの描画（Phase 4/5）で
-- Phase 4 を進行中: `renderRoute`（ハイドレーション、Error Boundary、notFound、redirect）、Route Handler、Proxy、next.config の redirects / rewrites / headers は完了。Phase 5 はほぼ完了（ナビゲーションの hooks、Router Cache の既定の動き（戻る / 進むはキャッシュ、Link は dynamic を取り直す）、最初の HTML のストリーミング）。Phase 6（Cache Components / PPR）は静的なルートの静的シェル（`prerenderRoute`）まで。残り: 動的なルートの `prerenderRoute`、`createTestContext()`、サードパーティの `react-server` の exports の条件、Phase 8 の速度
+- Phase 4 を進行中: `renderRoute`（ハイドレーション、Error Boundary、notFound、redirect）、Route Handler、Proxy、next.config の redirects / rewrites / headers は完了。Phase 5 はほぼ完了（ナビゲーションの hooks、Router Cache の既定の動き（戻る / 進むはキャッシュ、Link は dynamic を取り直す）、最初の HTML のストリーミング）。Phase 6（Cache Components / PPR）は静的なルートの静的シェル（`prerenderRoute`）まで。残り: 動的なルートの `prerenderRoute`、サードパーティの `react-server` の exports の条件、Phase 8 の速度
 - Phase 2 は完了: `render()`（SSR / Client / Hydration、Context、イベント、Portal、Client Mode の Suspense（Server のデータ待ち、`use()`））。フォームと `useActionState` などは Server Actions と一緒に Phase 3
 - 注意: DOM を入れた後は、ネイティブで読むサードパーティのライブラリ（SSR 層・rsc 層）にも `window` が見える（Next.js の SWC で変換するアプリのコードは置き換え済み）
 - DOM アダプター（`src/dom/environment.ts`）: turbo-dom が上書きする Bun 本来のグローバルのうち、DOM に固有でないもの（タイマー、`queueMicrotask`、`fetch`、`URL`、`performance`、`atob`/`btoa` など）は Bun のままにする（サーバー側のコードも使う。turbo-dom 0.5.6 の `btoa` はバイナリで無限ループした）。`installDom` は 1 プロセスに 1 回（入れ直すと user-event が古い document を使い続ける）

@@ -1,6 +1,7 @@
 // Partial Prerendering（仕様 12 章）。静的シェルは本物の next build の .html と同じ（docs/handoff.md）
 import { expect, test } from "bun:test";
-import { prerenderRoute, requestRoute } from "proofyard";
+import { createTestContext, prerenderRoute, requestRoute } from "proofyard";
+import { stats } from "./fixture/app/dashboard/stats";
 
 test("静的シェル: \"use cache\" の結果は入り、cookies() / connection() の Suspense は fallback のまま", async () => {
   const result = await prerenderRoute("/dashboard");
@@ -35,4 +36,23 @@ test("Suspense の外の cookies() は next build と同じエラー", async () 
 
 test("動的なルート（generateStaticParams とフォールバックのシェル）は未対応（Fail Closed）", async () => {
   await expect(prerenderRoute("/products/1")).rejects.toThrow("Unsupported: prerenderRoute for dynamic routes (/products/[id])");
+});
+
+test("createTestContext: 同じテストの中では \"use cache\" の結果を再利用する（仕様 11.5）", async () => {
+  const ctx = createTestContext({ cache: "isolated" });
+  const before = stats.calls;
+  await ctx.requestRoute("/dashboard");
+  await ctx.requestRoute("/dashboard");
+  expect(stats.calls - before).toBe(1);
+  expect(ctx.cache.getInvalidatedTags()).toEqual([]);
+});
+
+test("createTestContext: テストが変われば分離される", async () => {
+  const before = stats.calls;
+  await createTestContext().requestRoute("/dashboard");
+  expect(stats.calls - before).toBe(1);
+});
+
+test("createTestContext: \"isolated\" 以外のキャッシュは未対応（Fail Closed）", () => {
+  expect(() => createTestContext({ cache: "shared" as "isolated" })).toThrow('Unsupported: createTestContext({ cache: "shared" })');
 });
