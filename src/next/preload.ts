@@ -320,11 +320,12 @@ Bun.plugin({
     for (const [spec, target] of Object.entries(ALIASES.rsc))
       build.module(spec, () => ({ exports: require(Bun.resolveSync(target, process.cwd())), loader: "object" }));
     for (const [spec, file] of nextFacades)
-      // CJS は default が module.exports、ESM（next/dist/api/* など）は名前付きの export。webpack の require と同じ形にまとめる
+      // CJS は名前付きの export が module.exports、ESM（next/dist/api/* など）は名前付きの export。webpack と同じ形にまとめる
       build.module(spec, () => {
         const m = require(rsc.get(facadeEntries.get(file)!)!).default;
         const cjs = m.default !== null && typeof m.default === "object" ? m.default : {};
-        const exports = { ...cjs, ...m };
+        // default は、__esModule の付いた CJS（SWC / Babel の出力）なら exports.default（next/image など）
+        const exports = { ...m, ...cjs, default: cjs.__esModule ? cjs.default : m.default };
         // SWC の "use server" の変換結果が呼ぶ。Action の id → 関数を記録する（src/testing/actions.ts）
         if (spec === "private-next-rsc-server-reference") {
           const register = exports.registerServerReference;
