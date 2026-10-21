@@ -158,3 +158,12 @@ test("サードパーティの exports の react-server の条件は、Next.js �
   const html = await (await requestRoute("/third-party/server")).text();
   expect(html).toContain("server build<!-- --> (<!-- -->react-server<!-- -->)");
 });
+
+test("next/* を直接 import するサードパーティのパッケージ（サーバー: next/headers・notFound、クライアント: next/navigation の hooks）", async () => {
+  const html = await (await requestRoute("/third-party/next?q=x", { cookies: { locale: "ja" } })).text();
+  expect(html).toContain("locale <!-- -->ja");
+  expect(html).toContain("path /third-party/next q x");
+  expect((await requestRoute("/third-party/next", { cookies: { locale: "fr" } })).status).toBe(404);
+  const app = await renderRoute("/third-party/next?q=y", { cookies: { locale: "en" } });
+  expect(app.getByText("path /third-party/next q y")).toBeTruthy();
+});

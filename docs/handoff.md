@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。141 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。142 件）
 
 ## 決めたこと
 
@@ -104,7 +104,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 
 - `node_modules` 内の `"use cache"` / `"use server"`、独自の `cacheHandlers`、`node_modules` 内の CommonJS の `"use client"`: エラーにしている（`node_modules` のものは読み込んだときに失敗する）
 - rsc 層のネイティブ読み込みの `react-server` の条件: アプリから辿れる `node_modules` のパッケージのうち、`package.json` に `"react-server"` があるものは Bun の解決（`--conditions react-server`。別プロセス）で求め、元のファイルを読んだら react-server のファイルを読む（ESM だけ。CommonJS は Fail Closed）。テストのファイルから同じパッケージを読んでも react-server のファイルになる（`react` などの別名と同じ）。Bun の解決は `bun` の条件も使う（Next.js の webpack は使わない）
-- サードパーティのパッケージがネイティブで `next/*` を import する場合は、バンドル側に向かない（未検証）
+- サードパーティのパッケージが `next/*` を import する場合: 対応（rsc 層のネイティブ読み込みでも `build.module` でアプリと同じ Next.js のモジュールになる。`next/headers`・`notFound`・クライアントの `next/navigation` の hooks を `tests/unit/advanced.test.tsx` で確認）
 - ビルド時のプリレンダリング: 静的なルートの静的シェルは `prerenderRoute` で見られる。`requestRoute` / `renderRoute` は毎回リクエスト時に描画（ISR の保存したページは返さない）。動的なルートの `prerenderRoute` は `generateStaticParams` が返さない URL と空のフォールバックのシェルが未対応
 - `src/` ディレクトリ: 対応（Next.js の `findPagesDir`。Proxy も `src/proxy.ts`）。tsconfig の `paths`: 対応（Next.js の `loadJsConfig` で読み、import の解決は Bun の tsconfig 対応）
 - `instrumentation.*`（Node.js）: 対応。next build と同じく `server/instrumentation.js` に置き、`register` と `onRequestError` は Next.js 本体が呼ぶ。注意: このファイルの読み込みで「モジュールが見つからない」エラーは Next.js 本体が無視する（ファイルなしと同じ扱い）
