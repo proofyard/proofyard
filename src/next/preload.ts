@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { actionModule, serverActions } from "../testing/actions";
 import { ALIASES, BUNDLED_ALIASES, USE_CLIENT, buildLayer, clientIds, clientReferenceStub, esmClientIds } from "./layers";
+import { FONT_IMPORT, STYLE_FILE, createStyleLoader, unquote } from "./css";
 
 // 対象アプリ（next.config と app/ のあるディレクトリ）。既定は bun test を実行したディレクトリ
 // ponytail: 環境変数で受け取る。設定ファイル（proofyard.config 等）は必要になったら
@@ -243,13 +244,46 @@ const swcOptions = (filename: string, layer: keyof typeof SWC_LAYERS = "rsc") =>
     trackDynamicImports: !!config.cacheComponents && SWC_LAYERS[layer].isServer,
     pageExtensions,
   });
+const swcCompile = (filename: string, source: string, layer: keyof typeof SWC_LAYERS = "rsc"): string =>
+  transformSync(source, { ...swcOptions(filename, layer), filename, sourceFileName: filename }).code;
+
+// CSS と next/font（src/next/css.ts）
+const { style, font } = createStyleLoader(projectDir, config);
+// next/font: SWC が書き換えた import（target.css?{...}）を、起動時に生成したモジュールに置き換える
+// （rsc 層のネイティブ読み込みの変換は同期で、フォントの読み込みは非同期なので、アプリのソースから先に集めて作っておく）
+const fonts = new Map<string, string>(); // import の指定子 → 生成したファイル
+function* sourceFiles(dir: string): Generator<string> {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) yield* sourceFiles(path);
+    else if (/\.[cm]?[jt]sx?$/.test(entry.name)) yield path;
+  }
+}
+await Promise.all(
+  [...sourceFiles(projectDir)].flatMap((file) => {
+    const source = readFileSync(file, "utf8");
+    if (!source.includes("next/font/")) return [];
+    return [...swcCompile(file, source).matchAll(FONT_IMPORT)].map(async ([specifier, target, query]) => {
+      if (fonts.has(specifier)) return;
+      const out = join(work, "fonts", `${fonts.size}.js`);
+      fonts.set(specifier, out);
+      write(out, await font(target!, unquote(query!)));
+    });
+  }),
+);
+const withFonts = (code: string) =>
+  code.replace(FONT_IMPORT, (specifier) => {
+    const file = fonts.get(specifier);
+    if (!file) throw new Error(`[proofyard] next/font was not prepared for ${specifier}`);
+    return JSON.stringify(file);
+  });
 // ネイティブ読み込み時の SWC 変換（同期。非同期の onLoad を経たモジュールは require できない。route.ts は require で読まれる）
-const swcTransformSync = (filename: string, source: string): string =>
-  transformSync(source, { ...swcOptions(filename), filename, sourceFileName: filename }).code;
+const swcTransformSync = (filename: string, source: string): string => withFonts(swcCompile(filename, source));
 // SSR 層・ブラウザ層のアプリのソース（Client Component）の変換（typeof window の置き換えなども Next.js と同じになる）
 const isAppSource = (path: string) => path.startsWith(projectDir + "/") && !path.includes("/node_modules/");
 const swcTransformFor = (layer: "ssr" | "browser" | "route") => async (filename: string, source: string) =>
-  isAppSource(filename) ? (transformSync(source, { ...swcOptions(filename, layer), filename, sourceFileName: filename }).code as string) : undefined;
+  isAppSource(filename) ? withFonts(swcCompile(filename, source, layer)) : undefined;
 const entries = [...routes.values()].map((r) => r.entry).concat(middlewareEntry ?? [], instrumentationEntry ?? []);
 
 // rsc 層: Next.js 本体だけをバンドルし、アプリはネイティブで読み込む（mock.module が効く）。
@@ -279,7 +313,7 @@ for (const file of new Set([...nextFacades.values(), MANIFESTS_SINGLETON])) {
   write(entry, `import * as m from ${JSON.stringify(file)};\nexport default m;\n`);
   facadeEntries.set(file, entry);
 }
-const rsc = await buildLayer("rsc", [...entries, ...facadeEntries.values()], { define, generatedDir, nativeDir: projectDir });
+const rsc = await buildLayer("rsc", [...entries, ...facadeEntries.values()], { define, generatedDir, nativeDir: projectDir, style });
 
 // アプリの "use client" ファイルを Client Reference として登録する（Next.js 本体のものは rsc 層のビルドで登録済み）
 const sourceLoader = (path: string) => (path.match(/\.([jt]sx?)$/)?.[1] ?? "js") as "js" | "jsx" | "ts" | "tsx";
@@ -308,7 +342,7 @@ for (const path of appSources(projectDir)) {
   }
 }
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
-const ssr = await buildLayer("ssr", [...clientIds, SSR_RUNTIME], { define, transform: swcTransformFor("ssr") });
+const ssr = await buildLayer("ssr", [...clientIds, SSR_RUNTIME], { define, transform: swcTransformFor("ssr"), style });
 
 // ネイティブで読み込むアプリ（と、その依存）の rsc 層の解決と変換
 // - react などは Next.js 内蔵の React に（build.module は CJS の require も含めて置き換える）
@@ -336,6 +370,7 @@ Bun.plugin({
         }
         return { exports, loader: "object" };
       });
+    build.onLoad({ filter: STYLE_FILE }, (args) => style(args.path));
     build.onLoad({ filter: new RegExp(`^${escape(projectDir)}/(?!.*/node_modules/).*\\.[jt]sx?$`) }, (args) => {
       const source = readFileSync(args.path, "utf8");
       if (USE_CLIENT.test(source)) return { contents: clientReferenceStub(args.path, source), loader: "js" };
@@ -633,6 +668,7 @@ let browserBuild: ReturnType<typeof buildLayer> | undefined;
 const buildBrowser = () =>
   (browserBuild ??= buildLayer("browser", [...clientIds, BROWSER_RUNTIME], {
     transform: swcTransformFor("browser"),
+    style,
     redirect: browserRedirect,
     define: {
       ...clientDefine,
@@ -682,6 +718,7 @@ write(
   ].join("\n"),
 );
 const routeBuild = buildLayer("browser", [ROUTE_ENTRY], {
+  style,
   transform: swcTransformFor("route"),
   redirect: browserRedirect,
   splitting: false,
