@@ -23,3 +23,12 @@ test("instrumentation.ts の register と onRequestError（Next.js 本体が呼�
   expect(res.status).toBe(500);
   expect(g.requestErrors).toEqual([{ message: "boom", path: "/boom", routePath: "/boom" }]);
 });
+
+test("instrumentation-client.ts: ハイドレーションの前に動き、遷移の開始を受け取る", async () => {
+  const app = await renderRoute("/");
+  const w = window as unknown as { clientInstrumented?: boolean; transitions?: [string, string][] };
+  expect(w.clientInstrumented).toBe(true);
+  await app.router.push("/about");
+  await app.findByRole("heading", { name: "About" });
+  expect(w.transitions).toEqual([["/about", "push"]]);
+});
