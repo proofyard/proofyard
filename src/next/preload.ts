@@ -69,7 +69,6 @@ const rootPaths = readdirSync(rootDir)
   .filter((file) => ROOT_FILE.test(file))
   .map((file) => "/" + relative(projectDir, join(rootDir, file)));
 const rootFile = (name: string) => rootPaths.some((path) => path.slice(path.lastIndexOf("/") + 1).startsWith(`${name}.`));
-if (rootFile("instrumentation")) throw new Error("[proofyard] Unsupported Next.js feature: instrumentation.* is not supported yet");
 if (rootFile("proxy") && rootFile("middleware"))
   throw new Error('[proofyard] Both "middleware" and "proxy" files are detected. Please use "proxy" only (same as next build)');
 const discovery = await discoverRoutes({ appDir, pageExtensions, isDev: false, baseDir: projectDir, isSrcDir, appDirOnly: true });
@@ -89,7 +88,7 @@ const entrypoints = await createEntrypoints({
   appDefaultPaths: discovery.mappedAppDefaults,
   pageExtensions,
   previewMode: {},
-  hasInstrumentationHook: false,
+  hasInstrumentationHook: rootFile("instrumentation"),
 });
 if (Object.keys(entrypoints.edgeServer).length > 0)
   throw new Error(`[proofyard] Unsupported Next.js feature: the edge runtime (${Object.keys(entrypoints.edgeServer).join(", ")})`);
@@ -98,7 +97,14 @@ const middlewareMatchers = entrypoints.middlewareMatchers;
 const LOADERS: Record<string, Function> = { "next-app-loader": nextAppLoader, "next-middleware-loader": nextMiddlewareLoader };
 const routes = new Map<string, { page: string; entry: string }>(); // pathname → エントリ
 let middlewareEntry: string | undefined;
-for (const [i, [name, value]] of Object.entries(entrypoints.server as Record<string, string | { import: string }>).entries()) {
+let instrumentationEntry: string | undefined;
+for (const [i, [name, value]] of Object.entries(entrypoints.server as Record<string, string | { import: string; layer?: string }>).entries()) {
+  // instrumentation はローダーを通さず、ファイルそのもの（getInstrumentationEntry。Proxy と同じ react-server の層）
+  if (typeof value === "object" && value.layer === "instrument") {
+    instrumentationEntry = join(generatedDir, `${i}.js`);
+    write(instrumentationEntry, `export * from ${JSON.stringify(value.import.replace(/^private-next-root-dir\//, `${projectDir}/`))};\n`);
+    continue;
+  }
   const request = typeof value === "string" ? value : value.import;
   const [, loader, query] = request.match(/^([^?!]+)\?(.*)!$/) ?? [];
   if (!loader || !LOADERS[loader]) throw new Error(`[proofyard] Unsupported Next.js entry: ${name} (${request})`);
@@ -126,7 +132,7 @@ for (const [i, [name, value]] of Object.entries(entrypoints.server as Record<str
   if (loader === "next-middleware-loader") middlewareEntry = entry;
   else routes.set(normalizeAppPath(options.page as string), { page: options.page as string, entry });
 }
-console.log(`[proofyard] entries: ${routes.size} routes${middlewareEntry ? " + proxy" : ""} ${(performance.now() - t).toFixed(0)}ms`);
+console.log(`[proofyard] entries: ${routes.size} routes${middlewareEntry ? " + proxy" : ""}${instrumentationEntry ? " + instrumentation" : ""} ${(performance.now() - t).toFixed(0)}ms`);
 
 t = performance.now();
 // next build と同じ define（nodejs のサーバー。bun test の NODE_ENV=test は production 扱い）
@@ -203,7 +209,7 @@ const swcTransformSync = (filename: string, source: string): string =>
 const isAppSource = (path: string) => path.startsWith(projectDir + "/") && !path.includes("/node_modules/");
 const swcTransformFor = (layer: "ssr" | "browser" | "route") => async (filename: string, source: string) =>
   isAppSource(filename) ? (transformSync(source, { ...swcOptions(filename, layer), filename, sourceFileName: filename }).code as string) : undefined;
-const entries = [...routes.values()].map((r) => r.entry).concat(middlewareEntry ?? []);
+const entries = [...routes.values()].map((r) => r.entry).concat(middlewareEntry ?? [], instrumentationEntry ?? []);
 
 // rsc 層: Next.js 本体だけをバンドルし、アプリはネイティブで読み込む（mock.module が効く）。
 // アプリが import しうる Next.js 本体のモジュール（next/cache などの公開の入口、SWC が出力する private-next-rsc-* など）も
@@ -364,6 +370,8 @@ write(
   { version: 1, functions: middlewareEntry ? { "/_middleware": { runtime: "nodejs", matchers: middlewareMatchers } } : {} },
 );
 if (middlewareEntry) write(join(distDir, "server/middleware.js"), `module.exports = require(${JSON.stringify(rsc.get(middlewareEntry))});\n`);
+// instrumentation は server/instrumentation.js（getInstrumentationModule）。register / onRequestError は Next.js 本体が呼ぶ
+if (instrumentationEntry) write(join(distDir, "server/instrumentation.js"), `module.exports = require(${JSON.stringify(rsc.get(instrumentationEntry))});\n`);
 write(join(distDir, "prerender-manifest.json"), { version: 4, routes: {}, dynamicRoutes: {}, notFoundRoutes: [], preview });
 write(join(distDir, "server/preview-props.json"), preview);
 write(join(distDir, "build-manifest.json"), {
