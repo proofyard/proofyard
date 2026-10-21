@@ -22,3 +22,4 @@ export type { ClientReference, ServerReference, RenderRSCResult, WaitOptions, RS
 // SSR Mode / Client Mode（仕様 4.2 / 4.3 / 14）
 export { render } from "./testing/render";
 export type { RenderOptions, RenderResult } from "./testing/render";
+export type { ActionCall } from "./testing/actions";

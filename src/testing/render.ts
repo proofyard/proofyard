@@ -5,6 +5,7 @@
 import type { NextHarness } from "../next/preload";
 import { installDom } from "../dom/environment";
 import { renderFlight } from "./render-rsc";
+import { runAction, type ActionCall } from "./actions";
 
 type BrowserRuntime = typeof import("../client/runtime");
 type Queries = ReturnType<BrowserRuntime["within"]>;
@@ -22,6 +23,11 @@ export type RenderResult = Queries & {
   user?: ReturnType<BrowserRuntime["userEvent"]["setup"]>;
   // hydrateRoot の onRecoverableError に届いたエラー（Hydration Mismatch など）
   recoverableErrors: unknown[];
+  // Client Mode で呼ばれた Server Actions
+  actions: {
+    // 関数名、または import した Server Action で絞る
+    getCalls(action?: string | Function): ActionCall[];
+  };
   unmount(): void;
 };
 
@@ -33,28 +39,13 @@ function harness(): NextHarness {
 
 // DOM は使うときに入れる（rsc / ssr 層のコードに window を見せないため、プリロードでは入れない）
 function ensureDom() {
-  if (typeof document === "undefined") installDom();
+  installDom();
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 }
 
 const containers = new Set<HTMLElement>();
 let browserRuntime: BrowserRuntime | undefined;
 
-// ブラウザ層は開発版の React（act のため）、Flight を作るサーバーは本番版。開発版の Flight クライアントは
-// key を検証済みかどうかを開発版のサーバーだけが送る情報で判断するので、サーバーで作られた要素（owner なし）の子の配列すべてに
-// key の警告が出る。本番では出ない警告なので、その形のもの（"Check the top-level render call"）だけを捨てる。
-// Client Component の中の本当の key の誤りは "Check the render method of ..." になり、捨てない
-let consoleFiltered = false;
-function filterFlightKeyWarnings() {
-  if (consoleFiltered) return;
-  consoleFiltered = true;
-  const error = console.error;
-  console.error = (...args: unknown[]) => {
-    const message = args.map(String).join("");
-    if (message.includes('unique "key" prop') && message.includes("Check the top-level render call")) return;
-    error.apply(console, args);
-  };
-}
 // テストごとの後片付け（プリロードの afterEach から呼ばれる）
 (globalThis as any)[Symbol.for("proofyard.cleanup")] = () => {
   browserRuntime?.cleanup();
@@ -75,23 +66,29 @@ async function ssrHtml(stream: ReadableStream<Uint8Array>, serverError: (error: 
   }
 }
 
+const actionsOf = (calls: ActionCall[]): RenderResult["actions"] => ({
+  getCalls: (action) =>
+    action === undefined
+      ? [...calls]
+      : calls.filter((call) => (typeof action === "string" ? call.name === action : call.id === (action as { $$id?: string }).$$id)),
+});
+
 export async function render(ui: unknown, { mode = "client", hydrate = false }: RenderOptions = {}): Promise<RenderResult> {
   ensureDom();
+  // ブラウザ層を先に用意してから描画を始める（Flight のストリームはすぐに読み始める）
+  const browser = (browserRuntime ??= await harness().loadBrowser());
   const { stream, serverError } = renderFlight(ui);
   const recoverableErrors: unknown[] = [];
 
   if (mode === "ssr") {
     if (hydrate) throw new Error('[proofyard] hydrate requires mode: "client"');
     const html = await ssrHtml(stream, serverError);
-    const browser = (browserRuntime ??= await harness().loadBrowser());
     const container = document.body.appendChild(document.createElement("div"));
     containers.add(container);
     container.innerHTML = html;
-    return { ...browser.within(container), container, html, recoverableErrors, unmount: () => container.remove() };
+    return { ...browser.within(container), container, html, recoverableErrors, actions: actionsOf([]), unmount: () => container.remove() };
   }
 
-  const browser = (browserRuntime ??= await harness().loadBrowser());
-  filterFlightKeyWarnings();
   let html: string | undefined;
   let clientStream = stream;
   let container: HTMLElement | undefined;
@@ -104,17 +101,34 @@ export async function render(ui: unknown, { mode = "client", hydrate = false }: 
     containers.add(container);
     container.innerHTML = html;
   }
-  const response = browser.decode(clientStream);
+  // Server Actions: 引数を encodeReply → サーバーで decodeReply して実行 → 戻り値と描画し直した Server Components を Flight で返す
+  const calls: ActionCall[] = [];
+  const callServer = async (id: string, args: unknown[]): Promise<unknown> => {
+    const body = await browser.encodeReply(args);
+    const { result } = await runAction(id, body as string | FormData, calls);
+    const { stream, serverError: actionError } = renderFlight({ result, tree: ui });
+    try {
+      const { result: returned, tree } = (await browser.decode(stream, callServer)) as { result: PromiseLike<unknown>; tree: unknown };
+      flightRoot.refresh(tree as any);
+      return await returned;
+    } catch (error) {
+      throw actionError(error);
+    }
+  };
+  // Client Component から import した Server Action（src/client/app-call-server.ts）もこれを使う
+  (globalThis as any)[Symbol.for("proofyard.callServer")] = callServer;
+  const response = browser.decode(clientStream, callServer);
   try {
     // シェルが届いてから描画する
     await response;
   } catch (error) {
     throw serverError(error);
   }
+  const flightRoot = browser.root(response as PromiseLike<any>);
   // Flight の続きのチャンクでサスペンドするので、非同期の act で描画する
   let utils: ReturnType<BrowserRuntime["render"]> | undefined;
   await browser.act(async () => {
-    utils = browser.render(browser.root(response) as any, {
+    utils = browser.render(flightRoot.element as any, {
       container,
       hydrate,
       onRecoverableError: (error: unknown) => void recoverableErrors.push(error),
@@ -127,8 +141,10 @@ export async function render(ui: unknown, { mode = "client", hydrate = false }: 
     ...browser.within(rendered.baseElement),
     container: rendered.container,
     html,
-    user: browser.userEvent.setup(),
+    // 既定の document は user-event の読み込み時のもの。いまの document を渡す
+    user: browser.userEvent.setup({ document }),
     recoverableErrors,
+    actions: actionsOf(calls),
     unmount: rendered.unmount,
   } as unknown as RenderResult;
 }
