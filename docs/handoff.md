@@ -1,12 +1,12 @@
-# Proofyard 引き継ぎメモ（2026-10-20）
+# Proofyard 引き継ぎメモ（2026-10-21）
 
 ## プロジェクト
 
 Next.js App Router の React Server Components を、ブラウザも Next.js サーバーも起動せず、Bun（`bun test`）の中だけでテストするフレームワーク。
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
-- 現状: Phase 0（PoC 1〜6）が完了し、Phase 1 を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit` と PoC 1〜6。73 件）
+- 現状: Phase 0〜3 が完了し、Phase 4（Next.js Integration）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
+- テスト: `bun run test`（`tests/unit` と PoC 1〜6。86 件）
 
 ## 決めたこと
 
@@ -27,7 +27,11 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 ## 公開 API（実装済み）
 
-- `requestRoute(url, { method, headers, cookies })`: Next.js 本体のリクエスト処理に通し、標準の `Response` を返す
+- `requestRoute(url, { method, headers, cookies, body })`: `next start` と同じルーター（router-server）に通し、標準の `Response` を返す。Proxy（`proxy.ts` / `middleware.ts`）、next.config の redirects / rewrites / headers、Route Handler、404（`not-found`）は Next.js 自身が処理する
+- `renderRoute(url, { mode: "ssr" | "client", headers, cookies })`: ルートの HTML を document に入れる。リダイレクトはたどる（最大 20 回、他のオリジンは Fail Closed）
+  - client: Next.js 本体のクライアント（`app-next.js`）で HTML をハイドレーションする。React は本番版（`act` がないので `findBy` / `waitFor` で待つ。エラーのメッセージは本番と同じく短縮形）
+  - Server Actions、`revalidatePath`、`redirect()` は Next.js のルーター経由で動く（ブラウザの fetch とサーバー側の `http://localhost` への fetch はメモリ内のルーターへ）
+  - `location` / `history` は DOM アダプターの自前の実装（turbo-dom のものは固定）。ページの再読み込み（`location.assign` など）は Fail Closed
 - `renderRSC(element)`: RSC Mode。Flight を往復させた React ツリーを返す（シェルが揃った時点。待っている Suspense は fallback）
   - クエリ（毎回いまの状態を読む）: `getByText` / `queryByText` / `getAllByText` / `queryAllByText`、`findByText` / `findAllByText`（届くまで待つ）、`waitForComplete()`、`getClientReference` / `getAllClientReferences`（export 名か、import した Client Component で探す）、`text()`、`root`
   - Client Component は実行しない（デコード時に目印のモジュールに差し替える）。Server Function は `$$id` と `$$bound` を持つ目印になる（呼ぶとエラー）
@@ -41,7 +45,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
   - Action の id → 関数は、SWC の変換結果が呼ぶ `registerServerReference` を記録して引く（`src/testing/actions.ts`）
   - Client Component から import した `"use server"` は、Next.js のルーターの `callServer`（`next/dist/client/app-call-server`）の代わりに `render()` のものを使う（`src/client/app-call-server.ts`。ルートの描画では本物のルーターを使う予定）
   - クロージャの値の暗号化の鍵は、プリロードで Next.js の manifests singleton に入れる
-  - redirect() はルーターがないので Fail Closed
+  - redirect() はルーターがないので Fail Closed（`renderRoute` では動く）
 - `getInvalidatedTags()`: このテストで無効化されたキャッシュタグ
 - 使い方: `bun test --preload proofyard/preload`（対象アプリは `PROOFYARD_NEXT_APP`、既定はカレントディレクトリ）
 
@@ -49,7 +53,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 Next.js の動作を推測で再現せず、Next.js 本体の部品をそのまま呼ぶ。`src/next/preload.ts` と `layers.ts`。
 
-- ルートツリーとエントリ: `next-app-loader`（`next build` と同じ生成コード。`page` と `route` の両方）
+- ルートとエントリ: `discoverRoutes` / `createPagesMapping` / `createEntrypoints`（`next build` と同じ）。各エントリのローダー（`next-app-loader`、`next-middleware-loader`）を webpack と同じオプション（クエリ文字列）で呼ぶ。知らないローダーと edge runtime は Fail Closed
 - 設定: `loadConfig`。define: `getDefineEnv`。アプリのソースの変換: `getLoaderSWCOptions` + ネイティブの SWC
 - ビルド: Next.js の層（rsc / ssr）を `Bun.build` で再現。React は Next.js 内蔵（vendored）のもの。エイリアスは `create-compiler-aliases.ts` と同じ
 - アプリのコード（rsc 層）はバンドルせず**ネイティブで読み込む**（`mock.module` が効く）
@@ -63,8 +67,9 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
   - アプリのソースは SSR 層・ブラウザ層でも Next.js の SWC で変換する（`typeof window` の置き換えなど）
   - SSR 層に入れる Client Component: Next.js 本体のものは rsc 層のビルドで、アプリのものは全ソースの `"use client"` を調べて集める
   - アプリから使う Next.js 本体のモジュールは固定の一覧（`private-next-rsc-*` などのエイリアスと App Router の公開の入口）。一覧にない `next/*` はネイティブで読まれて define が効かない
-- manifest: `next start` が読む `.next` の最小構成を一時ディレクトリに書く
-- リクエスト: エントリの `handler(req, res)` をモックの req/res で呼ぶ（ステータス、リダイレクト、404 は Next.js 自身が決める）
+- manifest: `next start` が読む `.next` の最小構成を一時ディレクトリに書く（routes-manifest は `loadCustomRoutes` + `generateRoutesManifest`、Proxy は `server/middleware.js` と functions-config-manifest の matcher、Server Actions は SWC の変換結果から server-reference-manifest）
+- リクエスト: router-server の `initialize`（設定は `__NEXT_PRIVATE_STANDALONE_CONFIG` で渡す）の `requestHandler` をモックの req/res で呼ぶ。サーバーのエラーは `next start` と同じくログに出る
+- 生成物は `/tmp/proofyard-next-<pid>` に置き、全テストの後（プリロードの `afterAll`）に消す。途中で終わったものは次の起動時に消す
 - キャッシュ: グローバルな `beforeEach` で、`"use cache"` のハンドラーとタグの記録をテストごとに空にする
 - 対象アプリは環境変数 `PROOFYARD_NEXT_APP` で指定する（未指定なら PoC 5 のフィクスチャ）
 
@@ -81,11 +86,12 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 
 ## 未対応（Fail Closed にしているもの・まだのもの）
 
-- どのルートにも一致しない URL: エラーにしている（本物は 404 ページ）
 - `node_modules` 内の `"use cache"` / `"use server"`、独自の `cacheHandlers`、`node_modules` 内のサードパーティの `"use client"`: エラーにしている
 - サードパーティのパッケージがネイティブで `next/*` を import する場合は、バンドル側に向かない（未検証）
 - ビルド時のプリレンダリング、PPR の静的シェル: 再現していない（毎回リクエスト時に描画）
-- Next.js モードの Server Actions、`"use cache: private"` / `"use cache: remote"`、tsconfig の `paths`、middleware、metadata: 未検証
+- `instrumentation.*`、`instrumentation-client.*`、`src/` ディレクトリ、Pages Router: 未対応（instrumentation は Fail Closed）
+- `"use cache: private"` / `"use cache: remote"`、tsconfig の `paths`、metadata: 未検証
+- `renderRoute` は HTML を最後まで待ってから入れる（ストリーミングの途中の状態は見られない。仕様 6.3/6.4）
 
 ## 次のタスク
 
@@ -94,6 +100,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - **土台は Next.js モード**（Next.js 内蔵の React と本体の部品。アプリのコードはネイティブで読み込み、`mock.module` も効く）
 - Phase 1 は完了（起動時のビルドは 1〜2 秒。実行をまたいだキャッシュは Phase 8 で）
 - Phase 3 は完了: Server Actions（`useActionState`、`useFormStatus`、`useOptimistic`、`.bind()`、クロージャ、シリアライズ、例外、RSC Refresh）。`useActionState` などの Next.js のルーター経由の動き（redirect、revalidatePath で画面を更新）はルートの描画（Phase 4/5）で
+- Phase 4 を進行中: `renderRoute`（ハイドレーション、Error Boundary、notFound、redirect）、Route Handler、Proxy、next.config の redirects / rewrites / headers は完了。次は Phase 5（クライアントの画面遷移、`router.push`、Link の prefetch）
 - Phase 2 は完了: `render()`（SSR / Client / Hydration、Context、イベント、Portal、Client Mode の Suspense（Server のデータ待ち、`use()`））。フォームと `useActionState` などは Server Actions と一緒に Phase 3
 - 注意: DOM を入れた後は、ネイティブで読むサードパーティのライブラリ（SSR 層・rsc 層）にも `window` が見える（Next.js の SWC で変換するアプリのコードは置き換え済み）
 - DOM アダプター（`src/dom/environment.ts`）: turbo-dom が上書きする Bun 本来のグローバルのうち、DOM に固有でないもの（タイマー、`queueMicrotask`、`fetch`、`URL`、`performance`、`atob`/`btoa` など）は Bun のままにする（サーバー側のコードも使う。turbo-dom 0.5.6 の `btoa` はバイナリで無限ループした）。`installDom` は 1 プロセスに 1 回（入れ直すと user-event が古い document を使い続ける）
