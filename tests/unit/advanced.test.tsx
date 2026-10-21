@@ -57,3 +57,13 @@ test("Hydration Mismatch がなければ errors は空", async () => {
   await app.findByText("Chart ready (object)");
   expect(app.errors).toEqual([]);
 });
+
+test("Concurrent Rendering: useDeferredValue と startTransition の中の router.push", async () => {
+  db.gate = null;
+  const app = await renderRoute("/concurrent");
+  await app.user.type(app.getByRole("textbox", { name: "Filter" }), "a");
+  await app.waitFor(() => expect(app.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Alice", "Carol", "Dave"]));
+  await app.user.click(app.getByRole("button", { name: "Go slow" }));
+  await app.findByRole("heading", { name: "Slow page" });
+  expect(location.pathname).toBe("/slow");
+});
