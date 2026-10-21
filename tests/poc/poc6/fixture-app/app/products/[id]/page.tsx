@@ -7,7 +7,8 @@ let calls = 0;
 async function getProduct(id: string) {
   "use cache";
   cacheTag(`product-${id}`);
-  cacheLife({ stale: 0, revalidate: 1, expire: 60 });
+  // revalidate は、負荷の高いマシンで 1 つのテストが過ぎない長さ（過ぎると裏で再実行され、回数がずれる）
+  cacheLife({ stale: 0, revalidate: 3, expire: 60 });
   calls += 1;
   return { id, call: calls };
 }

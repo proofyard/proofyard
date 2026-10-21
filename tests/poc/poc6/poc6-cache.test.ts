@@ -64,7 +64,7 @@ test("revalidateTag(tag, 'max') は stale-while-revalidate（1 回目は古い�
 test("cacheLife の revalidate を過ぎたら再実行", async () => {
   const first = await product("1");
   expect(await product("1")).toBe(first);
-  await Bun.sleep(1100);
+  await Bun.sleep(3100);
   const fresh = await product("1");
   expect(fresh).toBeGreaterThan(first);
   expect(await product("1")).toBe(fresh);
