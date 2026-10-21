@@ -31,14 +31,14 @@ export type RenderResult = Queries & {
   unmount(): void;
 };
 
-function harness(): NextHarness {
+export function harness(): NextHarness {
   const h = (globalThis as any)[Symbol.for("proofyard.next")] as NextHarness | undefined;
   if (!h) throw new Error('[proofyard] the Next.js preload is not loaded. Add `preload = ["proofyard/preload"]` to bunfig.toml');
   return h;
 }
 
 // DOM は使うときに入れる（rsc / ssr 層のコードに window を見せないため、プリロードでは入れない）
-function ensureDom() {
+export function ensureDom() {
   installDom();
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 }
