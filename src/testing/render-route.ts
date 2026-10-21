@@ -36,6 +36,10 @@ export type RenderRouteResult = Queries & {
   waitFor: BrowserRuntime["waitFor"];
   // window に報告されたエラー（ブラウザの window の error イベント。Next.js は Hydration Mismatch などをここに報告する）
   errors: unknown[];
+  lifecycle: {
+    // after() に渡された処理が終わるまで待つ（仕様 16.2）
+    flushAfter(): Promise<void>;
+  };
   unmount(): void;
 };
 type NavigateOptions = { scroll?: boolean };
@@ -294,6 +298,7 @@ export async function renderRoute(url: string, { mode = "client", streaming = fa
     waitForComplete,
     waitFor: browser.waitFor,
     errors,
+    lifecycle: { flushAfter: h.flushAfter },
     unmount: cleanup,
   } as unknown as RenderRouteResult;
 }
