@@ -81,8 +81,43 @@ function cleanup() {
   for (const name of ["__next_f", "__next_s", "next", "__NEXT_HYDRATED", "__NEXT_HYDRATED_AT", "__NEXT_HYDRATED_CB"]) delete (globalThis as any)[name];
   delete (document as any).readyState;
   resetLocation("/");
+  stopPage?.();
+  stopPage = undefined;
 }
 (globalThis as any)[Symbol.for("proofyard.routeCleanup")] = cleanup;
+
+// ブラウザがページを離れると消えるもの（window / document のイベントリスナー、setInterval）を、ページの読み込みから後片付けまで記録して消す。
+// Next.js のクライアントはテストごとに読み込み直すので、残すと前のテストのモジュールがメモリに残り続ける
+let stopPage: (() => void) | undefined;
+function trackPage() {
+  const undo: (() => void)[] = [];
+  for (const target of [window, document] as EventTarget[]) {
+    const own = Object.getOwnPropertyDescriptor(target, "addEventListener");
+    const add = target.addEventListener;
+    target.addEventListener = function (...args: Parameters<EventTarget["addEventListener"]>) {
+      undo.push(() => target.removeEventListener(...(args as [string, EventListenerOrEventListenerObject, EventListenerOptions?])));
+      return add.apply(this, args);
+    };
+    // turbo-dom の window は自身のプロパティに持つ
+    undo.push(() => (own ? Object.defineProperty(target, "addEventListener", own) : delete (target as { addEventListener?: unknown }).addEventListener));
+  }
+  const setInterval = globalThis.setInterval;
+  const intervals = new Set<ReturnType<typeof setInterval>>();
+  globalThis.setInterval = Object.assign((...args: Parameters<typeof setInterval>) => {
+    const id = setInterval(...args);
+    intervals.add(id);
+    return id;
+  }, setInterval);
+  undo.push(() => {
+    globalThis.setInterval = setInterval;
+    for (const id of intervals) clearInterval(id);
+  });
+  return () => {
+    for (const fn of undo.reverse()) fn();
+    // 読み込んだクライアントのバンドル（?route=N）をモジュールの登録から外す
+    for (const key of Object.keys(require.cache)) if (key.includes("?route=")) delete require.cache[key];
+  };
+}
 
 // 応答の Set-Cookie を cookie の入れ物に反映する
 function storeCookies(jar: Map<string, string>, response: Response) {
@@ -283,6 +318,7 @@ export async function renderRoute(url: string, { mode = "client", streaming = fa
     const main = document.querySelector('script[src^="/_next/static/chunks/main-app"]');
     if (!main) throw new Error(`[proofyard] the HTML (status ${response.status}) has no Next.js client script (main-app)`);
     Object.defineProperty(document, "currentScript", { configurable: true, get: () => main });
+    stopPage = trackPage();
     try {
       await import(`${await h.routeBundle()}?route=${bundles++}`);
     } finally {
