@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。139 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。141 件）
 
 ## 決めたこと
 
@@ -110,7 +110,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - `instrumentation.*`（Node.js）: 対応。next build と同じく `server/instrumentation.js` に置き、`register` と `onRequestError` は Next.js 本体が呼ぶ。注意: このファイルの読み込みで「モジュールが見つからない」エラーは Next.js 本体が無視する（ファイルなしと同じ扱い）
 - `instrumentation-client.*`: 対応。Next.js の `next-instrumentation-client-loader` の出力（`instrumentationClientInject` とアプリのファイル）をブラウザのバンドルの `private-next-instrumentation-client` にする。`onRouterTransitionStart` も Next.js のルーターが呼ぶ
 - Pages Router: 未対応（Fail Closed）
-- `"use cache: private"` / `"use cache: remote"`: 未検証
+- `"use cache: private"` / `"use cache: remote"`: 対応（Next.js 本体のまま。private は静的シェルに入らずリクエストごと、remote は自前でホストする場合の既定どおり "use cache" と同じメモリのハンドラー。静的シェルは next build の `private.html` と同じ。`tests/ppr`）
 - Edge Runtime: Fail Closed
 - turbo-dom 0.5.6 のセレクターは、引用符の中のエスケープ（`meta[property="og\:title"]`）を解釈しない（`CSS.escape` した値で探すと見つからない）
 - スクロール（`scroll` オプション、ハッシュへのスクロール）: turbo-dom にレイアウトがないので検証していない
