@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit` と PoC 1〜6。102 件）
+- テスト: `bun run test`（`tests/unit`、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）。104 件）
 
 ## 決めたこと
 
@@ -91,8 +91,9 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - `node_modules` 内の `"use cache"` / `"use server"`、独自の `cacheHandlers`、`node_modules` 内のサードパーティの `"use client"`: エラーにしている
 - サードパーティのパッケージがネイティブで `next/*` を import する場合は、バンドル側に向かない（未検証）
 - ビルド時のプリレンダリング、PPR の静的シェル: 再現していない（毎回リクエスト時に描画）
-- `instrumentation.*`、`instrumentation-client.*`、`src/` ディレクトリ、Pages Router: 未対応（instrumentation は Fail Closed）
-- `"use cache: private"` / `"use cache: remote"`、tsconfig の `paths`、metadata: 未検証
+- `src/` ディレクトリ: 対応（Next.js の `findPagesDir`。Proxy も `src/proxy.ts`）。tsconfig の `paths`: 対応（Next.js の `loadJsConfig` で読み、import の解決は Bun の tsconfig 対応）
+- `instrumentation.*`、`instrumentation-client.*`、Pages Router: 未対応（instrumentation と Pages Router は Fail Closed）
+- `"use cache: private"` / `"use cache: remote"`、metadata: 未検証
 - スクロール（`scroll` オプション、ハッシュへのスクロール）: turbo-dom にレイアウトがないので検証していない
 - turbo-dom 0.5.6 の `<template>` は `content` がない（HTML の続きの塊は div で解析している）
 - ブラウザ層は `__NEXT_TEST_MODE` を有効にしている（ハイドレーションの完了の通知のため）。そのため先読みのリクエストに `next-test-fetch-priority` ヘッダーが付く
