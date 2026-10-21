@@ -15,6 +15,7 @@
     "test:poc1": "bun test --conditions react-server tests/poc/poc1-rsc.test.tsx",
     "test:poc2": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/poc/poc2",
     "test:poc3": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/poc/poc3",
+    "bench:api": "PROOFYARD_NEXT_APP=tests/fixtures/next-app bun test --timeout 20000 --preload ./src/next/preload.ts tests/benchmarks/api.test.tsx",
     "bench:dom": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/benchmarks/dom-compare.test.tsx",
     "test:poc4": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/poc/poc4",
     "test:poc5": "PROOFYARD_NEXT_APP=tests/poc/poc5/fixture-app bun test --timeout 20000 --preload ./src/next/preload.ts tests/poc/poc5",
