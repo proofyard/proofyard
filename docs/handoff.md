@@ -35,7 +35,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
   - Link のクリック、`useRouter()`、Layout / Template、loading.tsx、Parallel / Intercepting Routes、Suspense を伴う遷移は Next.js 本体のクライアントルーターがそのまま動く
   - `location` / `history` は DOM アダプターの自前の実装（turbo-dom のものは固定）。ページの再読み込み（`location.assign` など）は Fail Closed
   - `app.errors`: window に報告されたエラー（Next.js は Hydration Mismatch などを `reportError` で報告する。DOM アダプターの `reportError` はブラウザと同じく window に `error` イベントを送り、取り消されなければ console.error。Bun のものは捕まえられなかった例外になる）。`app.waitFor`: Testing Library の `waitFor`
-  - Phase 7 で確認したもの（Next.js 本体の処理のまま動く）: Metadata（`title.template`、`generateMetadata`、`generateViewport`、`icon.svg`、`opengraph-image.tsx`（`next/og`）、`sitemap.ts` / `robots.ts`。metadata のファイルは next-app-loader の出力が `next-metadata-route-loader` / `next-metadata-image-loader` を import するので、それも Next.js のローダーで生成する（export 名は SWC の `getModuleNamedExports`）。生成コードに知らないローダーが残ったら起動時に Fail Closed）、遷移後の `document.title`。Next.js 16 は metadata を本文と別に流すので、遷移の完了より後に変わる）、`after()`（応答のあと。`flushAfter()` で待つ）、`next/dynamic`（`ssr: false`）と `import()`、Hydration Mismatch、`useDeferredValue` / `startTransition` の中の `router.push`。仕様 16.3: `.env` の環境変数（Next.js の `loadConfig` が読む）、`server-only`、`next/image`（`/_next/image` の最適化も）。
+  - Phase 7 で確認したもの（Next.js 本体の処理のまま動く）: Metadata（`title.template`、`generateMetadata`、`generateViewport`、`icon.svg`、`opengraph-image.tsx`（`next/og`）、`sitemap.ts` / `robots.ts`。metadata のファイルは next-app-loader の出力が `next-metadata-route-loader` / `next-metadata-image-loader` を import するので、それも Next.js のローダーで生成する（export 名は SWC の `getModuleNamedExports`）。生成コードに知らないローダーが残ったら起動時に Fail Closed）、遷移後の `document.title`。Next.js 16 は metadata を本文と別に流すので、遷移のコミットより後に変わる。ルーターの操作は React の作業が落ち着くまで待つので、戻った時点で変わっている）、`after()`（応答のあと。`flushAfter()` で待つ）、`next/dynamic`（`ssr: false`）と `import()`、Hydration Mismatch、`useDeferredValue` / `startTransition` の中の `router.push`。仕様 16.3: `.env` の環境変数（Next.js の `loadConfig` が読む）、`server-only`、`next/image`（`/_next/image` の最適化も）。
   - CSS（`src/next/css.ts`）: CSS Modules は Next.js の css-loader を、サーバー側と同じ設定（`exportOnlyLocals`。クラス名だけ）で全部の層に使う（クラス名は next build と同じ `page_title__NlRtp` の形）。普通の CSS は空のモジュール（スタイルは DOM に入れない。`<link rel="stylesheet">` も出ない）。Sass と、別のファイルからの `composes` は Fail Closed
   - `next/font`: SWC が書き換えた `next/font/*/target.css?{...}` の import を、起動時にアプリのソースから集めて Next.js の `next-font-loader` → css-loader で生成し、置き換える（rsc 層のネイティブ読み込みの変換は同期なので先に作る）。`next/font/google` は next build と同じく起動時に Google から取得する（ネットワークが必要。手元で一度だけ確認。恒久的なテストには入れていない）。フォントのファイルの配信と preload の `<link>` はない
   - StrictMode は Next.js の define（`__NEXT_STRICT_MODE_APP`）のまま。本番版の React なので二重の描画などは起きない
@@ -54,6 +54,8 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
   - クロージャの値の暗号化の鍵は、プリロードで Next.js の manifests singleton に入れる
   - redirect() はルーターがないので Fail Closed（`renderRoute` では動く）
 - `getInvalidatedTags()`: このテストで無効化されたキャッシュタグ
+- `renderRoute` の結果の `metadata`（仕様 16.1）: いまの `<head>` にある、Next.js が描画したもの（`title`、`description`、`get(name)`（`<meta name>` か `<meta property>`））。metadata を解決し直さない
+- React の作業が落ち着くまで待つ（`waitForComplete()`、ルーターの操作）: 進行中の fetch に加え、React のスケジューラーに残っているタスクがなくなるまで（`src/client/route-react-dom-client.ts` が react-dom より先に `unstable_scheduleCallback` を包んで数える）。これがないと、metadata の Suspense のハイドレーションの前に返り、すぐ遷移すると最初の HTML の `<title>` などが head に残った
 - `flushAfter()`（`renderRoute` の結果の `lifecycle.flushAfter()` も同じ）: `after()` と Proxy の `waitUntil` の処理が終わるまで待つ。Next.js の、プラットフォームが `waitUntil` を渡す入口（`Symbol.for("@next/request-context")`）で受け取っている（next start では Next.js 内部の `AwaiterOnce`。どちらも渡された Promise を待つだけ）
 - 使い方: `bun test --preload proofyard/preload`（対象アプリは `PROOFYARD_NEXT_APP`、既定はカレントディレクトリ）
 
@@ -104,7 +106,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - Pages Router: 未対応（Fail Closed）
 - `"use cache: private"` / `"use cache: remote"`: 未検証
 - Edge Runtime: Fail Closed
-- 遷移後の head に、最初の HTML の `<title>` が残る（`document.title` は新しいもの）。実ブラウザとの比較は未実施
+- turbo-dom 0.5.6 のセレクターは、引用符の中のエスケープ（`meta[property="og\:title"]`）を解釈しない（`CSS.escape` した値で探すと見つからない）
 - スクロール（`scroll` オプション、ハッシュへのスクロール）: turbo-dom にレイアウトがないので検証していない
 - turbo-dom 0.5.6 の `<template>` は `content` がない（HTML の続きの塊は div で解析している）
 - ブラウザ層は `__NEXT_TEST_MODE` を有効にしている（ハイドレーションの完了の通知のため）。そのため先読みのリクエストに `next-test-fetch-priority` ヘッダーが付く

@@ -29,4 +29,4 @@ export type { ActionCall } from "./testing/actions";
 
 // ルートを HTML にし、Client Mode では Next.js 本体のクライアントでハイドレーションする（仕様 18.3 / 18.4）
 export { renderRoute } from "./testing/render-route";
-export type { RenderRouteOptions, RenderRouteResult, RouteRouter } from "./testing/render-route";
+export type { RenderRouteOptions, RenderRouteResult, RouteMetadata, RouteRouter } from "./testing/render-route";

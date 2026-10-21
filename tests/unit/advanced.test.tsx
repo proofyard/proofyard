@@ -14,16 +14,23 @@ test("Metadata: layout の title.template と generateMetadata", async () => {
   expect(html).toContain('<meta property="og:title" content="OG hello"/>');
 });
 
-test("Metadata: renderRoute の document.title", async () => {
-  await renderRoute("/meta/world", { mode: "ssr" });
-  expect(document.title).toBe("Post world | Fixture");
+test("Metadata: renderRoute の result.metadata（仕様 16.1）", async () => {
+  const app = await renderRoute("/meta/world", { mode: "ssr" });
+  expect(app.metadata.title).toBe("Post world | Fixture");
+  expect(app.metadata.description).toBe("Proofyard fixture");
+  expect(app.metadata.get("og:title")).toBe("OG world");
+  expect(app.metadata.get("theme-color")).toBe("#123456");
+  expect(app.metadata.get("missing")).toBeNull();
 });
 
-test("Metadata: 遷移すると document.title が変わる", async () => {
+test("Metadata: 遷移すると metadata が変わり、前のページのものは残らない", async () => {
   const app = await renderRoute("/meta/a");
   await app.router.push("/meta/b");
-  // Next.js は metadata を本文とは別に流すので、遷移のコミットより後に変わる
-  await app.waitFor(() => expect(document.title).toBe("Post b | Fixture"));
+  // Next.js は metadata を本文とは別に流す。ルーターの操作は React の作業が落ち着くまで待つので、この時点で変わっている
+  expect(app.metadata.title).toBe("Post b | Fixture");
+  expect(app.metadata.get("og:title")).toBe("OG b");
+  expect(document.head.querySelectorAll("title")).toHaveLength(1);
+  expect(document.head.querySelectorAll('meta[property="og:title"]')).toHaveLength(1);
 });
 
 test("Metadata: generateViewport と icon.svg", async () => {
