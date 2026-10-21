@@ -43,6 +43,9 @@ const { transformSync } = require("next/dist/build/swc");
 const { getLoaderSWCOptions } = require("next/dist/build/swc/options");
 const { default: loadCustomRoutes } = require("next/dist/lib/load-custom-routes");
 const { default: nextMiddlewareLoader } = require("next/dist/build/webpack/loaders/next-middleware-loader");
+const { default: nextMetadataRouteLoader } = require("next/dist/build/webpack/loaders/next-metadata-route-loader");
+const { default: nextMetadataImageLoader } = require("next/dist/build/webpack/loaders/next-metadata-image-loader");
+const { getModuleNamedExports } = require("next/dist/build/swc");
 const { discoverRoutes, createPagesMapping } = require("next/dist/build/route-discovery");
 const { createEntrypoints } = require("next/dist/build/entries");
 const { generateInterceptionRoutesRewrites } = require("next/dist/lib/generate-interception-routes-rewrites");
@@ -99,6 +102,37 @@ const routes = new Map<string, { page: string; entry: string }>(); // pathname �
 let middlewareEntry: string | undefined;
 let instrumentationEntry: string | undefined;
 // ローダーはルートごとに独立しているので並行に動かす（ファイルの存在確認などの待ちが多い）。登録は元の順
+// metadata のファイル（sitemap.ts、robots.ts、icon.svg など）は、next-app-loader の出力が次のローダーを通して import する
+//   next-metadata-route-loader: そのファイルの Route Handler（/sitemap.xml など）
+//   next-metadata-image-loader: ページの <link rel="icon"> などの情報（webpack では raw のローダーなので、内容は Buffer）
+// export 名は webpack の loadModule で調べるので、Next.js が Rspack で使う SWC の getModuleNamedExports で同じ形を渡す
+const METADATA_LOADERS: Record<string, Function> = {
+  "next-metadata-route-loader": nextMetadataRouteLoader,
+  "next-metadata-image-loader": nextMetadataImageLoader,
+};
+class HarmonyExportSpecifierDependency {
+  constructor(readonly name: string) {}
+}
+const loadModule = (path: string, callback: Function) =>
+  getModuleNamedExports(path).then(
+    (names: string[]) => callback(null, "", null, { dependencies: names.map((name) => new HarmonyExportSpecifierDependency(name)) }),
+    (error: unknown) => callback(error),
+  );
+async function loadMetadataFiles(code: string, prefix: string) {
+  let i = 0;
+  for (const [specifier, , loader, query, resourcePath] of code.matchAll(/(["'])(next-metadata-(?:route|image)-loader)\?([^!"']*)!([^"'?]*)\?__next_metadata(?:_route)?__\1/g)) {
+    const file = join(generatedDir, `${prefix}-metadata-${i++}.js`);
+    const options = querystring.parse(query!);
+    const context = { getOptions: () => options, addDependency() {}, loadModule, resourcePath, rootContext: projectDir };
+    const output: string = await METADATA_LOADERS[loader!]!.call(context, resourcePath ? readFileSync(resourcePath) : undefined);
+    // 画像の情報だけを読むための別のリクエスト（webpack でモジュールを分けるためのクエリ）。ここでは同じファイルを読む
+    write(file, output.replaceAll("?__next_metadata_image_meta__", ""));
+    code = code.replace(specifier, JSON.stringify(file));
+  }
+  const unknown = code.match(/["']([\w-]+-loader)\?[^"']*!/);
+  if (unknown) throw new Error(`[proofyard] Unsupported Next.js loader in the generated code: ${unknown[1]}`);
+  return code;
+}
 const loaded = await Promise.all(
   Object.entries(entrypoints.server as Record<string, string | { import: string; layer?: string }>).map(async ([name, value], i) => {
     const entry = join(generatedDir, `${i}.js`);
@@ -111,7 +145,7 @@ const loaded = await Promise.all(
     const [, loader, query] = request.match(/^([^?!]+)\?(.*)!$/) ?? [];
     if (!loader || !LOADERS[loader]) throw new Error(`[proofyard] Unsupported Next.js entry: ${name} (${request})`);
     const options = querystring.parse(query!);
-    const code: string = await LOADERS[loader]!.call({
+    const code: string = await loadMetadataFiles(await LOADERS[loader]!.call({
       getOptions: () => options,
       context: projectDir,
       rootContext: projectDir,
@@ -120,7 +154,7 @@ const loaded = await Promise.all(
       addDependency() {},
       addContextDependency() {},
       _module: { buildInfo: {} },
-    });
+    }), String(i));
     write(
       entry,
       code
