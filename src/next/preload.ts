@@ -98,39 +98,46 @@ const LOADERS: Record<string, Function> = { "next-app-loader": nextAppLoader, "n
 const routes = new Map<string, { page: string; entry: string }>(); // pathname → エントリ
 let middlewareEntry: string | undefined;
 let instrumentationEntry: string | undefined;
-for (const [i, [name, value]] of Object.entries(entrypoints.server as Record<string, string | { import: string; layer?: string }>).entries()) {
-  // instrumentation はローダーを通さず、ファイルそのもの（getInstrumentationEntry。Proxy と同じ react-server の層）
-  if (typeof value === "object" && value.layer === "instrument") {
-    instrumentationEntry = join(generatedDir, `${i}.js`);
-    write(instrumentationEntry, `export * from ${JSON.stringify(value.import.replace(/^private-next-root-dir\//, `${projectDir}/`))};\n`);
-    continue;
-  }
-  const request = typeof value === "string" ? value : value.import;
-  const [, loader, query] = request.match(/^([^?!]+)\?(.*)!$/) ?? [];
-  if (!loader || !LOADERS[loader]) throw new Error(`[proofyard] Unsupported Next.js entry: ${name} (${request})`);
-  const options = querystring.parse(query!);
-  const code: string = await LOADERS[loader]!.call({
-    getOptions: () => options,
-    context: projectDir,
-    rootContext: projectDir,
-    utils: { contextify: (context: string, request: string) => (request.startsWith("/") ? `./${relative(context, request)}` : request) },
-    addMissingDependency() {},
-    addDependency() {},
-    addContextDependency() {},
-    _module: { buildInfo: {} },
-  });
-  const entry = join(generatedDir, `${i}.js`);
-  write(
-    entry,
-    code
-      .replace(/\s+with\s*\{\s*'turbopack-transition'[^}]*\}/g, "") // Turbopack 用の import 属性
-      // Client Component の読み込み（webpack の __webpack_require__ の代わり）
-      .replace("const __next_app_require__ = __webpack_require__", "const __next_app_require__ = (id) => globalThis.__proofyardNextRequire(id)")
-      // webpack の resolve.alias（private-next-root-dir → プロジェクト）
-      .replace(/(["'])private-next-root-dir\//g, `$1${projectDir}/`),
-  );
-  if (loader === "next-middleware-loader") middlewareEntry = entry;
-  else routes.set(normalizeAppPath(options.page as string), { page: options.page as string, entry });
+// ローダーはルートごとに独立しているので並行に動かす（ファイルの存在確認などの待ちが多い）。登録は元の順
+const loaded = await Promise.all(
+  Object.entries(entrypoints.server as Record<string, string | { import: string; layer?: string }>).map(async ([name, value], i) => {
+    const entry = join(generatedDir, `${i}.js`);
+    // instrumentation はローダーを通さず、ファイルそのもの（getInstrumentationEntry。Proxy と同じ react-server の層）
+    if (typeof value === "object" && value.layer === "instrument") {
+      write(entry, `export * from ${JSON.stringify(value.import.replace(/^private-next-root-dir\//, `${projectDir}/`))};\n`);
+      return { kind: "instrumentation", entry } as const;
+    }
+    const request = typeof value === "string" ? value : value.import;
+    const [, loader, query] = request.match(/^([^?!]+)\?(.*)!$/) ?? [];
+    if (!loader || !LOADERS[loader]) throw new Error(`[proofyard] Unsupported Next.js entry: ${name} (${request})`);
+    const options = querystring.parse(query!);
+    const code: string = await LOADERS[loader]!.call({
+      getOptions: () => options,
+      context: projectDir,
+      rootContext: projectDir,
+      utils: { contextify: (context: string, request: string) => (request.startsWith("/") ? `./${relative(context, request)}` : request) },
+      addMissingDependency() {},
+      addDependency() {},
+      addContextDependency() {},
+      _module: { buildInfo: {} },
+    });
+    write(
+      entry,
+      code
+        .replace(/\s+with\s*\{\s*'turbopack-transition'[^}]*\}/g, "") // Turbopack 用の import 属性
+        // Client Component の読み込み（webpack の __webpack_require__ の代わり）
+        .replace("const __next_app_require__ = __webpack_require__", "const __next_app_require__ = (id) => globalThis.__proofyardNextRequire(id)")
+        // webpack の resolve.alias（private-next-root-dir → プロジェクト）
+        .replace(/(["'])private-next-root-dir\//g, `$1${projectDir}/`),
+    );
+    if (loader === "next-middleware-loader") return { kind: "middleware", entry } as const;
+    return { kind: "page", entry, page: options.page as string } as const;
+  }),
+);
+for (const result of loaded) {
+  if (result.kind === "instrumentation") instrumentationEntry = result.entry;
+  else if (result.kind === "middleware") middlewareEntry = result.entry;
+  else routes.set(normalizeAppPath(result.page), { page: result.page, entry: result.entry });
 }
 console.log(`[proofyard] entries: ${routes.size} routes${middlewareEntry ? " + proxy" : ""}${instrumentationEntry ? " + instrumentation" : ""} ${(performance.now() - t).toFixed(0)}ms`);
 
