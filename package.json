@@ -21,7 +21,8 @@
     "test:poc5": "PROOFYARD_NEXT_APP=tests/poc/poc5/fixture-app bun test --timeout 20000 --preload ./src/next/preload.ts tests/poc/poc5",
     "test:poc6": "PROOFYARD_NEXT_APP=tests/poc/poc6/fixture-app bun test --timeout 20000 --preload ./src/next/preload.ts tests/poc/poc6",
     "test:src-app": "PROOFYARD_NEXT_APP=tests/src-app/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/src-app",
-    "test:ppr": "PROOFYARD_NEXT_APP=tests/ppr/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/ppr"
+    "test:ppr": "PROOFYARD_NEXT_APP=tests/ppr/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/ppr",
+    "compat:ppr": "PROOFYARD_NEXT_APP=tests/ppr/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/compatibility/ppr.test.ts"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "20",
