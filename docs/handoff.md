@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。134 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。135 件）
 
 ## 決めたこと
 
@@ -102,7 +102,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 ## 未対応（Fail Closed にしているもの・まだのもの）
 
 - `node_modules` 内の `"use cache"` / `"use server"`、独自の `cacheHandlers`、`node_modules` 内の CommonJS の `"use client"`: エラーにしている（`node_modules` のものは読み込んだときに失敗する）
-- rsc 層のネイティブ読み込みは `react-server` の条件で解決しない（`exports` に `react-server` を持つサードパーティのパッケージは、Next.js と違うファイルを読む）
+- rsc 層のネイティブ読み込みの `react-server` の条件: アプリから辿れる `node_modules` のパッケージのうち、`package.json` に `"react-server"` があるものは Bun の解決（`--conditions react-server`。別プロセス）で求め、元のファイルを読んだら react-server のファイルを読む（ESM だけ。CommonJS は Fail Closed）。テストのファイルから同じパッケージを読んでも react-server のファイルになる（`react` などの別名と同じ）。Bun の解決は `bun` の条件も使う（Next.js の webpack は使わない）
 - サードパーティのパッケージがネイティブで `next/*` を import する場合は、バンドル側に向かない（未検証）
 - ビルド時のプリレンダリング: 静的なルートの静的シェルは `prerenderRoute` で見られる。`requestRoute` / `renderRoute` は毎回リクエスト時に描画（ISR の保存したページは返さない）。動的なルートの `prerenderRoute` は `generateStaticParams` が返さない URL と空のフォールバックのシェルが未対応
 - `src/` ディレクトリ: 対応（Next.js の `findPagesDir`。Proxy も `src/proxy.ts`）。tsconfig の `paths`: 対応（Next.js の `loadJsConfig` で読み、import の解決は Bun の tsconfig 対応）
@@ -123,7 +123,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - **土台は Next.js モード**（Next.js 内蔵の React と本体の部品。アプリのコードはネイティブで読み込み、`mock.module` も効く）
 - Phase 1 は完了（起動時のビルドは 1〜2 秒。実行をまたいだキャッシュは Phase 8 で）
 - Phase 3 は完了: Server Actions（`useActionState`、`useFormStatus`、`useOptimistic`、`.bind()`、クロージャ、シリアライズ、例外、RSC Refresh）。`useActionState` などの Next.js のルーター経由の動き（redirect、revalidatePath で画面を更新）はルートの描画（Phase 4/5）で
-- Phase 4 を進行中: `renderRoute`（ハイドレーション、Error Boundary、notFound、redirect）、Route Handler、Proxy、next.config の redirects / rewrites / headers は完了。Phase 5 はほぼ完了（ナビゲーションの hooks、Router Cache の既定の動き（戻る / 進むはキャッシュ、Link は dynamic を取り直す）、最初の HTML のストリーミング）。Phase 6（Cache Components / PPR）は静的なルートの静的シェル（`prerenderRoute`）まで。残り: サードパーティの `react-server` の exports の条件、Phase 8 の速度
+- Phase 4 を進行中: `renderRoute`（ハイドレーション、Error Boundary、notFound、redirect）、Route Handler、Proxy、next.config の redirects / rewrites / headers は完了。Phase 5 はほぼ完了（ナビゲーションの hooks、Router Cache の既定の動き（戻る / 進むはキャッシュ、Link は dynamic を取り直す）、最初の HTML のストリーミング）。Phase 6（Cache Components / PPR）は静的なルートの静的シェル（`prerenderRoute`）まで。残り: Phase 8 の速度
 - Phase 2 は完了: `render()`（SSR / Client / Hydration、Context、イベント、Portal、Client Mode の Suspense（Server のデータ待ち、`use()`））。フォームと `useActionState` などは Server Actions と一緒に Phase 3
 - 注意: DOM を入れた後は、ネイティブで読むサードパーティのライブラリ（SSR 層・rsc 層）にも `window` が見える（Next.js の SWC で変換するアプリのコードは置き換え済み）
 - DOM アダプター（`src/dom/environment.ts`）: turbo-dom が上書きする Bun 本来のグローバルのうち、DOM に固有でないもの（タイマー、`queueMicrotask`、`fetch`、`URL`、`performance`、`atob`/`btoa` など）は Bun のままにする（サーバー側のコードも使う。turbo-dom 0.5.6 の `btoa` はバイナリで無限ループした）。`installDom` は 1 プロセスに 1 回（入れ直すと user-event が古い document を使い続ける）

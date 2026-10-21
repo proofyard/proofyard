@@ -342,6 +342,23 @@ const nativeReplacements = new Map<string, string>(); // node_modules のファ�
 // 読み込んだときに失敗するモジュール（import の名前の解決で先に失敗しないよう、元のモジュールの export 名を持たせる）
 const failModule = (message: string, exports: string[] = []) =>
   `throw new Error(${JSON.stringify(message)});\nexport default undefined;\n${exports.filter((n) => n !== "default").map((n) => `export const ${n} = undefined;\n`).join("")}`;
+// exports に react-server の条件を持つパッケージは、Next.js の rsc 層（webpack の conditionNames）では別のファイルになる。
+// Bun の解決（--conditions react-server）で求め、元のファイルを読んだら react-server のファイルを読むようにする
+// ponytail: package.json に "react-server" と書かれたパッケージだけ、1 つずつ別プロセスで解決する。多ければまとめる
+const hasReactServerCondition = new Map<string, boolean>(); // package.json → "react-server" を含む
+function reactServerResolve(spec: string, from: string, resolved: string): string {
+  let dir = dirname(resolved);
+  while (!existsSync(join(dir, "package.json")) || !/"name"\s*:/.test(readFileSync(join(dir, "package.json"), "utf8"))) {
+    if (dir === dirname(dir)) return resolved;
+    dir = dirname(dir);
+  }
+  const pkg = join(dir, "package.json");
+  if (!hasReactServerCondition.has(pkg)) hasReactServerCondition.set(pkg, readFileSync(pkg, "utf8").includes('"react-server"'));
+  if (!hasReactServerCondition.get(pkg)) return resolved;
+  const proc = Bun.spawnSync([process.execPath, "--conditions", "react-server", "-e", "console.log(Bun.resolveSync(process.argv[1], process.argv[2]))", spec, from]);
+  if (!proc.success) throw new Error(`[proofyard] failed to resolve ${spec} with the react-server condition from ${from}\n${proc.stderr}`);
+  return proc.stdout.toString().trim();
+}
 const visited = new Set<string>();
 while (nodeModuleImports.length) {
   const [path, source] = nodeModuleImports.pop()!;
@@ -353,7 +370,19 @@ while (nodeModuleImports.length) {
     } catch {
       continue;
     }
-    if (!resolved.includes("/node_modules/") || !/\.[cm]?js$/.test(resolved) || visited.has(resolved)) continue;
+    if (!resolved.includes("/node_modules/") || !/\.[cm]?js$/.test(resolved)) continue;
+    const target = reactServerResolve(spec, dirname(path), resolved);
+    if (target !== resolved && !nativeReplacements.has(resolved)) {
+      const { exports } = new Bun.Transpiler({ loader: "js" }).scan(readFileSync(target, "utf8"));
+      nativeReplacements.set(
+        resolved,
+        exports.length
+          ? `export * from ${JSON.stringify(target)};\n${exports.includes("default") ? `export { default } from ${JSON.stringify(target)};\n` : ""}`
+          : failModule(`[proofyard] Unsupported: CommonJS react-server exports in node_modules (${target})`),
+      );
+      resolved = target;
+    }
+    if (visited.has(resolved)) continue;
     visited.add(resolved);
     const dep = readFileSync(resolved, "utf8");
     if (USE_CLIENT.test(dep)) {
