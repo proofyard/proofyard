@@ -163,6 +163,8 @@ const loaded = await Promise.all(
       entry,
       code
         .replace(/\s+with\s*\{\s*'turbopack-transition'[^}]*\}/g, "") // Turbopack 用の import 属性
+        // export * from entry-base（CJS）の名前は Bun.build の ESM の出力では消える。名前空間でも出し、server/app/*.js で戻す
+        .replace(/^export \* from (['"][^'"]*\/entry-base['"]);?$/m, "$&\nexport * as __proofyardEntryBase from $1;")
         // Client Component の読み込み（webpack の __webpack_require__ の代わり）
         .replace("const __next_app_require__ = __webpack_require__", "const __next_app_require__ = (id) => globalThis.__proofyardNextRequire(id)")
         // webpack の resolve.alias（private-next-root-dir → プロジェクト）
@@ -490,7 +492,10 @@ write(join(distDir, "routes-manifest.json"), routesManifest);
 // ページのモジュール（next start は server/app/<page>.js を require する）は rsc 層のビルド結果
 write(join(distDir, "server/app-paths-manifest.json"), Object.fromEntries([...routes.values()].map(({ page }) => [page, `app${page}.js`])));
 write(join(distDir, "app-path-routes-manifest.json"), Object.fromEntries([...routes].map(([pathname, { page }]) => [page, pathname])));
-for (const { page, entry } of routes.values()) write(join(distDir, `server/app${page}.js`), `module.exports = require(${JSON.stringify(rsc.get(entry))});\n`);
+for (const { page, entry } of routes.values()) {
+  const mod = `require(${JSON.stringify(rsc.get(entry))})`;
+  write(join(distDir, `server/app${page}.js`), `const mod = ${mod};\nmodule.exports = mod.__proofyardEntryBase ? { ...mod.__proofyardEntryBase, ...mod } : mod;\n`);
+}
 write(join(distDir, "server/pages-manifest.json"), {});
 mkdirSync(join(distDir, "static"), { recursive: true });
 write(join(distDir, "server/middleware-manifest.json"), { version: 3, middleware: {}, functions: {}, sortedMiddleware: [] });
@@ -632,17 +637,60 @@ export type PrerenderRouteResult = {
 const { getRouteRegex } = require("next/dist/shared/lib/router/utils/route-regex");
 const { isDynamicRoute } = require("next/dist/shared/lib/router/utils/is-dynamic");
 const { format } = require("node:util");
+// next build が prerender する URL（generateStaticParams）。next dev と同じ Next.js の loadStaticPaths で求める。
+// loadStaticPaths は globalThis.__incrementalCache を作り直すので、ルーターのものに戻す
+async function staticPaths(path: string): Promise<{ pathname: string; fallbackRouteParams?: unknown[]; throwOnEmptyStaticShell?: boolean }[]> {
+  await getRouter();
+  const { loadStaticPaths } = require("next/dist/server/dev/static-paths-worker");
+  const g = globalThis as any;
+  const incrementalCache = g.__incrementalCache;
+  try {
+    const result = await loadStaticPaths({
+      dir: projectDir,
+      distDir,
+      pathname: path,
+      config: { configFileName: config.configFileName, cacheComponents: !!config.cacheComponents, partialPrefetching: !!config.partialPrefetching },
+      httpAgentOptions: config.httpAgentOptions,
+      page: routes.get(path)!.page,
+      isAppPath: true,
+      requestHeaders: {},
+      cacheHandler: config.cacheHandler,
+      cacheHandlers: config.cacheHandlers,
+      cacheLifeProfiles: config.cacheLife,
+      fetchCacheKeyPrefix: config.experimental.fetchCacheKeyPrefix,
+      isrFlushToDisk: false,
+      cacheMaxMemorySize: config.cacheMaxMemorySize,
+      nextConfigOutput: config.output,
+      buildId: "proofyard",
+      deploymentId: config.deploymentId ?? "",
+      authInterrupts: !!config.experimental.authInterrupts,
+      useCacheTimeout: config.experimental.useCacheTimeout,
+      durableUseCacheEntries: !!config.experimental.durableUseCacheEntries,
+      staticPageGenerationTimeout: config.staticPageGenerationTimeout,
+      sriEnabled: !!config.experimental.sri?.algorithm,
+    });
+    return result.prerenderedRoutes ?? [];
+  } finally {
+    g.__incrementalCache = incrementalCache;
+  }
+}
 async function prerenderRoute(url: string): Promise<PrerenderRouteResult> {
   if (!config.cacheComponents) throw new Error("[proofyard] Unsupported: prerenderRoute requires cacheComponents (Partial Prerendering)");
   const target = new URL(url, "http://localhost");
   // 動的なルートは、ルートのパス（/products/[id]）ならフォールバックのシェル（パラメーターを使うところは Suspense の fallback のまま）。
   // Next.js の静的シェルのデバッグの fallback を使う（next build の [id].html と同じ）。
-  // 具体的な URL（/products/1）は generateStaticParams で決まる（まだ扱わない）
+  // 具体的な URL（/posts/hello）は、generateStaticParams がすべてのパラメーターを返したものだけ（next build もその URL を prerender する）
   const fallback = routes.has(target.pathname) && isDynamicRoute(target.pathname);
   if (!routes.has(target.pathname))
     for (const path of routes.keys())
-      if (isDynamicRoute(path) && getRouteRegex(path).re.test(target.pathname))
-        throw new Error(`[proofyard] Unsupported: prerenderRoute for a concrete URL of a dynamic route (${path}). Pass the route path for the fallback shell`);
+      if (isDynamicRoute(path) && getRouteRegex(path).re.test(target.pathname)) {
+        const paths = await staticPaths(path);
+        if (!paths.some((route) => route.pathname === decodeURIComponent(target.pathname) && !route.fallbackRouteParams?.length))
+          throw new Error(
+            `[proofyard] Unsupported: prerenderRoute for ${target.pathname}, which generateStaticParams of ${path} does not return. Pass the route path for the fallback shell`,
+          );
+        break;
+      }
   target.searchParams.set("__nextppronly", fallback ? "fallback" : "1");
   // prerender の失敗（Suspense の外の動的なデータなど）は、Next.js がログに出す（next build と同じ文面）
   const logged: string[] = [];
@@ -654,7 +702,13 @@ async function prerenderRoute(url: string): Promise<PrerenderRouteResult> {
   try {
     const response = await requestRoute(target.pathname + target.search);
     const shell = await response.text();
-    if (response.status >= 500) throw new Error(`[proofyard] prerendering ${url} failed (status ${response.status})\n${logged.join("\n")}`);
+    if (response.status >= 500) {
+      // generateStaticParams があると、next build はフォールバックのシェルが空でもよいとする（その URL はリクエストのときに描画を待つ）。
+      // 静的シェルのデバッグにはその設定がないので、ここでは描画に失敗する
+      if (fallback && (await staticPaths(target.pathname)).some((route) => route.pathname === target.pathname && route.throwOnEmptyStaticShell === false))
+        throw new Error(`[proofyard] Unsupported: prerenderRoute for the fallback shell of ${target.pathname}, which next build allows to be empty (generateStaticParams)`);
+      throw new Error(`[proofyard] prerendering ${url} failed (status ${response.status})\n${logged.join("\n")}`);
+    }
     return {
       status: response.status,
       shell,
