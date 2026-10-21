@@ -32,6 +32,10 @@ export type RenderRouteResult = Queries & {
   waitForFallback(): Promise<void>;
   // HTML が最後まで届き、Suspense の中身が表示されて（Client Mode ではハイドレーションも）落ち着くまで待つ
   waitForComplete(): Promise<void>;
+  // Testing Library の waitFor（document.title など、クエリで待てないもの）
+  waitFor: BrowserRuntime["waitFor"];
+  // window に報告されたエラー（ブラウザの window の error イベント。Next.js は Hydration Mismatch などをここに報告する）
+  errors: unknown[];
   unmount(): void;
 };
 type NavigateOptions = { scroll?: boolean };
@@ -49,12 +53,15 @@ export type RouteRouter = {
 
 const ORIGIN = "http://localhost";
 let bundles = 0;
+let stopErrors: (() => void) | undefined;
 
 // テストごとの後片付け（プリロードの afterEach から呼ばれる）
 function cleanup() {
   const roots = (globalThis as any)[Symbol.for("proofyard.routeRoots")] as Set<{ unmount(): void }> | undefined;
   for (const root of roots ?? []) root.unmount();
   roots?.clear();
+  stopErrors?.();
+  stopErrors = undefined;
   if (typeof document === "undefined") return;
   const html = document.documentElement;
   for (const { name } of Array.from(html.attributes)) html.removeAttribute(name);
@@ -232,6 +239,11 @@ export async function renderRoute(url: string, { mode = "client", streaming = fa
   const h = harness();
   const browser = await h.loadBrowser();
   const jar = new Map(Object.entries(cookies));
+  const errors: unknown[] = [];
+  const onError = (event: Event) => void errors.push((event as ErrorEvent).error);
+  stopErrors?.();
+  window.addEventListener("error", onError);
+  stopErrors = () => window.removeEventListener("error", onError);
   const { url: finalUrl, response } = await navigate(url, jar, headers);
   resetLocation(finalUrl);
   if (mode === "client") (globalThis as any).__proofyardRouteFetch = routeFetch(jar, headers);
@@ -280,6 +292,8 @@ export async function renderRoute(url: string, { mode = "client", streaming = fa
     router: routeRouter(),
     waitForFallback,
     waitForComplete,
+    waitFor: browser.waitFor,
+    errors,
     unmount: cleanup,
   } as unknown as RenderRouteResult;
 }
