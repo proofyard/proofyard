@@ -141,14 +141,22 @@ export type LayerOptions = {
   transform?: (path: string, source: string) => Promise<string | undefined>;
   // このディレクトリのファイル（node_modules を除く）はバンドルせず外部のまま（実行時にネイティブで読み込む。mock.module が効く）
   nativeDir?: string;
+  // 解決したファイルの差し替え（ブラウザ層の .browser の兄弟など。create-compiler-aliases.ts の client 用のもの）
+  redirect?: (resolved: string) => string | undefined;
+  // 層のエイリアスの上書き（BUNDLED_ALIASES に足す。値が undefined なら外す）
+  aliases?: Record<string, string | undefined>;
+  // false なら 1 つのファイルにまとめる（クエリ付きの import で評価し直すと、モジュールの状態ごと新しくなる）
+  splitting?: boolean;
 };
 
 let builds = 0;
 export type Layer = "rsc" | "ssr" | "browser";
 
-export async function buildLayer(layer: Layer, entries: string[], { define, generatedDir, transform, nativeDir }: LayerOptions) {
+export async function buildLayer(layer: Layer, entries: string[], { define, generatedDir, transform, nativeDir, redirect, aliases: override, splitting = true }: LayerOptions) {
   const aliases: Record<string, string> = ALIASES[layer];
-  const bundledAliases: Record<string, string> = BUNDLED_ALIASES[layer];
+  const bundledAliases = Object.fromEntries(
+    Object.entries({ ...BUNDLED_ALIASES[layer], ...override }).filter((e): e is [string, string] => e[1] !== undefined),
+  );
   const outdir = join(tmpdir(), `proofyard-next-${process.pid}-${layer}-${builds++}`);
   const entryPaths = entries.map((e) => (e.startsWith("/") ? e : abs(e)));
   const result = await Bun.build({
@@ -157,7 +165,7 @@ export async function buildLayer(layer: Layer, entries: string[], { define, gene
     target: layer === "browser" ? "browser" : "bun",
     format: "esm",
     conditions: layer === "rsc" ? ["react-server"] : layer === "browser" ? ["browser"] : [],
-    splitting: true,
+    splitting,
     naming: "[dir]/[name]-[hash].[ext]",
     root: "/",
     // define の NODE_ENV と揃える（prod の React に jsxDEV はない）
@@ -184,6 +192,8 @@ export async function buildLayer(layer: Layer, entries: string[], { define, gene
             if (/\.external(\.js)?$/.test(resolved) || /module\.compiled(\.js)?$/.test(resolved)) return { path: resolved, external: true };
             if (nativeDir !== undefined && resolved.startsWith(nativeDir + "/") && !resolved.includes("/node_modules/"))
               return { path: resolved, external: true };
+            const redirected = redirect?.(resolved);
+            if (redirected) return { path: redirected };
             if (generated) return { path: resolved };
           });
           if (layer === "rsc") {

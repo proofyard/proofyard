@@ -23,3 +23,7 @@ export type { ClientReference, ServerReference, RenderRSCResult, WaitOptions, RS
 export { render } from "./testing/render";
 export type { RenderOptions, RenderResult } from "./testing/render";
 export type { ActionCall } from "./testing/actions";
+
+// ルートを HTML にし、Client Mode では Next.js 本体のクライアントでハイドレーションする（仕様 18.3 / 18.4）
+export { renderRoute } from "./testing/render-route";
+export type { RenderRouteOptions, RenderRouteResult } from "./testing/render-route";

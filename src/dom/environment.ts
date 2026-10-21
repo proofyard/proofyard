@@ -89,5 +89,122 @@ export function installDom(html = "<!doctype html><html><head></head><body></bod
   installed = installGlobals(globalThis, { html });
   for (const name of KEEP_NATIVE) if (native[name] !== undefined) (globalThis as any)[name] = native[name];
   globalThis.FormData = ProofyardFormData as typeof FormData;
+  installLocation();
+  resolveUrlAttributes();
   return installed;
+}
+
+// turbo-dom 0.5.6 の src / href は属性の値をそのまま返す。HTML の要素ではブラウザと同じく文書の URL で解決する
+// （Next.js のクライアントは <script>.src から assetPrefix を求める）
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes
+function resolveUrlAttributes() {
+  for (const name of ["src", "href"]) {
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, name);
+    if (!original?.get) throw new Error(`[proofyard] the DOM adapter expected Element.prototype.${name}`);
+    Object.defineProperty(Element.prototype, name, {
+      ...original,
+      get(this: Element) {
+        if (this.namespaceURI !== "http://www.w3.org/1999/xhtml") return original.get!.call(this);
+        const value = this.getAttribute(name);
+        if (value === null) return "";
+        return URL.parse(value, document.baseURI)?.href ?? value;
+      },
+    });
+  }
+}
+
+// turbo-dom 0.5.6 の location は http://localhost/ 固定で、history.pushState も URL を変えない。
+// Next.js のルーターは location.href と history.state / pushState / replaceState / popstate を使うので、
+// URL を共有する Location と History を入れる。
+// ponytail: ページ遷移（href の代入・assign・replace・reload）はテストの中では起こせないので Fail Closed
+let current = new URL("http://localhost/");
+const entries: { url: URL; state: unknown }[] = [{ url: current, state: null }];
+let index = 0;
+
+const navigation = (what: string) => () => {
+  throw new Error(`[proofyard] Unsupported: ${what} (a full page navigation) is not supported in tests`);
+};
+
+const location = {
+  get href() {
+    return current.href;
+  },
+  set href(_: string) {
+    navigation("location.href = ...")();
+  },
+  get protocol() {
+    return current.protocol;
+  },
+  get host() {
+    return current.host;
+  },
+  get hostname() {
+    return current.hostname;
+  },
+  get port() {
+    return current.port;
+  },
+  get pathname() {
+    return current.pathname;
+  },
+  get search() {
+    return current.search;
+  },
+  get hash() {
+    return current.hash;
+  },
+  get origin() {
+    return current.origin;
+  },
+  assign: navigation("location.assign()"),
+  replace: navigation("location.replace()"),
+  reload: navigation("location.reload()"),
+  toString: () => current.href,
+};
+
+function move(url: string | URL | null | undefined, state: unknown, push: boolean) {
+  const next = url == null ? current : new URL(url, current);
+  if (next.origin !== current.origin) throw new DOMException(`Cannot change the URL to ${next.href} (different origin)`, "SecurityError");
+  if (push) entries.splice(++index, Infinity, { url: next, state: structuredClone(state) });
+  else entries[index] = { url: next, state: structuredClone(state) };
+  current = next;
+}
+
+const history = {
+  get length() {
+    return entries.length;
+  },
+  get state() {
+    return entries[index]!.state;
+  },
+  scrollRestoration: "auto",
+  pushState: (state: unknown, _title: string, url?: string | URL | null) => move(url, state, true),
+  replaceState: (state: unknown, _title: string, url?: string | URL | null) => move(url, state, false),
+  go(delta = 0) {
+    const target = index + delta;
+    if (delta === 0 || target < 0 || target >= entries.length) return;
+    index = target;
+    current = entries[index]!.url;
+    // ブラウザと同じく popstate は非同期に発火する
+    setTimeout(() => {
+      const event = new Event("popstate");
+      Object.defineProperty(event, "state", { value: entries[index]!.state });
+      window.dispatchEvent(event);
+    });
+  },
+  back: () => history.go(-1),
+  forward: () => history.go(1),
+};
+
+function installLocation() {
+  for (const target of [globalThis, document]) Object.defineProperty(target, "location", { configurable: true, get: () => location });
+  Object.defineProperty(globalThis, "history", { configurable: true, get: () => history });
+  Object.defineProperty(document, "URL", { configurable: true, get: () => current.href });
+}
+
+// テストのはじめに URL と履歴を決める（renderRoute が使う）
+export function resetLocation(url: string) {
+  current = new URL(url, "http://localhost/");
+  entries.splice(0, Infinity, { url: current, state: null });
+  index = 0;
 }
