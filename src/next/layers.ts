@@ -99,7 +99,7 @@ export const BUNDLED_ALIASES = {
 const root = process.cwd();
 const abs = (spec: string) => Bun.resolveSync(spec, root);
 // node_modules 内の "use server" / "use cache"（Next.js は SWC で変換する。ここでは変換しないので Fail Closed）
-const SERVER_DIRECTIVE = /^\s*["']use (?:server|cache(?::\s*[\w-]+)?)["']/m;
+export const SERVER_DIRECTIVE = /^\s*["']use (?:server|cache(?::\s*[\w-]+)?)["']/m;
 export const USE_CLIENT = /^\s*(?:(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:["']use strict["'];?\s*)?["']use client["']/;
 
 // Client Reference の id（"use client" ファイルの絶対パス）。esmClientIds は ESM（名前空間で渡す）もの

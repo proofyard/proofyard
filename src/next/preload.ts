@@ -10,7 +10,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { actionModule, serverActions } from "../testing/actions";
-import { ALIASES, BUNDLED_ALIASES, USE_CLIENT, buildLayer, clientIds, clientReferenceStub, esmClientIds } from "./layers";
+import { ALIASES, BUNDLED_ALIASES, SERVER_DIRECTIVE, USE_CLIENT, buildLayer, clientExports, clientIds, clientReferenceStub, esmClientIds } from "./layers";
 import { FONT_IMPORT, STYLE_FILE, createStyleLoader, unquote } from "./css";
 
 // 対象アプリ（next.config と app/ のあるディレクトリ）。既定は bun test を実行したディレクトリ
@@ -319,6 +319,7 @@ const rsc = await buildLayer("rsc", [...entries, ...facadeEntries.values()], { d
 const sourceLoader = (path: string) => (path.match(/\.([jt]sx?)$/)?.[1] ?? "js") as "js" | "jsx" | "ts" | "tsx";
 // Server Action の id → ファイル（next build は SWC の変換結果から集めて server-reference-manifest.json に書く）
 const actionFiles = new Map<string, string>();
+const nodeModuleImports: [string, string][] = []; // node_modules の import を辿るファイル
 for (const path of appSources(projectDir)) {
   const source = readFileSync(path, "utf8");
   if (/["']use server["']/.test(source))
@@ -327,18 +328,45 @@ for (const path of appSources(projectDir)) {
     clientReferenceStub(path, source);
     continue;
   }
-  // サードパーティの "use client" はネイティブで読むとサーバーで実行されてしまうので Fail Closed
-  // ponytail: アプリが直接 import するファイルだけを見る（パッケージの奥の "use client" は検出できない）
+  nodeModuleImports.push([path, source]);
+}
+// node_modules の "use client" はネイティブで読むとサーバーで実行されてしまう。アプリの import から node_modules を辿って
+// 見つけたものを Client Reference の代わりのモジュールにする（Next.js は rsc 層で node_modules もバンドルして同じことをする）
+// ponytail: 静的な import / require だけを辿る（require(変数) などの動的なものは辿れない）
+const nativeReplacements = new Map<string, string>(); // node_modules のファイル → 代わりのモジュール
+// 読み込んだときに失敗するモジュール（import の名前の解決で先に失敗しないよう、元のモジュールの export 名を持たせる）
+const failModule = (message: string, exports: string[] = []) =>
+  `throw new Error(${JSON.stringify(message)});\nexport default undefined;\n${exports.filter((n) => n !== "default").map((n) => `export const ${n} = undefined;\n`).join("")}`;
+const visited = new Set<string>();
+while (nodeModuleImports.length) {
+  const [path, source] = nodeModuleImports.pop()!;
   for (const { path: spec } of new Bun.Transpiler({ loader: sourceLoader(path) }).scanImports(source)) {
-    if (/^(?:\.|\/|node:|bun:|next\/|react)/.test(spec) || spec === "next") continue;
+    if (/^(?:node:|bun:)/.test(spec) || spec in ALIASES.rsc || nextFacades.has(spec) || spec === "next" || spec.startsWith("next/")) continue;
     let resolved: string;
     try {
       resolved = Bun.resolveSync(spec, dirname(path));
     } catch {
       continue;
     }
-    if (resolved.includes("/node_modules/") && USE_CLIENT.test(readFileSync(resolved, "utf8")))
-      throw new Error(`[proofyard] Unsupported: "use client" modules in node_modules are not supported yet (${spec} from ${path})`);
+    if (!resolved.includes("/node_modules/") || !/\.[cm]?js$/.test(resolved) || visited.has(resolved)) continue;
+    visited.add(resolved);
+    const dep = readFileSync(resolved, "utf8");
+    if (USE_CLIENT.test(dep)) {
+      const stub = clientReferenceStub(resolved, dep);
+      // CJS の代わりのモジュール（module.exports）は実行時のプラグインでは CJS として読まれない
+      nativeReplacements.set(
+        resolved,
+        esmClientIds.has(resolved) ? stub : failModule(`[proofyard] Unsupported: CommonJS "use client" modules in node_modules (${resolved})`, clientExports.get(resolved)),
+      );
+    } else if (SERVER_DIRECTIVE.test(dep))
+      nativeReplacements.set(
+        resolved,
+        failModule(
+          `Unsupported Next.js feature: "use server" / "use cache" in node_modules is not compiled by the current runtime (${resolved})`,
+          new Bun.Transpiler({ loader: "js" }).scan(dep).exports,
+        ),
+      );
+    else nodeModuleImports.push([resolved, dep]);
   }
 }
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
@@ -371,6 +399,11 @@ Bun.plugin({
         return { exports, loader: "object" };
       });
     build.onLoad({ filter: STYLE_FILE }, (args) => style(args.path));
+    if (nativeReplacements.size)
+      build.onLoad({ filter: new RegExp(`^(?:${[...nativeReplacements.keys()].map(escape).join("|")})$`) }, (args) => ({
+        contents: nativeReplacements.get(args.path)!,
+        loader: "js",
+      }));
     build.onLoad({ filter: new RegExp(`^${escape(projectDir)}/(?!.*/node_modules/).*\\.[jt]sx?$`) }, (args) => {
       const source = readFileSync(args.path, "utf8");
       if (USE_CLIENT.test(source)) return { contents: clientReferenceStub(args.path, source), loader: "js" };

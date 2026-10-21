@@ -132,3 +132,17 @@ test("next/font/local: クラス名とフォント名は Next.js のローダー
   expect(text.dataset.family).toBe("'brand'");
   expect(app.errors).toEqual([]);
 });
+
+test("サードパーティの \"use client\"（パッケージの奥のファイル、別のパッケージ）は Client Reference になる", async () => {
+  const app = await renderRoute("/third-party");
+  // サーバーで実行されていれば、react-server の React に useState がなく失敗する
+  await app.user.click(app.getByRole("button", { name: "CLICKS: 0" }));
+  await app.findByRole("button", { name: "CLICKS: 1" });
+  await app.waitFor(() => expect(app.getByText("tip").dataset.mounted).toBe("true"));
+  expect(app.errors).toEqual([]);
+});
+
+test('node_modules の "use cache" は変換できないので、そのページは Fail Closed（500）', async () => {
+  const res = await requestRoute("/third-party/cached");
+  expect(res.status).toBe(500);
+});
