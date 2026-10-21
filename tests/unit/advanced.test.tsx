@@ -153,3 +153,8 @@ test('node_modules の "use cache" は変換できないので、そのページ
   const res = await requestRoute("/third-party/cached");
   expect(res.status).toBe(500);
 });
+
+test("サードパーティの exports の react-server の条件は、Next.js の rsc 層と同じく react-server のファイル", async () => {
+  const html = await (await requestRoute("/third-party/server")).text();
+  expect(html).toContain("server build<!-- --> (<!-- -->react-server<!-- -->)");
+});
