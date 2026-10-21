@@ -17,7 +17,7 @@ import { FONT_IMPORT, STYLE_FILE, createStyleLoader, unquote } from "./css";
 // ponytail: 環境変数で受け取る。設定ファイル（proofyard.config 等）は必要になったら
 const projectDir = resolve(process.env.PROOFYARD_NEXT_APP ?? process.cwd());
 const work = join(tmpdir(), `proofyard-next-${process.pid}`);
-// 前の実行の生成物のうち、afterAll まで行かなかったもの（プリロードの Fail Closed など）を消す
+// 前の実行（終わったプロセス）の生成物を消す
 for (const name of readdirSync(tmpdir())) {
   const pid = Number(name.match(/^proofyard-next-(\d+)$/)?.[1]);
   if (!pid) continue;
@@ -799,10 +799,10 @@ async function flushAfter() {
   // after() の中で after() を呼ぶと増える
   while (pendingAfter.size > 0) await Promise.all(pendingAfter);
 }
-const { afterAll, afterEach, beforeEach } = await import("bun:test");
-// 生成物（エントリ、層のビルド、.next）は全テストの後に消す（layers.ts の出力もこの下）。bun test は process の exit を出さない。
-// --parallel のワーカー（--no-isolate なら 1 つのプリロードで複数のファイル。afterAll はファイルごと）では消さず、次の実行の起動時に消す（上）
-if (!process.env.BUN_TEST_WORKER_ID) afterAll(() => rmSync(work, { recursive: true, force: true }));
+const { afterEach, beforeEach } = await import("bun:test");
+// 生成物（エントリ、層のビルド、.next。layers.ts の出力もこの下）は、テストの後には消さず、次の実行の起動時に消す（上）。
+// bun test は process の exit を出さない。afterAll で消すと、--watch では読み込んだファイルの変更として再実行が止まらず、
+// --parallel --no-isolate では afterAll がファイルごとに動いて次のファイルが失敗する
 // 同じプロセスで同時に動くテスト（test.concurrent / --concurrent）は、DOM とキャッシュの分離（仕様 20.4）ができないので Fail Closed。
 // 並列にするならプロセスを分ける（--parallel）
 let runningTests = 0;
