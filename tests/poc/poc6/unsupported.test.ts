@@ -17,7 +17,7 @@ test('node_modules 内の "use cache" は変換できないのでビルドを失
   );
 });
 
-test('アプリが import する node_modules の "use client" は、サーバーで実行しないようにプリロードで止める', async () => {
+test('node_modules の CommonJS の "use client" は未対応。サーバーで実行せず、読み込んだときに失敗させる', async () => {
   const app = mkdtempSync(join(tmpdir(), "proofyard-third-party-client-"));
   mkdirSync(join(app, "app"));
   mkdirSync(join(app, "node_modules/fake-ui"), { recursive: true });
@@ -25,14 +25,17 @@ test('アプリが import する node_modules の "use client" は、サーバ�
   writeFileSync(join(app, "node_modules/fake-ui/index.js"), `"use client";\nexports.Button = function Button() { return null; };\n`);
   writeFileSync(join(app, "app/layout.tsx"), `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`);
   writeFileSync(join(app, "app/page.tsx"), `import { Button } from "fake-ui";\nexport default function P() { return <Button />; }\n`);
-  writeFileSync(join(app, "noop.test.ts"), `import { test } from "bun:test";\ntest("noop", () => {});\n`);
-  const proc = Bun.spawn(["bun", "test", "--preload", join(import.meta.dir, "../../../src/next/preload.ts"), join(app, "noop.test.ts")], {
+  writeFileSync(
+    join(app, "page.test.ts"),
+    `import { expect, test } from "bun:test";\ntest("page", async () => {\n  await expect(import("./app/page.tsx")).rejects.toThrow('Unsupported: CommonJS "use client" modules in node_modules');\n});\n`,
+  );
+  const proc = Bun.spawn(["bun", "test", "--preload", join(import.meta.dir, "../../../src/next/preload.ts"), join(app, "page.test.ts")], {
     cwd: process.cwd(),
     env: { ...process.env, PROOFYARD_NEXT_APP: app },
     stdout: "pipe",
     stderr: "pipe",
   });
   const output = (await new Response(proc.stdout).text()) + (await new Response(proc.stderr).text());
-  expect(await proc.exited).not.toBe(0);
-  expect(output).toContain('Unsupported: "use client" modules in node_modules are not supported yet (fake-ui');
+  expect(output).toContain("1 pass");
+  expect(await proc.exited).toBe(0);
 }, 60_000);

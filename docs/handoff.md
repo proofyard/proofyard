@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）。122 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）。124 件）
 
 ## 決めたこと
 
@@ -37,7 +37,8 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
   - `app.errors`: window に報告されたエラー（Next.js は Hydration Mismatch などを `reportError` で報告する。DOM アダプターの `reportError` はブラウザと同じく window に `error` イベントを送り、取り消されなければ console.error。Bun のものは捕まえられなかった例外になる）。`app.waitFor`: Testing Library の `waitFor`
   - Phase 7 で確認したもの（Next.js 本体の処理のまま動く）: Metadata（`title.template`、`generateMetadata`、`generateViewport`、`icon.svg`、`opengraph-image.tsx`（`next/og`）、`sitemap.ts` / `robots.ts`。metadata のファイルは next-app-loader の出力が `next-metadata-route-loader` / `next-metadata-image-loader` を import するので、それも Next.js のローダーで生成する（export 名は SWC の `getModuleNamedExports`）。生成コードに知らないローダーが残ったら起動時に Fail Closed）、遷移後の `document.title`。Next.js 16 は metadata を本文と別に流すので、遷移の完了より後に変わる）、`after()`（応答のあと。`flushAfter()` で待つ）、`next/dynamic`（`ssr: false`）と `import()`、Hydration Mismatch、`useDeferredValue` / `startTransition` の中の `router.push`。仕様 16.3: `.env` の環境変数（Next.js の `loadConfig` が読む）、`server-only`、`next/image`（`/_next/image` の最適化も）。
   - CSS（`src/next/css.ts`）: CSS Modules は Next.js の css-loader を、サーバー側と同じ設定（`exportOnlyLocals`。クラス名だけ）で全部の層に使う（クラス名は next build と同じ `page_title__NlRtp` の形）。普通の CSS は空のモジュール（スタイルは DOM に入れない。`<link rel="stylesheet">` も出ない）。Sass と、別のファイルからの `composes` は Fail Closed
-  - `next/font`: SWC が書き換えた `next/font/*/target.css?{...}` の import を、起動時にアプリのソースから集めて Next.js の `next-font-loader` → css-loader で生成し、置き換える（rsc 層のネイティブ読み込みの変換は同期なので先に作る）。`next/font/google` は next build と同じく起動時に Google から取得する（ネットワークが必要。手元で一度だけ確認。恒久的なテストには入れていない）。フォントのファイルの配信と preload の `<link>` はないStrictMode は Next.js の define（`__NEXT_STRICT_MODE_APP`）のまま。本番版の React なので二重の描画などは起きない
+  - `next/font`: SWC が書き換えた `next/font/*/target.css?{...}` の import を、起動時にアプリのソースから集めて Next.js の `next-font-loader` → css-loader で生成し、置き換える（rsc 層のネイティブ読み込みの変換は同期なので先に作る）。`next/font/google` は next build と同じく起動時に Google から取得する（ネットワークが必要。手元で一度だけ確認。恒久的なテストには入れていない）。フォントのファイルの配信と preload の `<link>` はない
+  - StrictMode は Next.js の define（`__NEXT_STRICT_MODE_APP`）のまま。本番版の React なので二重の描画などは起きない
 - `renderRSC(element)`: RSC Mode。Flight を往復させた React ツリーを返す（シェルが揃った時点。待っている Suspense は fallback）
   - クエリ（毎回いまの状態を読む）: `getByText` / `queryByText` / `getAllByText` / `queryAllByText`、`findByText` / `findAllByText`（届くまで待つ）、`waitForComplete()`、`getClientReference` / `getAllClientReferences`（export 名か、import した Client Component で探す）、`text()`、`root`
   - Client Component は実行しない（デコード時に目印のモジュールに差し替える）。Server Function は `$$id` と `$$bound` を持つ目印になる（呼ぶとエラー）
@@ -72,7 +73,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
     - Flight クライアントの `__webpack_require__` / `__next_require__` は define で別の関数に向ける（SSR と混ざらないように）
     - Flight クライアントは本番版（Flight を作るサーバーと揃える）。開発版のクライアントは開発版のサーバーだけが送る情報（key の検証済みの印、エラーのスタック）を前提にしていて、偽の key の警告やエラーの復元の失敗が起きた
   - アプリのソースは SSR 層・ブラウザ層でも Next.js の SWC で変換する（`typeof window` の置き換えなど）
-  - SSR 層に入れる Client Component: Next.js 本体のものは rsc 層のビルドで、アプリのものは全ソースの `"use client"` を調べて集める
+  - SSR 層に入れる Client Component: Next.js 本体のものは rsc 層のビルドで、アプリのものは全ソースの `"use client"` を調べて集める。`node_modules` のものは、アプリの静的な import / require から `node_modules` を辿って集め（パッケージの奥のファイル、別のパッケージも）、ネイティブ読み込みでは `onLoad`（そのファイルだけの filter）で Client Reference に置き換える。`require(変数)` などの動的な読み込みは辿れない
   - アプリから使う Next.js 本体のモジュールは固定の一覧（`private-next-rsc-*` などのエイリアスと App Router の公開の入口）。一覧にない `next/*` はネイティブで読まれて define が効かない
 - manifest: `next start` が読む `.next` の最小構成を一時ディレクトリに書く（routes-manifest は `loadCustomRoutes` + Intercepting Routes の rewrite（`generateInterceptionRoutesRewrites`）+ `generateRoutesManifest`、Proxy は `server/middleware.js` と functions-config-manifest の matcher、Server Actions は SWC の変換結果から server-reference-manifest）
 - リクエスト: 本文はストリームで返す（ステータスとヘッダーは最初の書き込みの時点）。router-server の `initialize`（設定は `__NEXT_PRIVATE_STANDALONE_CONFIG` で渡す）の `requestHandler` をモックの req/res で呼ぶ。サーバーのエラーは `next start` と同じくログに出る
@@ -93,7 +94,8 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 
 ## 未対応（Fail Closed にしているもの・まだのもの）
 
-- `node_modules` 内の `"use cache"` / `"use server"`、独自の `cacheHandlers`、`node_modules` 内のサードパーティの `"use client"`: エラーにしている
+- `node_modules` 内の `"use cache"` / `"use server"`、独自の `cacheHandlers`、`node_modules` 内の CommonJS の `"use client"`: エラーにしている（`node_modules` のものは読み込んだときに失敗する）
+- rsc 層のネイティブ読み込みは `react-server` の条件で解決しない（`exports` に `react-server` を持つサードパーティのパッケージは、Next.js と違うファイルを読む）
 - サードパーティのパッケージがネイティブで `next/*` を import する場合は、バンドル側に向かない（未検証）
 - ビルド時のプリレンダリング、PPR の静的シェル: 再現していない（毎回リクエスト時に描画）
 - `src/` ディレクトリ: 対応（Next.js の `findPagesDir`。Proxy も `src/proxy.ts`）。tsconfig の `paths`: 対応（Next.js の `loadJsConfig` で読み、import の解決は Bun の tsconfig 対応）
