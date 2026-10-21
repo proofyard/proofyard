@@ -15,6 +15,9 @@ export const requestRoute = (url: string, options?: RequestRouteOptions): Promis
 // このテストで無効化されたキャッシュタグ（revalidateTag / updateTag / revalidatePath）
 export const getInvalidatedTags = (): string[] => harness().invalidatedTags();
 
+// after() に渡された処理（応答のあとに動く）が終わるまで待つ（仕様 16.2）
+export const flushAfter = (): Promise<void> => harness().flushAfter();
+
 // Server Components を RSC Mode で描画する（仕様 4.1 / 18.2）
 export { renderRSC } from "./testing/render-rsc";
 export type { ClientReference, ServerReference, RenderRSCResult, WaitOptions, RSCClientElement, RSCElement, RSCHostElement, RSCNode, TextMatcher } from "./testing/render-rsc";

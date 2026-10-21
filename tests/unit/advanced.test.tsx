@@ -1,6 +1,6 @@
 // Phase 7 / 仕様 16 章: Metadata、after()、Dynamic Imports など（どれも Next.js 本体の処理をそのまま通す）
 import { beforeEach, expect, test } from "bun:test";
-import { renderRoute, requestRoute } from "proofyard";
+import { flushAfter, renderRoute, requestRoute } from "proofyard";
 import { db } from "../fixtures/next-app/components/users/db";
 
 beforeEach(() => {
@@ -57,9 +57,14 @@ test("Metadata: opengraph-image.tsx（next/og の ImageResponse）", async () =>
 test("after(): 応答を返したあとに動く", async () => {
   const res = await requestRoute("/after");
   expect(await res.text()).toContain("<h1>After</h1>");
-  // 応答の本文を読み終えたあと
-  await Bun.sleep(0);
+  await flushAfter();
   expect(db.afterLog).toEqual(["render", "after"]);
+});
+
+test("after(): renderRoute の lifecycle.flushAfter と、後から終わる処理", async () => {
+  const app = await renderRoute("/after?slow=1", { mode: "ssr" });
+  await app.lifecycle.flushAfter();
+  expect(db.afterLog).toEqual(["render", "after", "slow after"]);
 });
 
 test("Dynamic Imports: next/dynamic（ssr: false）と import()", async () => {

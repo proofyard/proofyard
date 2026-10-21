@@ -556,6 +556,23 @@ function resetCache() {
 }
 // 無効化されたタグ（revalidateTag / updateTag / revalidatePath が記録したもの）
 const invalidatedTags = (): string[] => [...tagsManifest.keys()];
+
+// after() の処理は Next.js が waitUntil に渡す。プラットフォームが waitUntil を渡す入口（"@next/request-context"。Vercel などが使う）で受け取り、
+// flushAfter() で終わるまで待てるようにする（next start では Next.js 内部の AwaiterOnce が受け取る。どちらも渡された Promise を待つだけ）
+const pendingAfter = new Set<Promise<unknown>>();
+(globalThis as any)[Symbol.for("@next/request-context")] = {
+  get: () => ({
+    waitUntil: (promise: Promise<unknown>) => {
+      const task = Promise.resolve(promise).catch((error) => console.error(error));
+      pendingAfter.add(task);
+      task.finally(() => pendingAfter.delete(task));
+    },
+  }),
+};
+async function flushAfter() {
+  // after() の中で after() を呼ぶと増える
+  while (pendingAfter.size > 0) await Promise.all(pendingAfter);
+}
 const { afterAll, afterEach, beforeEach } = await import("bun:test");
 // 生成物（エントリ、層のビルド、.next）は全テストの後に消す（layers.ts の出力もこの下）。bun test は process の exit を出さない
 afterAll(() => rmSync(work, { recursive: true, force: true }));
@@ -717,10 +734,11 @@ const ssrModuleMap = () => Object.fromEntries([...clientIds].map((id) => [id, { 
 // テストが始まる前にビルドを終える（最初の render() のテストがビルドの時間でタイムアウトしないように）
 await Promise.all([buildBrowser(), routeBuild]);
 console.log(`[proofyard] browser layer: ${(performance.now() - t).toFixed(0)}ms`);
-(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, invalidatedTags, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild } satisfies NextHarness;
+(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, invalidatedTags, flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild } satisfies NextHarness;
 export type NextHarness = {
   requestRoute: typeof requestRoute;
   invalidatedTags: typeof invalidatedTags;
+  flushAfter: typeof flushAfter;
   loadBrowser: typeof loadBrowser;
   ssrRuntime: typeof ssrRuntime;
   ssrModuleMap: typeof ssrModuleMap;
