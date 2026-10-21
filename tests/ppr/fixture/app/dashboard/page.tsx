@@ -1,15 +1,17 @@
 import { Suspense } from "react";
 import { cookies } from "next/headers";
 import { connection } from "next/server";
+import { stats } from "./stats";
 
 async function getStats() {
   "use cache";
+  stats.calls++;
   return { users: 42 };
 }
 
 async function Stats() {
-  const stats = await getStats();
-  return <p>Users: {stats.users}</p>;
+  const { users } = await getStats();
+  return <p>Users: {users}</p>;
 }
 
 async function Greeting() {
