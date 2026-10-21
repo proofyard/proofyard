@@ -55,6 +55,9 @@ const { generateRoutesManifest } = require("next/dist/build/generate-routes-mani
 
 let t = performance.now();
 const config = await loadConfig(PHASE_PRODUCTION_BUILD, projectDir, { silent: true });
+// prerenderRoute が使う Next.js の静的シェルのデバッグ機能を有効にしてビルドする（getDefineEnv が define に入れる。
+// ?__nextppronly のリクエストだけが使う。next build をこの環境変数付きで実行するのと同じ）
+if (config.cacheComponents) process.env.__NEXT_EXPERIMENTAL_STATIC_SHELL_DEBUGGING = "1";
 const pageExtensions: string[] = config.pageExtensions;
 // app/ か src/app/（next build と同じ findPagesDir）
 const { appDir, pagesDir } = require("next/dist/lib/find-pages-dir").findPagesDir(projectDir) as { appDir?: string; pagesDir?: string };
@@ -423,7 +426,24 @@ for (const [id, out] of ssr) {
 // Next.js の handler が Server Action を読むモジュール（server-reference-manifest.json の moduleId）。
 // webpack ではファイルの Action を id の名前で export するモジュール（next-flight-action-entry-loader）
 const ACTION_FILE_PREFIX = "proofyard-server-action-file:";
+// rsc 層の Flight クライアント（prerender や "use cache" の結果を rsc 層で読み直す）が読む Client Component は、
+// next build の rscModuleMapping と同じく rsc 層のモジュール（Client Reference）
+const RSC_CLIENT_PREFIX = "proofyard-rsc-client:";
+const { registerClientReference } = require(Bun.resolveSync(ALIASES.rsc["react-server-dom-webpack/server"], process.cwd()));
+const rscClientModules = new Map<string, object>();
+const rscClientModule = (id: string) => {
+  let m = rscClientModules.get(id);
+  if (!m) {
+    const fail = () => {
+      throw new Error("[proofyard] client function called on the server");
+    };
+    m = { __esModule: true, ...Object.fromEntries((clientExports.get(id) ?? []).map((name) => [name, registerClientReference(fail, id, name)])) };
+    rscClientModules.set(id, m);
+  }
+  return m;
+};
 (globalThis as any).__proofyardNextRequire = (id: string) => {
+  if (id.startsWith(RSC_CLIENT_PREFIX)) return rscClientModule(id.slice(RSC_CLIENT_PREFIX.length));
   if (id.startsWith(ACTION_FILE_PREFIX)) {
     require(id.slice(ACTION_FILE_PREFIX.length));
     return new Proxy({}, { get: (_, actionId) => (typeof actionId === "string" ? serverActions.get(actionId) : undefined) });
@@ -446,7 +466,7 @@ const clientReferenceManifest = {
   clientModules: Object.fromEntries([...clientIds].map((id) => [id, clientEntry(id)])),
   ssrModuleMapping: Object.fromEntries([...clientIds].map((id) => [id, { "*": clientEntry(id) }])),
   edgeSSRModuleMapping: {},
-  rscModuleMapping: {},
+  rscModuleMapping: Object.fromEntries([...clientIds].map((id) => [id, { "*": clientEntry(RSC_CLIENT_PREFIX + id) }])),
   edgeRscModuleMapping: {},
   moduleLoading: { prefix: "", crossOrigin: null },
   entryCSSFiles: {},
@@ -589,11 +609,59 @@ const getRouter = () =>
     process.env.__NEXT_PRIVATE_STANDALONE_CONFIG = JSON.stringify({ ...config, distDir: relative(projectDir, distDir) });
     try {
       const { requestHandler } = await initialize({ dir: projectDir, port: 80, hostname: "localhost", dev: false, minimalMode: false, quiet: false, onDevServerCleanup: undefined });
+      // prerender-manifest にないルートで ?__nextppronly を使えるようにする（next start の --experimental-test-proxy と同じ。
+      // app-page-runtime.ts でこの値を見るのは、その判定だけ）
+      if (config.cacheComponents) (globalThis as any)[Symbol.for("@next/router-server-methods")][relative(process.cwd(), projectDir)].experimentalTestProxy = true;
       return requestHandler;
     } finally {
       delete process.env.__NEXT_PRIVATE_STANDALONE_CONFIG;
     }
   })());
+
+// Partial Prerendering の静的シェル（仕様 12 章）。Next.js の静的シェルのデバッグ機能（?__nextppronly=1。app-page-runtime.ts）で、
+// next build と同じ prerender（isBuildTimePrerendering）を走らせ、動的な部分を再開（resume）せずにシェルだけを返させる
+export type PrerenderRouteResult = {
+  status: number;
+  // 静的シェルの HTML（next build の .html と同じ。Next.js がデバッグ用に </body></html> を足している）
+  shell: string;
+  // 動的な部分があり、リクエストのときに再開される（x-nextjs-postponed）
+  postponed: boolean;
+  // リクエストのときまで待つ Suspense 境界（シェルでは fallback が出ている）の id
+  dynamicBoundaries: string[];
+};
+const { getRouteRegex } = require("next/dist/shared/lib/router/utils/route-regex");
+const { isDynamicRoute } = require("next/dist/shared/lib/router/utils/is-dynamic");
+const { format } = require("node:util");
+async function prerenderRoute(url: string): Promise<PrerenderRouteResult> {
+  if (!config.cacheComponents) throw new Error("[proofyard] Unsupported: prerenderRoute requires cacheComponents (Partial Prerendering)");
+  const target = new URL(url, "http://localhost");
+  // 動的なルートは、next build では generateStaticParams とフォールバックのシェルで決まる（まだ扱わない）
+  if (!routes.has(target.pathname))
+    for (const path of routes.keys())
+      if (isDynamicRoute(path) && getRouteRegex(path).re.test(target.pathname))
+        throw new Error(`[proofyard] Unsupported: prerenderRoute for dynamic routes (${path})`);
+  target.searchParams.set("__nextppronly", "1");
+  // prerender の失敗（Suspense の外の動的なデータなど）は、Next.js がログに出す（next build と同じ文面）
+  const logged: string[] = [];
+  const consoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(format(...args));
+    consoleError(...args);
+  };
+  try {
+    const response = await requestRoute(target.pathname + target.search);
+    const shell = await response.text();
+    if (response.status >= 500) throw new Error(`[proofyard] prerendering ${url} failed (status ${response.status})\n${logged.join("\n")}`);
+    return {
+      status: response.status,
+      shell,
+      postponed: response.headers.get("x-nextjs-postponed") === "1",
+      dynamicBoundaries: [...shell.matchAll(/<!--\$\?--><template id="([^"]+)"/g)].map((m) => m[1]!),
+    };
+  } finally {
+    console.error = consoleError;
+  }
+}
 
 // サーバー側の、テストのオリジン（http://localhost）への fetch はメモリ内の handler へ。
 // Next.js は Server Action の redirect 先の RSC を自分自身に fetch して取る（action-handler.ts の createRedirectRenderResult）。
@@ -805,9 +873,10 @@ const ssrModuleMap = () => Object.fromEntries([...clientIds].map((id) => [id, { 
 // テストが始まる前にビルドを終える（最初の render() のテストがビルドの時間でタイムアウトしないように）
 await Promise.all([buildBrowser(), routeBuild]);
 console.log(`[proofyard] browser layer: ${(performance.now() - t).toFixed(0)}ms`);
-(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, invalidatedTags, flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild } satisfies NextHarness;
+(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild } satisfies NextHarness;
 export type NextHarness = {
   requestRoute: typeof requestRoute;
+  prerenderRoute: typeof prerenderRoute;
   invalidatedTags: typeof invalidatedTags;
   flushAfter: typeof flushAfter;
   loadBrowser: typeof loadBrowser;
