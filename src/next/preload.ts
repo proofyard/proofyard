@@ -15,7 +15,6 @@ import { ALIASES, BUNDLED_ALIASES, USE_CLIENT, buildLayer, clientIds, clientRefe
 // 対象アプリ（next.config と app/ のあるディレクトリ）。既定は bun test を実行したディレクトリ
 // ponytail: 環境変数で受け取る。設定ファイル（proofyard.config 等）は必要になったら
 const projectDir = resolve(process.env.PROOFYARD_NEXT_APP ?? process.cwd());
-const appDir = join(projectDir, "app");
 const work = join(tmpdir(), `proofyard-next-${process.pid}`);
 // 前の実行の生成物のうち、afterAll まで行かなかったもの（プリロードの Fail Closed など）を消す
 for (const name of readdirSync(tmpdir())) {
@@ -53,20 +52,27 @@ const { generateRoutesManifest } = require("next/dist/build/generate-routes-mani
 let t = performance.now();
 const config = await loadConfig(PHASE_PRODUCTION_BUILD, projectDir, { silent: true });
 const pageExtensions: string[] = config.pageExtensions;
+// app/ か src/app/（next build と同じ findPagesDir）
+const { appDir, pagesDir } = require("next/dist/lib/find-pages-dir").findPagesDir(projectDir) as { appDir?: string; pagesDir?: string };
+if (pagesDir) throw new Error(`[proofyard] Unsupported Next.js feature: the Pages Router (${pagesDir})`);
+if (!appDir) throw new Error(`[proofyard] no app directory in ${projectDir}`);
+const isSrcDir = relative(projectDir, appDir).startsWith("src");
 
 // next build と同じルートの発見とエントリ（build/index.ts の discoverRoutes / createPagesMapping / createEntrypoints）
 // - app/ のページ・Route Handler と、組み込みの _not-found / _global-error: next-app-loader
 // - Proxy（proxy.ts / middleware.ts）: next-middleware-loader
 const customRoutes = await loadCustomRoutes(config);
+// Proxy などのファイルは app/ の親（src/ を使うなら src/）にある。パスはプロジェクトからの "/src/proxy.ts" の形
 const ROOT_FILE = new RegExp(`^(?:proxy|middleware|instrumentation)\\.(?:${pageExtensions.join("|")})$`);
-const rootPaths = readdirSync(projectDir)
+const rootDir = dirname(appDir);
+const rootPaths = readdirSync(rootDir)
   .filter((file) => ROOT_FILE.test(file))
-  .map((file) => `/${file}`);
-if (rootPaths.some((path) => path.startsWith("/instrumentation.")))
-  throw new Error("[proofyard] Unsupported Next.js feature: instrumentation.* is not supported yet");
-if (rootPaths.some((path) => path.startsWith("/proxy.")) && rootPaths.some((path) => path.startsWith("/middleware.")))
+  .map((file) => "/" + relative(projectDir, join(rootDir, file)));
+const rootFile = (name: string) => rootPaths.some((path) => path.slice(path.lastIndexOf("/") + 1).startsWith(`${name}.`));
+if (rootFile("instrumentation")) throw new Error("[proofyard] Unsupported Next.js feature: instrumentation.* is not supported yet");
+if (rootFile("proxy") && rootFile("middleware"))
   throw new Error('[proofyard] Both "middleware" and "proxy" files are detected. Please use "proxy" only (same as next build)');
-const discovery = await discoverRoutes({ appDir, pageExtensions, isDev: false, baseDir: projectDir, isSrcDir: false, appDirOnly: true });
+const discovery = await discoverRoutes({ appDir, pageExtensions, isDev: false, baseDir: projectDir, isSrcDir, appDirOnly: true });
 // next build と同じく、ページの一覧（URL の形）と Intercepting Routes の rewrite（beforeFiles）
 const appPaths = [...new Set(Object.keys(discovery.mappedAppPages).map((page) => normalizeAppPath(page)))];
 customRoutes.rewrites.beforeFiles.push(...generateInterceptionRoutesRewrites(appPaths, config.basePath));
@@ -153,7 +159,8 @@ function* appSources(dir: string): Generator<string> {
   }
 }
 const dev = process.env.NODE_ENV === "development";
-const jsConfig = { compilerOptions: {} }; // ponytail: tsconfig の paths / baseUrl は未対応（Next.js は loadJsConfig で読む）
+// tsconfig / jsconfig（Next.js と同じ loadJsConfig。paths の解決は webpack では JsConfigPathsPlugin、ここでは Bun の tsconfig の対応）
+const jsConfig = (await require("next/dist/build/load-jsconfig").default(projectDir, config)).jsConfig ?? { compilerOptions: {} };
 // next-swc-loader と同じ SWC の設定（層ごと。webpack-config.ts の swcLoader の設定）
 // browser は act のために開発版の React にしている（loadBrowser）ので development。route（renderRoute）は next build と同じ
 const SWC_LAYERS = {
