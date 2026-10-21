@@ -1,4 +1,4 @@
-// Phase 7: Metadata、after()、Dynamic Imports（どれも Next.js 本体の処理をそのまま通す）
+// Phase 7 / 仕様 16 章: Metadata、after()、Dynamic Imports など（どれも Next.js 本体の処理をそのまま通す）
 import { beforeEach, expect, test } from "bun:test";
 import { renderRoute, requestRoute } from "proofyard";
 import { db } from "../fixtures/next-app/components/users/db";
@@ -24,6 +24,34 @@ test("Metadata: 遷移すると document.title が変わる", async () => {
   await app.router.push("/meta/b");
   // Next.js は metadata を本文とは別に流すので、遷移のコミットより後に変わる
   await app.waitFor(() => expect(document.title).toBe("Post b | Fixture"));
+});
+
+test("Metadata: generateViewport と icon.svg", async () => {
+  const html = await (await requestRoute("/meta/hello")).text();
+  expect(html).toContain('<meta name="theme-color" content="#123456"/>');
+  expect(html).toMatch(/<link rel="icon" href="\/icon\.svg\?[0-9a-f]+" type="image\/svg\+xml" sizes="any"\/>/);
+  const icon = await requestRoute("/icon.svg");
+  expect(icon.headers.get("content-type")).toBe("image/svg+xml");
+});
+
+test("Metadata のルート: sitemap.ts と robots.ts", async () => {
+  const sitemap = await requestRoute("/sitemap.xml");
+  expect(sitemap.headers.get("content-type")).toBe("application/xml");
+  expect(await sitemap.text()).toContain("<loc>https://example.com/users</loc>");
+  const robots = await requestRoute("/robots.txt");
+  expect(await robots.text()).toBe("User-Agent: *\nDisallow: /admin\n\n");
+});
+
+test("Metadata: opengraph-image.tsx（next/og の ImageResponse）", async () => {
+  const html = await (await requestRoute("/og")).text();
+  expect(html).toContain('<meta property="og:image:width" content="120"/>');
+  expect(html).toContain('<meta property="og:image:alt" content="OG image"/>');
+  const path = html.match(/<meta property="og:image" content="http:\/\/localhost:3000([^"]+)"/)![1]!;
+  const image = await requestRoute(path);
+  expect(image.status).toBe(200);
+  expect(image.headers.get("content-type")).toBe("image/png");
+  // PNG のシグネチャ
+  expect([...new Uint8Array(await image.arrayBuffer()).slice(1, 4)]).toEqual([0x50, 0x4e, 0x47]);
 });
 
 test("after(): 応答を返したあとに動く", async () => {
