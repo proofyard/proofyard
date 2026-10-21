@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit` と PoC 1〜6。96 件）
+- テスト: `bun run test`（`tests/unit` と PoC 1〜6。102 件）
 
 ## 決めたこと
 
@@ -28,7 +28,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 ## 公開 API（実装済み）
 
 - `requestRoute(url, { method, headers, cookies, body })`: `next start` と同じルーター（router-server）に通し、標準の `Response` を返す。Proxy（`proxy.ts` / `middleware.ts`）、next.config の redirects / rewrites / headers、Route Handler、404（`not-found`）は Next.js 自身が処理する
-- `renderRoute(url, { mode: "ssr" | "client", headers, cookies })`: ルートの HTML を document に入れる。リダイレクトはたどる（最大 20 回、他のオリジンは Fail Closed）
+- `renderRoute(url, { mode: "ssr" | "client", streaming, headers, cookies })`: ルートの HTML を、ブラウザと同じく届いた順に document に入れる（最初の塊で文書を作り、続きは body の末尾に足して script を実行。`document.readyState` と `DOMContentLoaded` / `load` も合わせる）。`streaming: true` はシェルの時点で返り、`waitForFallback()` / `waitForComplete()` で途中の状態を見る（仕様 6.3）。既定は `waitForComplete()` まで待つ（データを止めたまま既定で呼ぶと返らない）。リダイレクトはたどる（最大 20 回、他のオリジンは Fail Closed）
   - client: Next.js 本体のクライアント（`app-next.js`）で HTML をハイドレーションする。React は本番版（`act` がないので `findBy` / `waitFor` で待つ。エラーのメッセージは本番と同じく短縮形）
   - Server Actions、`revalidatePath`、`redirect()` は Next.js のルーター経由で動く（ブラウザの fetch とサーバー側の `http://localhost` への fetch はメモリ内のルーターへ）
   - `app.router`（仕様 18.6）: `push` / `replace` / `refresh` / `back` / `forward` / `prefetch`、`pathname` / `searchParams`。Next.js の `useRouter` と同じインスタンス（`window.next.router`）を呼び、新しい状態がコミットされるまで待つ（Next.js がコミットのたびに書く `history` の pushState / replaceState で分かる。`prefetch` は fetch が終わるまで）
@@ -93,7 +93,8 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - ビルド時のプリレンダリング、PPR の静的シェル: 再現していない（毎回リクエスト時に描画）
 - `instrumentation.*`、`instrumentation-client.*`、`src/` ディレクトリ、Pages Router: 未対応（instrumentation は Fail Closed）
 - `"use cache: private"` / `"use cache: remote"`、tsconfig の `paths`、metadata: 未検証
-- `renderRoute` の最初の表示は HTML を最後まで待ってから入れる（最初の HTML のストリーミングの途中の状態は見られない。仕様 6.3/6.4）。遷移の RSC はストリームで届く
+- スクロール（`scroll` オプション、ハッシュへのスクロール）: turbo-dom にレイアウトがないので検証していない
+- turbo-dom 0.5.6 の `<template>` は `content` がない（HTML の続きの塊は div で解析している）
 - ブラウザ層は `__NEXT_TEST_MODE` を有効にしている（ハイドレーションの完了の通知のため）。そのため先読みのリクエストに `next-test-fetch-priority` ヘッダーが付く
 
 ## 次のタスク
@@ -103,7 +104,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - **土台は Next.js モード**（Next.js 内蔵の React と本体の部品。アプリのコードはネイティブで読み込み、`mock.module` も効く）
 - Phase 1 は完了（起動時のビルドは 1〜2 秒。実行をまたいだキャッシュは Phase 8 で）
 - Phase 3 は完了: Server Actions（`useActionState`、`useFormStatus`、`useOptimistic`、`.bind()`、クロージャ、シリアライズ、例外、RSC Refresh）。`useActionState` などの Next.js のルーター経由の動き（redirect、revalidatePath で画面を更新）はルートの描画（Phase 4/5）で
-- Phase 4 を進行中: `renderRoute`（ハイドレーション、Error Boundary、notFound、redirect）、Route Handler、Proxy、next.config の redirects / rewrites / headers は完了。Phase 5 の残り: Router Cache の検証（staleTimes）、スクロール、`useSelectedLayoutSegment(s)`、`useParams` / `useSearchParams` のテスト、最初の HTML のストリーミング
+- Phase 4 を進行中: `renderRoute`（ハイドレーション、Error Boundary、notFound、redirect）、Route Handler、Proxy、next.config の redirects / rewrites / headers は完了。Phase 5 はほぼ完了（ナビゲーションの hooks、Router Cache の既定の動き（戻る / 進むはキャッシュ、Link は dynamic を取り直す）、最初の HTML のストリーミング）。次は Phase 6（Cache Components / PPR）
 - Phase 2 は完了: `render()`（SSR / Client / Hydration、Context、イベント、Portal、Client Mode の Suspense（Server のデータ待ち、`use()`））。フォームと `useActionState` などは Server Actions と一緒に Phase 3
 - 注意: DOM を入れた後は、ネイティブで読むサードパーティのライブラリ（SSR 層・rsc 層）にも `window` が見える（Next.js の SWC で変換するアプリのコードは置き換え済み）
 - DOM アダプター（`src/dom/environment.ts`）: turbo-dom が上書きする Bun 本来のグローバルのうち、DOM に固有でないもの（タイマー、`queueMicrotask`、`fetch`、`URL`、`performance`、`atob`/`btoa` など）は Bun のままにする（サーバー側のコードも使う。turbo-dom 0.5.6 の `btoa` はバイナリで無限ループした）。`installDom` は 1 プロセスに 1 回（入れ直すと user-event が古い document を使い続ける）

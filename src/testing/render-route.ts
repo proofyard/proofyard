@@ -10,6 +10,8 @@ type Queries = ReturnType<BrowserRuntime["within"]>;
 
 export type RenderRouteOptions = {
   mode?: "ssr" | "client";
+  // true: シェル（Suspense の fallback）が届いた時点で返す。続きは waitForComplete() で待つ（仕様 6.3）
+  streaming?: boolean;
   headers?: Record<string, string>;
   cookies?: Record<string, string>;
 };
@@ -17,7 +19,8 @@ export type RenderRouteResult = Queries & {
   // 最後の応答（リダイレクトは追いかけた後）
   status: number;
   headers: Headers;
-  html: string;
+  // ここまでに届いた HTML
+  readonly html: string;
   // リダイレクトを追いかけた後の URL
   url: string;
   user: ReturnType<BrowserRuntime["userEvent"]["setup"]>;
@@ -25,6 +28,10 @@ export type RenderRouteResult = Queries & {
   cookies: Map<string, string>;
   // Next.js のクライアントルーター（useRouter と同じもの）。遷移は新しい状態がコミットされるまで待つ
   router: RouteRouter;
+  // まだ届いていない Suspense の fallback が表示されるまで待つ（出ないまま HTML が終わったらエラー）
+  waitForFallback(): Promise<void>;
+  // HTML が最後まで届き、Suspense の中身が表示されて（Client Mode ではハイドレーションも）落ち着くまで待つ
+  waitForComplete(): Promise<void>;
   unmount(): void;
 };
 type NavigateOptions = { scroll?: boolean };
@@ -53,6 +60,7 @@ function cleanup() {
   for (const { name } of Array.from(html.attributes)) html.removeAttribute(name);
   html.replaceChildren(document.createElement("head"), document.createElement("body"));
   for (const name of ["__next_f", "__next_s", "next", "__NEXT_HYDRATED", "__NEXT_HYDRATED_AT", "__NEXT_HYDRATED_CB"]) delete (globalThis as any)[name];
+  delete (document as any).readyState;
   resetLocation("/");
 }
 (globalThis as any)[Symbol.for("proofyard.routeCleanup")] = cleanup;
@@ -90,17 +98,77 @@ function loadDocument(html: string) {
   root.innerHTML = parsed.documentElement.innerHTML;
 }
 
-// HTML の script を文書の順に実行する（インラインのもの。Next.js のチャンクはバンドルで読み込む）
-function runScripts() {
-  for (const script of Array.from(document.querySelectorAll("script"))) {
-    const src = script.getAttribute("src");
-    if (src?.startsWith("/_next/static/")) continue;
-    if (src) throw new Error(`[proofyard] Unsupported: external <script src="${src}"> in the HTML`);
-    const type = script.getAttribute("type");
-    if (type && type !== "text/javascript" && type !== "module") continue;
-    (0, eval)(script.textContent ?? "");
-  }
+// script を実行する（インラインのもの。Next.js のチャンクはバンドルで読み込む）
+function runScript(script: Element) {
+  const src = script.getAttribute("src");
+  if (src?.startsWith("/_next/static/")) return;
+  if (src) throw new Error(`[proofyard] Unsupported: external <script src="${src}"> in the HTML`);
+  const type = script.getAttribute("type");
+  if (type && type !== "text/javascript" && type !== "module") return;
+  (0, eval)(script.textContent ?? "");
 }
+const runScripts = (node: Node) => {
+  if (node.nodeType !== 1) return;
+  const element = node as Element;
+  for (const script of element.tagName === "SCRIPT" ? [element] : Array.from(element.querySelectorAll("script"))) runScript(script);
+};
+
+// ブラウザと同じく、HTML を届いた順に文書に入れる。
+// 最初の塊（シェル。<body> を含む）で文書を作り、続きの塊（Suspense の中身の <div hidden> と $RC、self.__next_f の script）は
+// body の末尾に足していく（Next.js は </body></html> を最後に回すので、続きは body の中）。
+// scripts: script を実行する（Client Mode。SSR Mode は JavaScript を切ったブラウザと同じく実行しない）
+function streamDocument(body: ReadableStream<Uint8Array> | null, scripts: boolean) {
+  let html = "";
+  let readyState: DocumentReadyState = "loading";
+  Object.defineProperty(document, "readyState", { configurable: true, get: () => readyState });
+  const shell = Promise.withResolvers<void>();
+  const done = (async () => {
+    const decoder = new TextDecoder();
+    const reader = body?.getReader();
+    let loaded = false;
+    let pending = "";
+    for (;;) {
+      const { done, value } = reader ? await reader.read() : { done: true, value: undefined };
+      const text = done ? decoder.decode() : decoder.decode(value, { stream: true });
+      html += text;
+      pending += text;
+      // 塊の途中で script が切れていたら続きを待つ
+      if (!done && pending.split("<script").length !== pending.split("</script>").length) continue;
+      if (!loaded) {
+        if (!done && !pending.includes("<body")) continue;
+        loaded = true;
+        loadDocument(pending);
+        if (scripts) runScripts(document.documentElement);
+        shell.resolve();
+      } else if (pending) {
+        // turbo-dom 0.5.6 の <template> は content がないので div で解析する（script は innerHTML では実行されない）
+        const container = document.createElement("div");
+        container.innerHTML = pending;
+        for (const node of Array.from(container.childNodes)) {
+          document.body.appendChild(node);
+          if (scripts) runScripts(node);
+        }
+      }
+      pending = "";
+      if (done) break;
+    }
+    readyState = "interactive";
+    document.dispatchEvent(new Event("DOMContentLoaded"));
+    readyState = "complete";
+    window.dispatchEvent(new Event("load"));
+  })();
+  done.catch(shell.reject);
+  return { shell: shell.promise, done, html: () => html };
+}
+
+// 待っている Suspense（<!--$?-->）と、中身の表示待ち（<!--$~-->）の目印
+function pendingBoundaries() {
+  const walker = document.createTreeWalker(document.documentElement, 128 /* NodeFilter.SHOW_COMMENT */);
+  let count = 0;
+  while (walker.nextNode()) if (/^\$[?~]$/.test((walker.currentNode as Comment).data)) count++;
+  return count;
+}
+const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 同じオリジンへの進行中の fetch（ルーターの先読みの完了を待つため）
 let inflight = 0;
@@ -159,19 +227,18 @@ function routeFetch(jar: Map<string, string>, headers?: Record<string, string>) 
   };
 }
 
-export async function renderRoute(url: string, { mode = "client", headers, cookies = {} }: RenderRouteOptions = {}): Promise<RenderRouteResult> {
+export async function renderRoute(url: string, { mode = "client", streaming = false, headers, cookies = {} }: RenderRouteOptions = {}): Promise<RenderRouteResult> {
   ensureDom();
   const h = harness();
   const browser = await h.loadBrowser();
   const jar = new Map(Object.entries(cookies));
   const { url: finalUrl, response } = await navigate(url, jar, headers);
-  const html = await response.text();
   resetLocation(finalUrl);
-  loadDocument(html);
+  if (mode === "client") (globalThis as any).__proofyardRouteFetch = routeFetch(jar, headers);
+  const page = streamDocument(response.body, mode === "client");
+  await page.shell;
   if (mode === "client") {
-    (globalThis as any).__proofyardRouteFetch = routeFetch(jar, headers);
     const hydrated = new Promise<void>((resolve) => ((globalThis as any).__NEXT_HYDRATED_CB = resolve));
-    runScripts();
     // Next.js のクライアントは読み込み中の <script>（document.currentScript）から assetPrefix を求める（client/asset-prefix.ts）
     const main = document.querySelector('script[src^="/_next/static/chunks/main-app"]');
     if (!main) throw new Error("[proofyard] the HTML has no Next.js client script (main-app)");
@@ -181,17 +248,38 @@ export async function renderRoute(url: string, { mode = "client", headers, cooki
     } finally {
       Object.defineProperty(document, "currentScript", { configurable: true, get: () => null });
     }
-    await hydrated;
+    // HTML の読み込みの失敗はハイドレーションを待たずに投げる
+    await Promise.race([hydrated, page.done.then(() => hydrated)]);
   }
+  const waitForComplete = async () => {
+    await page.done;
+    // SSR Mode は script を実行しないので、後から届いた Suspense の中身は（JavaScript を切ったブラウザと同じく）表示されない
+    if (mode !== "client") return;
+    // React の $RC は中身の表示をまとめて少し遅らせる（requestAnimationFrame / setTimeout）。表示とハイドレーションを待つ
+    while (pendingBoundaries() > 0) await tick(10);
+    await settled();
+  };
+  const waitForFallback = async () => {
+    for (;;) {
+      if (pendingBoundaries() > 0) return;
+      const finished = await Promise.race([page.done.then(() => true), tick(10).then(() => false)]);
+      if (finished && pendingBoundaries() === 0) throw new Error("[proofyard] the page finished without showing a Suspense fallback");
+    }
+  };
+  if (!streaming) await waitForComplete();
   return {
     ...browser.within(document.body),
     status: response.status,
     headers: response.headers,
-    html,
+    get html() {
+      return page.html();
+    },
     url: finalUrl,
     user: browser.userEvent.setup({ document }),
     cookies: jar,
     router: routeRouter(),
+    waitForFallback,
+    waitForComplete,
     unmount: cleanup,
   } as unknown as RenderRouteResult;
 }
