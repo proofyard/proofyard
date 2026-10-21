@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）。112 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）。113 件）
 
 ## 決めたこと
 
@@ -95,7 +95,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - ビルド時のプリレンダリング、PPR の静的シェル: 再現していない（毎回リクエスト時に描画）
 - `src/` ディレクトリ: 対応（Next.js の `findPagesDir`。Proxy も `src/proxy.ts`）。tsconfig の `paths`: 対応（Next.js の `loadJsConfig` で読み、import の解決は Bun の tsconfig 対応）
 - `instrumentation.*`（Node.js）: 対応。next build と同じく `server/instrumentation.js` に置き、`register` と `onRequestError` は Next.js 本体が呼ぶ。注意: このファイルの読み込みで「モジュールが見つからない」エラーは Next.js 本体が無視する（ファイルなしと同じ扱い）
-- `instrumentation-client.*`: 未対応
+- `instrumentation-client.*`: 対応。Next.js の `next-instrumentation-client-loader` の出力（`instrumentationClientInject` とアプリのファイル）をブラウザのバンドルの `private-next-instrumentation-client` にする。`onRouterTransitionStart` も Next.js のルーターが呼ぶ
 - Pages Router: 未対応（Fail Closed）
 - `"use cache: private"` / `"use cache: remote"`: 未検証
 - Edge Runtime: Fail Closed

@@ -590,10 +590,22 @@ const buildBrowser = () =>
 // renderRoute の Client Mode: Next.js 本体のクライアント（app-next.js）と Client Component を 1 つのファイルにまとめる。
 // renderRoute のたびにクエリ付きで import し直す（ルーターなどのモジュールの状態をテストごとに新しくする）。
 // next build のブラウザ向けと同じく本番版（React も本番版なので act はない。表示は findBy / waitFor で待つ）
-for (const name of ["instrumentation-client", "src/instrumentation-client"])
-  for (const ext of pageExtensions)
-    if (existsSync(join(projectDir, `${name}.${ext}`)))
-      throw new Error(`[proofyard] Unsupported: ${name}.${ext} (client instrumentation) is not supported by renderRoute yet`);
+// instrumentation-client: Next.js のローダーが書く、設定の instrumentationClientInject とアプリのファイルを読むモジュール。
+// アプリのファイルは private-next-instrumentation-client-user（src/ を先に探す。なければ空のモジュール）
+const INSTRUMENTATION_CLIENT = join(work, "instrumentation-client.js");
+const instrumentationClientUser =
+  ["src/instrumentation-client", "instrumentation-client"].flatMap((name) => pageExtensions.map((ext) => join(projectDir, `${name}.${ext}`))).find((file) => existsSync(file)) ??
+  join(import.meta.dir, "../client/empty-module.js");
+write(
+  INSTRUMENTATION_CLIENT,
+  (
+    await require("next/dist/build/webpack/loaders/next-instrumentation-client-loader").default.call({
+      getOptions: () => ({ modules: config.instrumentationClientInject ?? [] }),
+      getResolve: () => async (context: string, request: string) => Bun.resolveSync(request, context),
+      rootContext: projectDir,
+    })
+  ).replace(/(["'])private-next-instrumentation-client-user\1/, JSON.stringify(instrumentationClientUser)),
+);
 const ROUTE_ENTRY = join(work, "route-entry.js");
 write(
   ROUTE_ENTRY,
@@ -619,7 +631,7 @@ const routeBuild = buildLayer("browser", [ROUTE_ENTRY], {
     "next/dist/client/app-call-server": undefined,
     "react-server-dom-webpack/client": "next/dist/compiled/react-server-dom-webpack/client",
     "react-dom/client": join(import.meta.dir, "../client/route-react-dom-client.ts"),
-    "private-next-instrumentation-client": join(import.meta.dir, "../client/no-instrumentation-client.js"),
+    "private-next-instrumentation-client": INSTRUMENTATION_CLIENT,
   },
   define: {
     ...clientDefine,
