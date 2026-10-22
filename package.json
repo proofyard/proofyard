@@ -28,6 +28,9 @@
     "compat:ppr": "PROOFYARD_NEXT_APP=tests/ppr/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/compatibility/ppr.test.ts",
     "compat:errors": "PROOFYARD_NEXT_APP=tests/poc/poc5/fixture-app bun test --timeout 20000 --preload ./src/next/preload.ts tests/compatibility/errors.test.ts"
   },
+  "peerDependencies": {
+    "next": "16.4.2"
+  },
   "devDependencies": {
     "@happy-dom/global-registrator": "20",
     "@miaskiewicz/turbo-dom": "0.5.6",

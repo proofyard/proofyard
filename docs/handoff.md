@@ -119,6 +119,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 
 ## 未対応（Fail Closed にしているもの・まだのもの）
 
+- 確かめていない版（仕様 24.2）: プリロードの最初で Next.js（16.4.2 だけ）と Bun（1.4.x）の版を確かめ、違えばエラー。React は Next.js 内蔵のものを使うので Next.js の版で決まる。`package.json` の `peerDependencies` も `next: 16.4.2`
 - `node_modules` 内の `"use cache"` / `"use server"`、独自の `cacheHandlers`、`node_modules` 内の CommonJS の `"use client"`: エラーにしている（`node_modules` のものは読み込んだときに失敗する）
 - rsc 層のネイティブ読み込みの `react-server` の条件: アプリから辿れる `node_modules` のパッケージのうち、`package.json` に `"react-server"` があるものは Bun の解決（`--conditions react-server`。別プロセス）で求め、元のファイルを読んだら react-server のファイルを読む（ESM だけ。CommonJS は Fail Closed）。テストのファイルから同じパッケージを読んでも react-server のファイルになる（`react` などの別名と同じ）。Bun の解決は `bun` の条件も使う（Next.js の webpack は使わない）
 - サードパーティのパッケージが `next/*` を import する場合: 対応（rsc 層のネイティブ読み込みでも `build.module` でアプリと同じ Next.js のモジュールになる。`next/headers`・`notFound`・クライアントの `next/navigation` の hooks を `tests/unit/advanced.test.tsx` で確認）
