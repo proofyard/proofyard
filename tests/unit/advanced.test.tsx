@@ -117,6 +117,15 @@ test("環境変数（.env）、server-only、next/image", async () => {
   expect(app.errors).toEqual([]);
 });
 
+test("useSyncExternalStore と client-only（Client Component から）", async () => {
+  // サーバーは getServerSnapshot の値。ハイドレーションの後にクライアントの値になる
+  expect(await (await requestRoute("/compat")).text()).toContain("<button>server</button>");
+  const app = await renderRoute("/compat");
+  await app.user.click(await app.findByRole("button", { name: "clicks 0" }));
+  await app.findByRole("button", { name: "clicks 1" });
+  expect(app.errors).toEqual([]);
+});
+
 test("next/image の画像の最適化（/_next/image）", async () => {
   const res = await requestRoute("/_next/image?url=%2Fdot.png&w=32&q=75", { headers: { accept: "image/webp" } });
   expect(res.status).toBe(200);
