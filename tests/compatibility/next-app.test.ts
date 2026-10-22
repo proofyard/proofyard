@@ -138,3 +138,27 @@ for (const [index, form] of ["addUser（revalidatePath）", "addAndOpen（redire
       await comparableFlight(await real.text(), (id) => comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)),
     );
   });
+
+// ソフトナビゲーション（Next.js のクライアントが今の木を Next-Router-State-Tree で送る）。共通のレイアウトから下だけが返る。
+// Next-Url はインターセプトの元の URL
+const { computeCacheBustingSearchParam } = require("next/dist/shared/lib/router/utils/cache-busting-search-param");
+const navigationCases = [
+  { from: "/dashboard/settings", to: "/dashboard/teams/core", tree: ["", { children: ["dashboard", { children: ["settings", { children: ["__PAGE__", {}] }] }] }] },
+  { from: "/gallery", to: "/gallery/photo/1", tree: ["", { children: ["gallery", { children: ["__PAGE__", {}], modal: ["__DEFAULT__", {}] }] }], nextUrl: "/gallery" },
+  { from: "/gallery", to: "/gallery/photo/1", tree: ["", { children: ["gallery", { children: ["__PAGE__", {}], modal: ["__DEFAULT__", {}] }] }] },
+];
+for (const { from, to, tree, nextUrl } of navigationCases)
+  test(`RSC ${from} → ${to}${nextUrl ? `（Next-Url: ${nextUrl}）` : ""} は next start と同じ Flight`, async () => {
+    const stateTree = encodeURIComponent(JSON.stringify(tree));
+    const headers: Record<string, string> = { rsc: "1", "next-router-state-tree": stateTree, ...(nextUrl && { "next-url": nextUrl }) };
+    const url = `${to}?_rsc=${await computeCacheBustingSearchParam(undefined, undefined, stateTree, nextUrl)}`;
+    const ours = await requestRoute(url, { headers });
+    const real = await fetch(reference.url + url, { redirect: "manual", headers });
+    expect(real.status).toBe(200);
+    expect(ours.status).toBe(real.status);
+    const paths = (modulePaths ??= referenceModulePaths(reference));
+    const dirs = [fixture, reference.dir];
+    expect(await comparableFlight(await ours.text(), (id) => comparableModule(id, dirs))).toEqual(
+      await comparableFlight(await real.text(), (id) => comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)),
+    );
+  });
