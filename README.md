@@ -6,7 +6,7 @@ Next.js App Router と React Server Components のアプリを、ブラウザも
 - DOM は turbo-dom。クエリと操作は Testing Library / user-event
 - 対応していない機能は、普通の JavaScript として動かして通すのではなく、エラーにする（Fail Closed）
 
-対応: Bun 1.4、Next.js 16.4（webpack と同じ層の分け方）、React は Next.js 内蔵のもの。
+対応: Bun 1.4、Next.js 16.4.2（webpack と同じ層の分け方）、React は Next.js 内蔵のもの。ほかの版では起動時にエラーにする（Next.js の内部のモジュールを直接使うため）。
 
 ## 使い方
 

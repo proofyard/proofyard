@@ -2,6 +2,12 @@
 // - ルートとエントリ: discoverRoutes / createEntrypoints と各ローダー（next build と同じ生成コード）
 // - 設定: loadConfig、manifest: `next start` と同じ形の .next を一時ディレクトリに書く
 // - リクエスト処理: next start と同じ router-server（Proxy、next.config の redirects / rewrites / headers を含む）
+// 仕様 24.2: 確かめた組み合わせだけ動かす（Next.js 本体の内部のモジュールを直接使うので、版が違うと分かりにくい壊れ方をする）
+const SUPPORTED_NEXT = ["16.4.2"];
+const nextVersion: string = require("next/package.json").version;
+if (!SUPPORTED_NEXT.includes(nextVersion))
+  throw new Error(`[proofyard] Unsupported: Next.js ${nextVersion}. Supported versions: ${SUPPORTED_NEXT.join(", ")}`);
+if (!Bun.version.startsWith("1.4.")) throw new Error(`[proofyard] Unsupported: Bun ${Bun.version}. Supported versions: 1.4.x`);
 require("next/dist/server/node-environment-baseline"); // globalThis.AsyncLocalStorage
 // Next.js の runtime バンドル（vendored React を含む）。層をまたいで共有する
 require("next/dist/server/route-modules/app-page/module.compiled");

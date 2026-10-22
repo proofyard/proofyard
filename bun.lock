@@ -24,6 +24,9 @@
         "react-redux": "^9.3.0",
         "zustand": "^5.0.15",
       },
+      "peerDependencies": {
+        "next": "16.4.2",
+      },
     },
   },
   "packages": {
