@@ -57,6 +57,7 @@ DOM、React のルート、リクエストのコンテキスト、アプリの�
 ## 本物の Next.js との違い
 
 - `requestRoute` / `renderRoute` は、毎回ページ全体をリクエストのときに描画する（`next start` は静的なルートを build のときの HTML で返す）。テストごとのデータやモックが効くようにするため
+- `cacheComponents` のアプリで、Link の先読みは静的なものを試さず、リクエストのときの先読みになる（本物は next build で測った prefetch hints を使う。Proofyard は build のときのプリレンダリングをしない）
 - アプリのコードは Bun で動く（例: `Response.json()` の `content-type` に `charset=utf-8` が付く）
 - 未対応のもの（Pages Router、Edge Runtime、`node_modules` の `"use cache"` / `"use server"` など）と、詳しい仕組みは [docs/handoff.md](docs/handoff.md)
 
@@ -64,7 +65,7 @@ DOM、React のルート、リクエストのコンテキスト、アプリの�
 
 ```sh
 bun run test       # 全部のテスト
-bun run compat     # 本物の next build / next start と比べる（遅い）
+bun run compat     # 本物の next build / next start と比べる（HTML、RSC の Flight、Server Actions、エラー。遅い）
 bun run bench:api  # 1 テストあたりの時間
 ```
 
