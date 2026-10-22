@@ -117,3 +117,106 @@ export function comparableHtml(html: string) {
   }
   return result + tail;
 }
+
+// Flight の意味論の比較（仕様 24.1）: バイト列（行の番号、モジュールの id）ではなく、React の Flight クライアントでデコードした値を比べる。
+// Client Component は「モジュールのパス#export 名」にする（本物の id は webpack の数字なので client-reference-manifest でパスに戻す）
+const { createFromReadableStream } = require("next/dist/compiled/react-server-dom-webpack/cjs/react-server-dom-webpack-client.node.production.js");
+const CLIENT = Symbol("client");
+// ルーターの木の prefetch hints（PrefetchHint）のうち、next build の測定（prefetch hints manifest）から来るもの。
+// Proofyard は build のときのプリレンダリングをしないので、Next.js の代わりの値（全部 PrefetchDisabled）になる（docs/handoff.md）。
+// InliningHintsStale (512)、インライン化 (32, 64, 128, 256)、PrefetchDisabled (1024)、ShouldAttemptStaticShell / Prefetch
+const BUILD_PREFETCH_HINTS = 32 | 64 | 128 | 256 | 512 | 1024 | (1 << 14) | (1 << 15);
+
+// 本物の webpack のモジュールの id → ファイルのパス
+export function referenceModulePaths(reference: Reference) {
+  const paths = new Map<string, string>();
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith("_client-reference-manifest.js")) {
+        const scope: { __RSC_MANIFEST?: Record<string, { clientModules: Record<string, { id: string | number }> }> } = {};
+        new Function("globalThis", readFileSync(path, "utf8"))(scope);
+        for (const manifest of Object.values(scope.__RSC_MANIFEST!))
+          for (const [file, { id }] of Object.entries(manifest.clientModules)) paths.set(String(id), file);
+      }
+    }
+  };
+  walk(join(reference.dir, ".next/server/app"));
+  return paths;
+}
+
+// モジュールのパスを比べられる形に: アプリのディレクトリ（JS に変えた写しと元のフィクスチャ）、拡張子、Next.js の ESM 版と CJS 版の違いを除く
+export const comparableModule = (path: string, appDirs: string[]) =>
+  appDirs.reduce((p, dir) => p.replace(dir, "<app>"), path).replace("/dist/esm/", "/dist/").replace(/\.[cm]?[jt]sx?$/, "");
+
+export async function comparableFlight(text: string, modulePath: (id: string) => string) {
+  // Next.js 同梱の Flight クライアントは __next_require__ でモジュールを、__webpack_chunk_load__ でチャンクを読む。
+  // 読み込みの代わりに、どの export でも印を付けた関数を返す。Proofyard の SSR も同じグローバルを使うので、終わったら戻す
+  const g = globalThis as any;
+  const saved = [g.__next_require__, g.__webpack_chunk_load__];
+  g.__next_require__ = (id: unknown) =>
+    new Proxy(
+      {},
+      {
+        get: (_, name) => (name === "then" || typeof name === "symbol" ? undefined : Object.assign(() => null, { [CLIENT]: `${modulePath(String(id))}#${name}` })),
+        has: (_, name) => name !== "then",
+        getOwnPropertyDescriptor: (target, name) => (name === "then" ? undefined : { value: (target as any)[name], configurable: true, enumerable: true, writable: false }),
+      },
+    );
+  g.__webpack_chunk_load__ = () => Promise.resolve();
+  try {
+    const root = await createFromReadableStream(new Response(text).body, { serverConsumerManifest: { moduleMap: null, serverModuleMap: null, moduleLoading: null } });
+    const value = (await settle(root, new Set())) as Record<string, unknown>;
+    // ビルド ID と、静的な部分のバイト数（a、l。モジュールの id の長さで変わる）
+    for (const key of ["b", "a", "l"]) delete value[key];
+    return value;
+  } finally {
+    [g.__next_require__, g.__webpack_chunk_load__] = saved;
+  }
+}
+
+// Promise と lazy を待ち、React の要素を { type, key, props } にする
+async function settle(value: any, seen: Set<object>): Promise<unknown> {
+  if (typeof value?.then === "function") {
+    try {
+      value = await value;
+    } catch (error: any) {
+      return { rejected: String(error?.message ?? error) };
+    }
+  }
+  if (typeof value === "symbol") return value.description;
+  if (typeof value === "function") return value[CLIENT] ? { client: value[CLIENT] } : "function";
+  if (!value || typeof value !== "object") return value;
+  if (seen.has(value)) return "[cycle]";
+  seen.add(value);
+  try {
+    if (value.$$typeof === Symbol.for("react.lazy"))
+      for (;;)
+        try {
+          return await settle(value._init(value._payload), seen);
+        } catch (thrown: any) {
+          if (typeof thrown?.then !== "function") return { thrown: String(thrown?.message ?? thrown) };
+          await thrown.then(undefined, () => {});
+        }
+    if (value.$$typeof === Symbol.for("react.transitional.element"))
+      return {
+        type: await settle(value.type, seen),
+        // Viewport と Metadata の key はリクエストの id（app-render.tsx の getFlightViewportKey / getFlightMetadataKey）
+        key: typeof value.key === "string" ? value.key.replace(/^[\w-]{21}([vm])$/, "<request-id>$1") : value.key,
+        props: await settle(value.props, seen),
+      };
+    if (Array.isArray(value)) {
+      const out = [];
+      for (const item of value) out.push(await settle(item, seen));
+      return out;
+    }
+    if (value instanceof Map || value instanceof Set) return { [value.constructor.name]: await settle([...value], seen) };
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value))
+      out[key] = key === "h" && typeof item === "number" && "s" in value ? item & ~BUILD_PREFETCH_HINTS : await settle(item, seen);
+    return out;
+  } finally {
+    seen.delete(value);
+  }
+}
