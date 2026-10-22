@@ -25,6 +25,18 @@ test("prefetch hints（server/prefetch-hints.json）は next build と同じ", a
   expect(ours).toEqual(real);
 });
 
+test("prerender-manifest.json は next build と同じ（next start が読む項目）", async () => {
+  const ours = (globalThis as any)[Symbol.for("proofyard.next")].prerenderManifest;
+  const real = await Bun.file(join(reference.dir, ".next/prerender-manifest.json")).json();
+  // Route Handler（/favicon.ico など）は Proofyard では prerender しない（リクエストのときに動かす）
+  const pages = (entries: Record<string, any>) => Object.fromEntries(Object.entries(entries).filter(([, { renderingMode }]) => renderingMode === "PARTIALLY_STATIC").map(([path, entry]) => [path, pick(entry)]));
+  // 分類（routeType・response・compute）、experimentalBypassFor、allowHeader、initialStatus / initialHeaders はデプロイ先のアダプター向けで、next start は読まない
+  const pick = (entry: any) => Object.fromEntries(Object.entries(entry).filter(([key]) => !/^(routeType|response|compute|htmlSize|experimentalBypassFor|allowHeader|initialStatus|initialHeaders)$/.test(key) && entry[key] !== undefined));
+  expect(pages(ours.routes)).toEqual(pages(real.routes));
+  expect(pages(ours.dynamicRoutes)).toEqual(pages(real.dynamicRoutes));
+  expect(ours.notFoundRoutes).toEqual(real.notFoundRoutes);
+});
+
 for (const path of ["/dashboard", "/about", "/posts/hello", "/products/[id]", "/private", "/library"])
   test(`prerenderRoute ${path} は next build の静的シェル（.html）と同じ`, async () => {
     const result = await prerenderRoute(path);
@@ -49,24 +61,25 @@ for (const path of ["/dashboard", "/posts/hello", "/products/1", "/private"])
     );
   });
 
-// Link の先読み（prefetch hints で静的なものを試すとき）。next start は build のときのセグメント（.segments）を返し、
-// Proofyard はリクエストのときに描く。ヘッダーはブラウザの Next.js のクライアントが送るもの
+// Link の先読み（prefetch hints で静的なものを試すとき）。next start は build のときのセグメント（.segments）を返す。
+// Proofyard はテストの中でそのページを最初にリクエストしたときに build と同じ結果を作り、そこから返す（README の違い）。
+// ヘッダーはブラウザの Next.js のクライアントが送るもの
 const { computeCacheBustingSearchParam } = require("next/dist/shared/lib/router/utils/cache-busting-search-param");
 const prefetchCases = [
   { name: "ルートの木（/_tree）", segment: "/_tree", stateTree: undefined },
   { name: "metadata だけ", segment: undefined, stateTree: encodeURIComponent(JSON.stringify(["", {}, null, "metadata-only"])) },
 ];
-// 未対応: next start はこれらをビルド時に作った segment データ（prerender-manifest と .segments）から返すが、
-// proofyard はリクエストごとに描画するので応答が違う。一致したら test.failing が落ちて知らせる。
 for (const path of ["/dashboard", "/posts/hello"])
   for (const { name, segment, stateTree } of prefetchCases)
-    test.failing(`先読み ${path} の${name}は next start と同じ`, async () => {
+    test(`先読み ${path} の${name}は next start と同じ`, async () => {
       const headers: Record<string, string> = { rsc: "1", "next-router-prefetch": "1", ...(segment && { "next-router-segment-prefetch": segment }), ...(stateTree && { "next-router-state-tree": stateTree }) };
       const url = `${path}?_rsc=${await computeCacheBustingSearchParam("1", segment, stateTree, undefined)}`;
       const ours = await requestRoute(url, { headers });
       const real = await fetch(reference.url + url, { redirect: "manual", headers });
       expect(ours.status).toBe(real.status);
       for (const name of ["content-type", "x-nextjs-postponed"]) expect(`${name}: ${ours.headers.get(name)}`).toBe(`${name}: ${real.headers.get(name)}`);
+      // 404（build のときのデータにないもの）は空の本文
+      if (real.status !== 200) return expect(await ours.text()).toBe(await real.text());
       const paths = referenceModulePaths(reference);
       const dirs = [join(import.meta.dir, "../ppr/fixture"), reference.dir];
       expect(await comparableFlight(await ours.text(), (id) => comparableModule(id, dirs))).toEqual(

@@ -12,7 +12,7 @@ require("next/dist/server/node-environment-baseline"); // globalThis.AsyncLocalS
 // Next.js の runtime バンドル（vendored React を含む）。層をまたいで共有する
 require("next/dist/server/route-modules/app-page/module.compiled");
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, posix, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { actionModule, serverActions } from "../testing/actions";
@@ -62,24 +62,24 @@ const { generateRoutesManifest } = require("next/dist/build/generate-routes-mani
 let t = performance.now();
 const config = await loadConfig(PHASE_PRODUCTION_BUILD, projectDir, { silent: true });
 
-// next build の prefetch hints（server/prefetch-hints.json。クライアントが静的な先読みを試すか、どこを先読みしないか）。
-// next build は prerender のときに Next.js 本体（collectPrefetchHints）で求める。next build と同じく別のプロセスで、
-// このプリロードを静的なページの prerender（exportApp）だけのために動かして求める（collectPrefetchHintsManifest）。アプリのコードの副作用はテストのプロセスに残らない。
+// next build の prerender の結果（server/prefetch-hints.json と prerender-manifest.json）。prefetch hints はクライアントが静的な先読みを
+// 試すか、どこを先読みしないか。next build は prerender のときに Next.js 本体（collectPrefetchHints）で求める。next build と同じく別のプロセスで、
+// このプリロードを静的なページの prerender（exportApp）だけのために動かして求める（collectBuildOutput）。アプリのコードの副作用はテストのプロセスに残らない。
 // Next.js は manifest を読んだ結果（無いことも）をランタイムのバンドルの中に覚えるので、同じプロセスでは prerender の後に読み直させられない
-const PREFETCH_HINTS_OUTPUT = process.env.PROOFYARD_PREFETCH_HINTS_OUTPUT;
-const prefetchHintsBuild = !PREFETCH_HINTS_OUTPUT
+const BUILD_OUTPUT = process.env.PROOFYARD_BUILD_OUTPUT;
+const buildOutput = !BUILD_OUTPUT
   ? (async () => {
-      const output = join(work, "prefetch-hints.json");
+      const output = join(work, "build-output.json");
       // テストのファイルの代わりにこのファイルを渡す（プリロードの最後で終わるので読み込まれない）
       const proc = Bun.spawn([process.execPath, "test", "--preload", import.meta.path, import.meta.path], {
         cwd: process.cwd(),
-        env: { ...process.env, PROOFYARD_PREFETCH_HINTS_OUTPUT: output },
+        env: { ...process.env, PROOFYARD_BUILD_OUTPUT: output },
         stdout: "pipe",
         stderr: "pipe",
       });
       const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-      if (code !== 0) throw new Error(`[proofyard] collecting prefetch hints (next build) failed\n${stdout}${stderr}`);
-      return (await Bun.file(output).json()) as Record<string, unknown>;
+      if (code !== 0) throw new Error(`[proofyard] prerendering (next build) failed\n${stdout}${stderr}`);
+      return (await Bun.file(output).json()) as BuildOutput;
     })()
   : undefined;
 // prerenderRoute が使う Next.js の静的シェルのデバッグ機能を有効にしてビルドする（getDefineEnv が define に入れる。
@@ -583,7 +583,9 @@ write(
 if (middlewareEntry) write(join(distDir, "server/middleware.js"), `module.exports = require(${JSON.stringify(rsc.get(middlewareEntry))});\n`);
 // instrumentation は server/instrumentation.js（getInstrumentationModule）。register / onRequestError は Next.js 本体が呼ぶ
 if (instrumentationEntry) write(join(distDir, "server/instrumentation.js"), `module.exports = require(${JSON.stringify(rsc.get(instrumentationEntry))});\n`);
-write(join(distDir, "prerender-manifest.json"), { version: 4, routes: {}, dynamicRoutes: {}, notFoundRoutes: [], preview });
+// routes / dynamicRoutes / notFoundRoutes は、プリロードの最後で next build と同じものにする（collectBuildOutput）
+const prerenderManifest = { version: 4, routes: {} as Record<string, any>, dynamicRoutes: {} as Record<string, any>, notFoundRoutes: [] as string[], preview };
+write(join(distDir, "prerender-manifest.json"), prerenderManifest);
 write(join(distDir, "server/preview-props.json"), preview);
 write(join(distDir, "build-manifest.json"), {
   polyfillFiles: [],
@@ -631,8 +633,35 @@ export type RequestRouteOptions = {
   body?: BodyInit | null;
 };
 
+// next build の prerender の結果（prerender-manifest にあるページの静的な部分。next start はそれをファイルから読む）を、
+// テストの中でそのページが最初にリクエストされたときに作る（テストの後に捨てる。resetCache）。
+// 作り方は Next.js 本体に任せる: セグメントの先読みのリクエスト（/_tree）で、next start が結果のないページに対してするのと同じく
+// 静的な部分だけを prerender させ（動的な部分は再開しないので、その副作用はない）、ファイル（distDir/server/route-cache）に書かせる。
+// next start の起動直後と同じく、そのページの結果はメモリーから消してファイルから読ませる（PPR のページはファイルの .rsc を読まないなど）
+const warmed = new Map<string, Promise<void>>();
+async function warmBuildOutput(url: string) {
+  const pathname = decodeURIComponent(new URL(url, "http://localhost").pathname);
+  const prerendered =
+    pathname in prerenderManifest.routes || Object.values(prerenderManifest.dynamicRoutes).some(({ routeRegex }) => new RegExp(routeRegex).test(pathname));
+  if (!prerendered) return;
+  if (!warmed.has(pathname))
+    warmed.set(pathname, (async () => {
+      const { computeCacheBustingSearchParam } = require("next/dist/shared/lib/router/utils/cache-busting-search-param");
+      const headers = { rsc: "1", "next-router-prefetch": "1", "next-router-segment-prefetch": "/_tree" };
+      await (await sendRoute(`${pathname}?_rsc=${await computeCacheBustingSearchParam("1", "/_tree", undefined, undefined)}`, { headers })).arrayBuffer();
+      // キャッシュのキーは /route-cache/APP_PAGE/<ルート>/$<パス>（"/" は /index）
+      const memory = require("next/dist/server/lib/incremental-cache/memory-cache.external").getMemoryCache(config.cacheMaxMemorySize);
+      const paths = new Set([...Object.keys(prerenderManifest.routes), ...Object.keys(prerenderManifest.dynamicRoutes)].map((path) => (path === "/" ? "/index" : path)));
+      for (const [key, entry] of [...memory]) if (entry?.value?.kind === "APP_PAGE" && paths.has(key.slice(key.indexOf("/$") + 2))) memory.remove(key);
+    })());
+  await warmed.get(pathname);
+}
 // URL へのリクエストを Next.js 本体のルーター（next start と同じ router-server）で処理し、HTTP の応答を返す
 async function requestRoute(url: string, init: RequestRouteOptions = {}): Promise<Response> {
+  await warmBuildOutput(url);
+  return sendRoute(url, init);
+}
+async function sendRoute(url: string, init: RequestRouteOptions = {}): Promise<Response> {
   const handler = await getRouter();
   // 本文と content-type（FormData の boundary など）は Request に作らせる
   const request = new Request(new URL(url, "http://localhost"), { method: init.method, headers: { host: "localhost", ...init.headers }, body: init.body });
@@ -714,9 +743,13 @@ const { getRouteRegex } = require("next/dist/shared/lib/router/utils/route-regex
 const { isDynamicRoute } = require("next/dist/shared/lib/router/utils/is-dynamic");
 const { format } = require("node:util");
 // next build が prerender する URL（generateStaticParams）。next dev と同じ Next.js の loadStaticPaths で求める。
-// loadStaticPaths は globalThis.__incrementalCache を作り直すので、ルーターのものに戻す
+// loadStaticPaths は globalThis.__incrementalCache を作り直すので、ルーターのものに戻す（next build の prerender のプロセスはルーターを使わない）
 async function staticPaths(path: string): Promise<{ pathname: string; fallbackRouteParams?: unknown[]; throwOnEmptyStaticShell?: boolean }[]> {
-  await getRouter();
+  return (await staticPathsResult(path)).prerenderedRoutes ?? [];
+}
+// Next.js の StaticPathsResult（build/static-paths/types.ts。next build の isPageStatic と同じ buildAppStaticPaths の結果）
+async function staticPathsResult(path: string): Promise<any> {
+  if (!BUILD_OUTPUT) await getRouter();
   const { loadStaticPaths } = require("next/dist/server/dev/static-paths-worker");
   const g = globalThis as any;
   const incrementalCache = g.__incrementalCache;
@@ -745,7 +778,7 @@ async function staticPaths(path: string): Promise<{ pathname: string; fallbackRo
       staticPageGenerationTimeout: config.staticPageGenerationTimeout,
       sriEnabled: !!config.experimental.sri?.algorithm,
     });
-    return result.prerenderedRoutes ?? [];
+    return result;
   } finally {
     g.__incrementalCache = incrementalCache;
   }
@@ -823,6 +856,13 @@ function resetCache() {
     throw new Error("[proofyard] Unsupported: custom cacheHandlers cannot be isolated between tests by the current runtime");
   for (const name of ["@next/cache-handlers-map", "@next/cache-handlers-set", "@next/cache-handlers-built-in"]) delete g[Symbol.for(name)];
   tagsManifest.clear();
+  // テストの中で作った build の結果（warmBuildOutput）を捨てる
+  if (warmed.size) {
+    warmed.clear();
+    const memory = require("next/dist/server/lib/incremental-cache/memory-cache.external").getMemoryCache(config.cacheMaxMemorySize);
+    for (const [key, entry] of [...memory]) if (entry?.value?.kind === "APP_PAGE") memory.remove(key);
+    rmSync(join(distDir, "server/route-cache"), { recursive: true, force: true });
+  }
 }
 // 無効化されたタグ（revalidateTag / updateTag / revalidatePath が記録したもの）
 const invalidatedTags = (): string[] => [...tagsManifest.keys()];
@@ -1076,9 +1116,9 @@ const ssrRuntime = (): typeof import("./ssr-runtime") => ssrModules.get(SSR_RUNT
 // SSR 層の Flight デコードの moduleMap（Client Reference の id → SSR 層のモジュール）
 const ssrModuleMap = () => Object.fromEntries([...clientIds].map((id) => [id, { "*": { id, name: "*", chunks: [], async: false } }]));
 
-// prefetch hints を求めるプロセス（prefetchHintsBuild）は、prerender して書き出したら終わる
-if (PREFETCH_HINTS_OUTPUT) {
-  write(PREFETCH_HINTS_OUTPUT, await collectPrefetchHintsManifest());
+// next build の prerender のプロセス（buildOutput）は、prerender して書き出したら終わる
+if (BUILD_OUTPUT) {
+  write(BUILD_OUTPUT, await collectBuildOutput());
   process.exit(0);
 }
 // テストが始まる前にビルドを終える（最初の render() のテストがビルドの時間でタイムアウトしないように）
@@ -1086,19 +1126,25 @@ await Promise.all([buildBrowser(), routeBuild]);
 console.log(`[proofyard] browser layer: ${(performance.now() - t).toFixed(0)}ms`);
 
 // next build と同じく、Next.js の exportApp（静的なページの prerender。build/index.ts の static-generation）を
-// このプロセスで動かし（StaticWorker の代わりに export/worker を直接呼ぶ）、結果の metadata.prefetchHints をページごとに最初のものだけ残す。
+// このプロセスで動かし（StaticWorker の代わりに export/worker を直接呼ぶ）、その結果から build/index.ts と同じく
+// - prefetch hints: metadata.prefetchHints をページごとに最初のものだけ残す
+// - prerender-manifest の routes / dynamicRoutes（cacheComponents のアプリだけ。next start が読む項目。下の prerenderManifestRoutes）
 // exportPathMap は build/index.ts と同じく、各ページの generateStaticParams（loadStaticPaths）の URL
-async function collectPrefetchHintsManifest() {
+async function collectBuildOutput(): Promise<BuildOutput> {
   const exportApp = require("next/dist/export").default;
   const { exportPages } = require("next/dist/export/worker");
   const map: Record<string, unknown> = {};
   // prerender する URL → ルートのパス（hints のキー）
   const routeOf = new Map<string, string>();
-  for (const [path, { page }] of routes) {
-    if (!page.endsWith("/page")) continue;
-    // 動的でないページは、そのパスだけ（build/index.ts と同じ。revalidate が 0 のページも入れるが、prerender で動的になり hints は出ない）
-    const paths = isDynamicRoute(path) ? await staticPaths(path) : [{ pathname: path, encodedPathname: path, fallbackRouteParams: [], throwOnEmptyStaticShell: true }];
-    for (const route of paths as any[]) {
+  const pages = [...routes].filter(([, { page }]) => page.endsWith("/page"));
+  // 動的でないページは、そのパスだけ（build/index.ts と同じ。revalidate が 0 のページも入れるが、prerender で動的になり hints は出ない）
+  const results = await Promise.all(
+    pages.map(([path]) =>
+      isDynamicRoute(path) ? staticPathsResult(path) : { prerenderedRoutes: [{ pathname: path, encodedPathname: path, fallbackRouteParams: [], fallbackRootParams: [], throwOnEmptyStaticShell: true }] },
+    ),
+  );
+  for (const [i, [path, { page }]] of pages.entries()) {
+    for (const route of (results[i].prerenderedRoutes ?? []) as any[]) {
       // build/index.ts と同じく、cacheComponents でなければ動的なルートのセグメントが残る URL は prerender しない
       if (route.fallbackRootParams?.length && !config.cacheComponents) continue;
       map[route.pathname] = {
@@ -1113,31 +1159,130 @@ async function collectPrefetchHintsManifest() {
       routeOf.set(route.pathname, path);
     }
   }
-  // prerender できないページ（next build なら失敗する）は、hints に入れずに続ける
+  // prerender できないページ（next build なら失敗する）は、結果に入れずに続ける
   const worker = {
     exportPages: async (input: unknown) => ((await exportPages(input)) as any[]).map((item) => ("error" in (item.result ?? {}) ? { ...item, result: undefined } : item)),
     setOnActivity() {},
     setOnActivityAbort() {},
   };
-  const result = await exportApp(
+  const exported = await exportApp(
     projectDir,
     { nextConfig: { ...config, distDir: relative(projectDir, distDir), exportPathMap: () => map, experimental: { ...config.experimental, prerenderEarlyExit: false } }, enabledDirectories: { app: true, pages: false }, silent: true, buildExport: true, pages: [], outdir: join(distDir, "export"), numWorkers: 1, appDirOnly: true },
     require("next/dist/trace").trace("proofyard-export"),
     worker,
   );
-  const hints: Record<string, unknown> = {};
+  const prefetchHints: Record<string, unknown> = {};
   for (const [path, page] of routeOf) {
-    const prefetchHints = result?.byPath.get(path)?.metadata?.prefetchHints;
-    if (prefetchHints && !(page in hints)) hints[page] = prefetchHints;
+    const hints = exported?.byPath.get(path)?.metadata?.prefetchHints;
+    if (hints && !(page in prefetchHints)) prefetchHints[page] = hints;
   }
-  return hints;
+  const manifest = config.cacheComponents ? prerenderManifestRoutes(exported, pages.map(([path], i) => [path, results[i]])) : { routes: {}, dynamicRoutes: {}, notFoundRoutes: [] };
+  return { prefetchHints, ...manifest };
 }
-const prefetchHints = (await prefetchHintsBuild) ?? {};
-if (prefetchHintsBuild) {
-  write(join(distDir, `server/${PREFETCH_HINTS}`), prefetchHints);
-  console.log(`[proofyard] prefetch hints (next build): ${Object.keys(prefetchHints).length} pages ${(performance.now() - t).toFixed(0)}ms`);
+type BuildOutput = { prefetchHints: Record<string, unknown>; routes: Record<string, unknown>; dynamicRoutes: Record<string, unknown>; notFoundRoutes: string[] };
+// prerender-manifest の App Router のページの項目（build/index.ts の static-generation の後半と同じ。cacheComponents のアプリなので、
+// どのページも Partial Prerendering）。next start が読む項目だけ作る（routeType などの分類、experimentalBypassFor、allowHeader、htmlSize は
+// デプロイ先のアダプター向けで、next start は読まない）。prerender できなかったページ（next build なら失敗する）は入れない
+function prerenderManifestRoutes(exported: any, pages: [string, any][]): Omit<BuildOutput, "prefetchHints"> {
+  const { FallbackMode, fallbackModeToFallbackField } = require("next/dist/lib/fallback");
+  const { collectMeta } = require("next/dist/build/utils");
+  const { normalizeRouteRegex } = require("next/dist/lib/load-custom-routes");
+  const { getNamedRouteRegex } = require("next/dist/shared/lib/router/utils/route-regex");
+  const { sortPageObjects } = require("next/dist/shared/lib/router/utils/sortable-routes");
+  const { normalizePagePath } = require("next/dist/shared/lib/page-path/normalize-page-path");
+  const { isStaticMetadataFile } = require("next/dist/lib/metadata/is-metadata-route");
+  const routesOut: Record<string, unknown> = {};
+  const dynamicRoutes: Record<string, unknown> = {};
+  const getCacheControl = (path: string, defaultRevalidate: unknown = false) => {
+    const cacheControl = exported?.byPath.get(path)?.cacheControl;
+    if (!cacheControl) return { revalidate: defaultRevalidate, expire: undefined };
+    if (cacheControl.revalidate !== false && cacheControl.revalidate > 0 && cacheControl.expire === undefined) return { revalidate: cacheControl.revalidate, expire: config.expireTime };
+    return cacheControl;
+  };
+  const regex = (path: string, data = false) =>
+    normalizeRouteRegex(getNamedRouteRegex(path, data ? { prefixRouteKeys: false, includeSuffix: true, excludeOptionalTrailingSlash: true } : { prefixRouteKeys: false }).re.source);
+  for (const [page, paths] of pages) {
+    let hasRevalidateZero = getCacheControl(page).revalidate === 0;
+    const prerenderedRoutes: any[] = paths.prerenderedRoutes ?? [];
+    const sorted = [
+      ...sortPageObjects(prerenderedRoutes.filter((route) => !route.fallbackRouteParams?.length), (route: any) => route.pathname),
+      ...sortPageObjects(prerenderedRoutes.filter((route) => route.fallbackRouteParams?.length), (route: any) => route.pathname),
+    ];
+    for (const route of sorted) {
+      if (route.fallbackRouteParams?.length) continue;
+      if (isDynamicRoute(page) && route.pathname === page) continue;
+      const result = exported?.byPath.get(route.pathname);
+      if (!result) continue;
+      const cacheControl = getCacheControl(route.pathname, undefined);
+      if (cacheControl.revalidate === 0) {
+        hasRevalidateZero = true;
+        continue;
+      }
+      const dataRoute = posix.join(`${normalizePagePath(route.pathname)}.rsc`);
+      const meta = collectMeta(result.metadata ?? {});
+      routesOut[route.pathname] = {
+        initialStatus: route.pathname === "/_not-found" ? 404 : meta.status,
+        initialHeaders: meta.headers,
+        renderingMode: "PARTIALLY_STATIC",
+        experimentalPPR: true,
+        initialRevalidateSeconds: cacheControl.revalidate,
+        initialExpireSeconds: cacheControl.expire,
+        srcRoute: page,
+        dataRoute,
+        prefetchDataRoute: result.hasStaticRsc ? dataRoute : undefined,
+      };
+    }
+    if (hasRevalidateZero || !isDynamicRoute(page)) continue;
+    const paramMatching = paths.paramMatching;
+    const notFoundParams = paramMatching ? Object.keys(paramMatching).filter((name) => paramMatching[name] === "not-found") : undefined;
+    const candidates = new Map<string, any[]>();
+    for (const candidate of sorted) candidates.set(candidate.pathname, [...(candidates.get(candidate.pathname) ?? []), candidate]);
+    for (const route of sortPageObjects(paths.prerenderRouteMatchers ?? [], (matcher: any) => matcher.pathname) as any[])
+      for (const candidate of candidates.get(route.pathname) ?? [undefined]) {
+        if (isStaticMetadataFile(route.pathname)) continue;
+        const output: string = candidate?.pathname ?? route.pathname;
+        const result = exported?.byPath.get(output);
+        if (candidate && !result) continue;
+        const cacheControl = getCacheControl(output);
+        const dataRoute = posix.join(`${normalizePagePath(output)}.rsc`);
+        const fallbackMode =
+          candidate && result?.hasEmptyStaticShell && (route.isFallbackModeInferred || !candidate.throwOnEmptyStaticShell) && route.fallbackMode === FallbackMode.PRERENDER
+            ? FallbackMode.BLOCKING_STATIC_RENDER
+            : (route.fallbackMode ?? FallbackMode.NOT_FOUND);
+        const prerender = fallbackMode === FallbackMode.PRERENDER;
+        const meta = result?.metadata && prerender ? collectMeta(result.metadata) : {};
+        dynamicRoutes[output] = {
+          notFoundParams,
+          experimentalPPR: true,
+          remainingPrerenderableParams: route.remainingPrerenderableParams,
+          throwOnEmptyStaticShell: candidate ? candidate.throwOnEmptyStaticShell : false,
+          renderingMode: "PARTIALLY_STATIC",
+          routeRegex: regex(output),
+          dataRoute,
+          fallback: fallbackModeToFallbackField(fallbackMode, route.pathname),
+          isExplicitlyBlocking:
+            fallbackMode === FallbackMode.BLOCKING_STATIC_RENDER && route.fallbackRouteParams.some(({ paramName }: any) => paramMatching?.[paramName] === "blocking") ? true : undefined,
+          fallbackRevalidate: prerender ? cacheControl.revalidate : undefined,
+          fallbackExpire: prerender ? cacheControl.expire : undefined,
+          fallbackStatus: meta.status,
+          fallbackHeaders: meta.headers,
+          fallbackRootParams: route.fallbackRouteParams ? route.fallbackRootParams : undefined,
+          fallbackSourceRoute: route.fallbackRouteParams?.length ? page : undefined,
+          fallbackRouteParams: route.fallbackRouteParams,
+          dataRouteRegex: regex(dataRoute, true),
+          prefetchDataRoute: null,
+          prefetchDataRouteRegex: undefined,
+        };
+      }
+  }
+  return { routes: routesOut, dynamicRoutes, notFoundRoutes: [...(exported?.ssgNotFoundPaths ?? [])] };
 }
-(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild, prefetchHints } satisfies NextHarness;
+const { prefetchHints, ...prerendered } = (await buildOutput)!;
+write(join(distDir, `server/${PREFETCH_HINTS}`), prefetchHints);
+Object.assign(prerenderManifest, prerendered);
+write(join(distDir, "prerender-manifest.json"), prerenderManifest);
+console.log(`[proofyard] next build (prerender): ${Object.keys(prefetchHints).length} pages ${(performance.now() - t).toFixed(0)}ms`);
+(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild, prefetchHints, prerenderManifest } satisfies NextHarness;
 export type NextHarness = {
   requestRoute: typeof requestRoute;
   prerenderRoute: typeof prerenderRoute;
@@ -1150,4 +1295,6 @@ export type NextHarness = {
   routeBundle: () => Promise<string>;
   // next build の prefetch-hints.json と同じもの（tests/compatibility で比べる）
   prefetchHints: Record<string, unknown>;
+  // next build の prerender-manifest.json と同じもの（next start が読む項目だけ）
+  prerenderManifest: typeof prerenderManifest;
 };
