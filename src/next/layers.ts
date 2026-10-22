@@ -98,6 +98,8 @@ export const BUNDLED_ALIASES = {
 
 const root = process.cwd();
 const abs = (spec: string) => Bun.resolveSync(spec, root);
+// SWC の変換が出力する @swc/helpers は Next.js 自身の依存（create-compiler-aliases.ts の '@swc/helpers/_'。アプリが入れていなくてよい）
+const swcHelpers = () => dirname(Bun.resolveSync("@swc/helpers/package.json", dirname(abs("next/package.json"))));
 // node_modules 内の "use server" / "use cache"（Next.js は SWC で変換する。ここでは変換しないので Fail Closed）
 export const SERVER_DIRECTIVE = /^\s*["']use (?:server|cache(?::\s*[\w-]+)?)["']/m;
 export const USE_CLIENT = /^\s*(?:(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:["']use strict["'];?\s*)?["']use client["']/;
@@ -183,6 +185,7 @@ export async function buildLayer(layer: Layer, entries: string[], { define, gene
             const shared = layer !== "browser" && args.path.match(/\.\/(?:.+\/)?([^/]+)\.shared-runtime$/);
             if (shared) return { path: abs(`${VENDORED}/contexts/${shared[1]}`), external: true };
             if (args.path in bundledAliases) return { path: abs(bundledAliases[args.path]!) };
+            if (args.path.startsWith("@swc/helpers/_/")) return { path: Bun.resolveSync(`.${args.path.slice(12)}`, swcHelpers()) };
             if (args.path.startsWith("node:") || !args.importer) return;
             const generated = generatedDir !== undefined && args.importer.startsWith(generatedDir);
             let resolved: string;

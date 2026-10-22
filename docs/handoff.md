@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。151 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。152 件）
 
 ## 決めたこと
 
@@ -112,6 +112,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - ページのエントリの `export * from entry-base`（CJS）の名前は Bun.build の ESM の出力で消える。`__proofyardEntryBase` の名前空間でも出し、`server/app/*.js` で混ぜる（`ComponentMod.patchFetch` など。next build の ComponentMod と同じ名前）
 - サードパーティの状態管理（zustand・jotai・Redux Toolkit）は追加の対応なしで動く（`tests/unit/state-libraries.test.tsx`）。モジュールのスコープのストアも、テストごとにクライアントのバンドルを読み直すので、前のテストの状態は残らない
 - **`mock.module` の分離（仕様 19 章）**: Bun は差し替えを戻さない（`mock.restore()` も戻さず、次のテスト・次のファイルに残る）。プリロードで `mock.module` を包み、テストの中の差し替えはテストの後に、ファイルの直下の差し替えはファイルの後に戻す（ファイルの読み込み中に登録した `afterAll` はそのファイルの後に動く。プリロードの `afterAll` は全部のファイルの後に 1 回だけ）。戻すときは本物を `?proofyard-restore=N` で読み込み直す（差し替えるときに読むと、Bun は読み込みの失敗を覚えていて、`server-only` のような読めないモジュールを差し替えられなくなる。ESM は `require.cache` に入らないので読み込み済みかは分からない）。本物が読めなければ、使うとそのエラーになる値にする（Bun は差し替えのときに値を読むので getter では戻せない）。戻した後は別のインスタンスで、モジュールの状態は初期に戻る。`beforeAll` の中の差し替えは、全部のファイルの後まで残る（`tests/unit/mock.test.ts`、`mock-files.test.ts`）
+- **依存として使う**: README の使い方（`bunfig.toml` の `preload = ["proofyard/preload"]`、アプリは `next` / `react` / `react-dom` だけ）を一時ディレクトリのアプリで確かめる（`tests/unit/consumer.test.ts`）。SWC が出力する `@swc/helpers/_/*` は、Next.js と同じく Next.js 自身の依存から解決する（`create-compiler-aliases.ts`。アプリに `@swc/helpers` がないと実行時に見つからなかった）
 - `node_modules` は Read と Bash で読めない設定。Next.js のソースは `/tmp/nextjs-v16.4.2`（v16.4.2 の sparse clone）を読む。無ければ取り直す
 
 ## 未対応（Fail Closed にしているもの・まだのもの）
