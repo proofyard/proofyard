@@ -13,6 +13,12 @@ beforeAll(async () => {
 }, 300_000);
 afterAll(() => reference?.stop());
 
+test("prefetch hints（server/prefetch-hints.json）は next build と同じ", async () => {
+  // /fonts は next build に写していない（app/fonts を除いている）
+  const { "/fonts": _, ...ours } = (globalThis as any)[Symbol.for("proofyard.next")].prefetchHints;
+  expect(ours).toEqual(await Bun.file(join(reference.dir, ".next/server/prefetch-hints.json")).json());
+});
+
 // prerendered: next start は build のときに描画した HTML を返し、requestRoute は毎回リクエストのときに描画する（docs/handoff.md）。
 // そのために HTML が違うもの（ステータスとヘッダーだけ比べる）
 type Case = { path: string; cookies?: Record<string, string>; headers?: Record<string, string>; prerendered?: string };
