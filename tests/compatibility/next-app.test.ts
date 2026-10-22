@@ -39,6 +39,7 @@ const cases: Case[] = [
   { path: "/styled" },
   { path: "/og" },
   { path: "/state" },
+  { path: "/query" },
   { path: "/third-party" },
   { path: "/third-party/server" },
   { path: "/third-party/next?q=x", cookies: { locale: "ja" } },
