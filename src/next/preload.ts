@@ -16,7 +16,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { actionModule, serverActions } from "../testing/actions";
-import { ALIASES, BUNDLED_ALIASES, SERVER_DIRECTIVE, USE_CLIENT, buildLayer, clientExports, clientIds, clientReferenceStub, esmClientIds } from "./layers";
+import { ALIASES, BUNDLED_ALIASES, SERVER_DIRECTIVE, USE_CLIENT, buildLayer, cjsExportNames, clientExports, clientIds, clientReferenceStub, esmClientIds } from "./layers";
 import { FONT_IMPORT, STYLE_FILE, createStyleLoader, unquote } from "./css";
 
 // 対象アプリ（next.config と app/ のあるディレクトリ）。既定は bun test を実行したディレクトリ
@@ -296,8 +296,9 @@ const withFonts = (code: string) =>
 const swcTransformSync = (filename: string, source: string): string => withFonts(swcCompile(filename, source));
 // SSR 層・ブラウザ層のアプリのソース（Client Component）の変換（typeof window の置き換えなども Next.js と同じになる）
 const isAppSource = (path: string) => path.startsWith(projectDir + "/") && !path.includes("/node_modules/");
+// node_modules は "use server" / "use cache" のあるものだけ（Client Component から import した Server Action を Server Reference にする）
 const swcTransformFor = (layer: "ssr" | "browser" | "route") => async (filename: string, source: string) =>
-  isAppSource(filename) ? withFonts(swcCompile(filename, source, layer)) : undefined;
+  isAppSource(filename) || SERVER_DIRECTIVE.test(source) ? withFonts(swcCompile(filename, source, layer)) : undefined;
 const entries = [...routes.values()].map((r) => r.entry).concat(middlewareEntry ?? [], instrumentationEntry ?? []);
 
 // rsc 層: Next.js 本体だけをバンドルし、アプリはネイティブで読み込む（mock.module が効く）。
@@ -401,15 +402,21 @@ while (nodeModuleImports.length) {
         resolved,
         esmClientIds.has(resolved) ? stub : failModule(`[proofyard] Unsupported: CommonJS "use client" modules in node_modules (${resolved})`, clientExports.get(resolved)),
       );
-    } else if (SERVER_DIRECTIVE.test(dep))
-      nativeReplacements.set(
-        resolved,
-        failModule(
-          `Unsupported Next.js feature: "use server" / "use cache" in node_modules is not compiled by the current runtime (${resolved})`,
-          new Bun.Transpiler({ loader: "js" }).scan(dep).exports,
-        ),
-      );
-    else nodeModuleImports.push([resolved, dep]);
+      continue;
+    }
+    if (SERVER_DIRECTIVE.test(dep)) {
+      // "use server" / "use cache" は、Next.js と同じくアプリのソースと同じ SWC で変換する（Next.js の SWC の設定は node_modules かどうかをパスで見る）。
+      // CommonJS は実行時のプラグインで module.exports が失われるので未対応
+      const { exports, imports } = new Bun.Transpiler({ loader: "js" }).scan(dep);
+      if (!exports.length && !imports.length && /\b(?:module\.)?exports\b/.test(dep))
+        nativeReplacements.set(resolved, failModule(`[proofyard] Unsupported: CommonJS "use server" / "use cache" modules in node_modules (${resolved})`, cjsExportNames(dep)));
+      else {
+        const code = swcTransformSync(resolved, dep);
+        for (const m of code.matchAll(/registerServerReference\([^,]+,\s*"([0-9a-f]+)"/g)) actionFiles.set(m[1]!, resolved);
+        nativeReplacements.set(resolved, code);
+      }
+    }
+    nodeModuleImports.push([resolved, dep]);
   }
 }
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");

@@ -100,7 +100,7 @@ const root = process.cwd();
 const abs = (spec: string) => Bun.resolveSync(spec, root);
 // SWC の変換が出力する @swc/helpers は Next.js 自身の依存（create-compiler-aliases.ts の '@swc/helpers/_'。アプリが入れていなくてよい）
 const swcHelpers = () => dirname(Bun.resolveSync("@swc/helpers/package.json", dirname(abs("next/package.json"))));
-// node_modules 内の "use server" / "use cache"（Next.js は SWC で変換する。ここでは変換しないので Fail Closed）
+// node_modules 内の "use server" / "use cache"（Next.js と同じくアプリと同じ SWC で変換する。rsc 層はネイティブで読み込むときに変換する）
 export const SERVER_DIRECTIVE = /^\s*["']use (?:server|cache(?::\s*[\w-]+)?)["']/m;
 export const USE_CLIENT = /^\s*(?:(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:["']use strict["'];?\s*)?["']use client["']/;
 
@@ -109,6 +109,16 @@ export const clientIds = new Set<string>();
 export const esmClientIds = new Set<string>();
 // Client Reference の id → export 名
 export const clientExports = new Map<string, string[]>();
+
+// ponytail: CommonJS の export 名を正規表現で拾う（exports.X = / Object.defineProperty(exports, "X") / _export(exports, { X: ... })）
+export function cjsExportNames(source: string): string[] {
+  const names = new Set<string>();
+  for (const m of source.matchAll(/(?:exports\.([A-Za-z_$][\w$]*)\s*=|defineProperty\(exports,\s*["']([A-Za-z_$][\w$]*)["'])/g)) names.add(m[1] ?? m[2]!);
+  const exportBlock = source.match(/_export\(exports,\s*\{([\s\S]*?)\}\);/);
+  if (exportBlock) for (const m of exportBlock[1]!.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*:/gm)) names.add(m[1]!);
+  names.delete("__esModule");
+  return [...names];
+}
 
 const registerStub = (id: string, n: string) =>
   `registerClientReference(function () { throw new Error("[proofyard] client function called on the server"); }, ${id}, ${JSON.stringify(n)})`;
@@ -124,14 +134,9 @@ export function clientReferenceStub(path: string, source: string) {
     const lines = esmExports.map((n) => (n === "default" ? `export default ${registerStub(id, n)};` : `export const ${n} = ${registerStub(id, n)};`));
     return `import { registerClientReference } from "react-server-dom-webpack/server";\n${lines.join("\n")}\n`;
   }
-  // ponytail: export 名を正規表現で拾う（CJS の exports.X = / Object.defineProperty(exports, "X") / _export(exports, { X: ... })）
-  const names = new Set<string>();
-  for (const m of source.matchAll(/(?:exports\.([A-Za-z_$][\w$]*)\s*=|defineProperty\(exports,\s*["']([A-Za-z_$][\w$]*)["'])/g)) names.add(m[1] ?? m[2]!);
-  const exportBlock = source.match(/_export\(exports,\s*\{([\s\S]*?)\}\);/);
-  if (exportBlock) for (const m of exportBlock[1]!.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*:/gm)) names.add(m[1]!);
-  names.delete("__esModule");
-  clientExports.set(path, [...names]);
-  const lines = [...names].map((n) => `${JSON.stringify(n)}: ${registerStub(id, n)}`);
+  const names = cjsExportNames(source);
+  clientExports.set(path, names);
+  const lines = names.map((n) => `${JSON.stringify(n)}: ${registerStub(id, n)}`);
   return `import { registerClientReference } from "react-server-dom-webpack/server";\nmodule.exports = { __esModule: true, ${lines.join(",\n")} };\n`;
 }
 
@@ -211,6 +216,7 @@ export async function buildLayer(layer: Layer, entries: string[], { define, gene
               const source = readFileSync(args.path, "utf8");
               if (USE_CLIENT.test(source)) return { loader: "js", contents: clientReferenceStub(args.path, source) };
               if (inNodeModules) {
+                // rsc 層のバンドルは Next.js 本体だけ。変換はネイティブで読み込むとき（preload.ts）なので、バンドルに入れば変換されない
                 if (SERVER_DIRECTIVE.test(source))
                   throw new Error(`Unsupported Next.js feature: "use server" / "use cache" in node_modules is not compiled by the current runtime (${args.path})`);
                 return;
@@ -220,8 +226,10 @@ export async function buildLayer(layer: Layer, entries: string[], { define, gene
             });
           } else if (transform) {
             build.onLoad({ filter: /\.(?:[cm]?js|jsx|tsx?)$/ }, async (args) => {
-              if (args.path.includes("/node_modules/")) return;
-              const code = await transform(args.path, readFileSync(args.path, "utf8"));
+              const source = readFileSync(args.path, "utf8");
+              // node_modules は "use server" / "use cache" のあるものだけ変換する
+              if (args.path.includes("/node_modules/") && !SERVER_DIRECTIVE.test(source)) return;
+              const code = await transform(args.path, source);
               if (code !== undefined) return { loader: "js", contents: code };
             });
           }

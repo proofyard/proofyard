@@ -2,6 +2,8 @@
 import { expect, test } from "bun:test";
 import { createTestContext, prerenderRoute, requestRoute } from "proofyard";
 import { stats } from "./fixture/app/dashboard/stats";
+// @ts-expect-error 型のない偽物のパッケージ
+import { stats as library } from "./fixture/node_modules/fake-cached";
 
 test("静的シェル: \"use cache\" の結果は入り、cookies() / connection() の Suspense は fallback のまま", async () => {
   const result = await prerenderRoute("/dashboard");
@@ -92,4 +94,12 @@ test("\"use cache: private\" はリクエストの cookies() を読み、\"use c
   expect(stats.remoteCalls - remote).toBe(1);
   // private はリクエストをまたいで共有しない
   expect(stats.privateCalls - before).toBe(2);
+});
+
+test('node_modules のパッケージの "use cache"（静的シェルに入り、同じテストの中では再利用する）', async () => {
+  const ctx = createTestContext();
+  const before = library.calls;
+  expect((await ctx.prerenderRoute("/library")).shell).toContain("<p>from library</p>");
+  expect(await (await ctx.requestRoute("/library")).text()).toContain("<p>from library</p>");
+  expect(library.calls - before).toBe(1);
 });

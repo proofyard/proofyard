@@ -2,6 +2,8 @@
 import { beforeEach, expect, test } from "bun:test";
 import { flushAfter, renderRoute, requestRoute } from "proofyard";
 import { db } from "../fixtures/next-app/components/users/db";
+// @ts-expect-error 型のない偽物のパッケージ
+import { listEntries, resetEntries } from "../fixtures/next-app/node_modules/fake-actions";
 
 beforeEach(() => {
   db.afterLog = [];
@@ -158,9 +160,22 @@ test("サードパーティの \"use client\"（パッケージの奥のファ�
   expect(app.errors).toEqual([]);
 });
 
-test('node_modules の "use cache" は変換できないので、そのページは Fail Closed（500）', async () => {
-  const res = await requestRoute("/third-party/cached");
-  expect(res.status).toBe(500);
+test('サードパーティの "use server"：Server Component のフォーム（JS なし・あり）と Client Component から呼ぶ', async () => {
+  await resetEntries();
+  const html = await (await requestRoute("/third-party/actions")).text();
+  const body = new FormData();
+  body.set(html.match(/name="(\$ACTION_ID_[0-9a-f]+)"/)![1]!, "");
+  body.set("entry", "no-js");
+  expect((await requestRoute("/third-party/actions", { method: "POST", body })).status).toBe(200);
+  expect(await listEntries()).toEqual(["no-js"]);
+
+  const app = await renderRoute("/third-party/actions");
+  await app.user.type(app.getByRole("textbox", { name: "entry" }), "with-js");
+  await app.user.click(app.getByRole("button", { name: "Add entry" }));
+  await app.findByText("with-js");
+  await app.user.click(app.getByRole("button", { name: "Count entries" }));
+  await app.findByRole("button", { name: "entries: 2" });
+  expect(app.errors).toEqual([]);
 });
 
 test("サードパーティの exports の react-server の条件は、Next.js の rsc 層と同じく react-server のファイル", async () => {

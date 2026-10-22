@@ -7,8 +7,8 @@ import { comparableFlight, comparableHtml, comparableModule, referenceModulePath
 let reference: Reference;
 beforeAll(async () => {
   reference = await startReference(join(import.meta.dir, "../fixtures/next-app"), {
-    // Proofyard では Fail Closed（node_modules の "use cache"）と、中身が偽物のフォント（next build が失敗する）
-    exclude: ["app/third-party/cached", "app/fonts"],
+    // 中身が偽物のフォント（next build が失敗する）
+    exclude: ["app/fonts"],
   });
 }, 300_000);
 afterAll(() => reference?.stop());
@@ -42,6 +42,7 @@ const cases: Case[] = [
   { path: "/query" },
   { path: "/third-party" },
   { path: "/third-party/server" },
+  { path: "/third-party/actions" },
   { path: "/third-party/next?q=x", cookies: { locale: "ja" } },
   { path: "/third-party/next", cookies: { locale: "fr" } },
   { path: "/does-not-exist", prerendered: "_not-found は build のときの HTML で、<title> の並びが違う（notFound() をリクエストのときに呼ぶ /third-party/next は同じ）" },
@@ -94,6 +95,7 @@ const flightCases: Pick<Case, "path" | "cookies">[] = [
   { path: "/meta/hello" },
   { path: "/third-party/next?q=x", cookies: { locale: "ja" } },
   { path: "/third-party/next", cookies: { locale: "fr" } },
+  { path: "/third-party/actions" },
 ];
 const fixture = join(import.meta.dir, "../fixtures/next-app");
 for (const { path, cookies } of flightCases)
@@ -117,20 +119,25 @@ let modulePaths: Map<string, string> | undefined;
 
 // JS ありのクライアントからの Server Action（Next-Action ヘッダーと encodeReply の本文）の応答を Flight の意味論で比べる
 const { encodeReply } = require("next/dist/compiled/react-server-dom-webpack/cjs/react-server-dom-webpack-client.node.production.js");
-for (const [index, form] of ["addUser（revalidatePath）", "addAndOpen（redirect）"].entries())
+const actionCases = [
+  { form: "addUser（revalidatePath）", page: "/users", index: 0, field: "name", value: "Dave0" },
+  { form: "addAndOpen（redirect）", page: "/users", index: 1, field: "name", value: "Dave1" },
+  { form: "node_modules の addEntry", page: "/third-party/actions", index: 0, field: "entry", value: "compat" },
+];
+for (const { form, page, index, field, value } of actionCases)
   test(`Server Action ${form} の fetch の応答は next start と同じ Flight`, async () => {
     const actionId = async (response: Response | Promise<Response>) => [...(await (await response).text()).matchAll(/name="\$ACTION_ID_([0-9a-f]+)"/g)][index]![1]!;
     const request = async (id: string) => {
       const formData = new FormData();
-      formData.set("name", `Dave${index}`);
+      formData.set(field, value);
       // Bun の FormData には toJSON があり、JSON.stringify が React の FormData の判定より先に普通のオブジェクトにする
       Object.defineProperty(formData, "toJSON", { value: undefined });
       return { method: "POST", headers: { "next-action": id, accept: "text/x-component" }, body: await encodeReply([formData]) };
     };
-    const ours = await requestRoute("/users", await request(await actionId(requestRoute("/users"))));
-    const real = await fetch(`${reference.url}/users`, { redirect: "manual", ...(await request(await actionId(fetch(`${reference.url}/users`)))) });
+    const ours = await requestRoute(page, await request(await actionId(requestRoute(page))));
+    const real = await fetch(reference.url + page, { redirect: "manual", ...(await request(await actionId(fetch(reference.url + page)))) });
     expect(real.status).toBe(200);
-    if (index === 1) expect(real.headers.get("x-action-redirect")).toStartWith("/users/Dave1");
+    if (form.includes("redirect")) expect(real.headers.get("x-action-redirect")).toStartWith("/users/Dave1");
     expect(ours.status).toBe(real.status);
     for (const name of ["content-type", "x-action-redirect", "x-action-revalidated"]) expect(`${name}: ${ours.headers.get(name)}`).toBe(`${name}: ${real.headers.get(name)}`);
     const paths = (modulePaths ??= referenceModulePaths(reference));

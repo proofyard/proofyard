@@ -11,14 +11,14 @@ beforeAll(async () => {
 }, 300_000);
 afterAll(() => reference?.stop());
 
-for (const path of ["/dashboard", "/about", "/posts/hello", "/products/1", "/private"])
+for (const path of ["/dashboard", "/about", "/posts/hello", "/products/1", "/private", "/library"])
   test(`requestRoute ${path} は next start と同じ HTML`, async () => {
     const [ours, real] = await Promise.all([requestRoute(path), fetch(reference.url + path)]);
     expect(ours.status).toBe(real.status);
     expect(comparableHtml(await ours.text())).toBe(comparableHtml(await real.text()));
   });
 
-for (const path of ["/dashboard", "/about", "/posts/hello", "/products/[id]", "/private"])
+for (const path of ["/dashboard", "/about", "/posts/hello", "/products/[id]", "/private", "/library"])
   test(`prerenderRoute ${path} は next build の静的シェル（.html）と同じ`, async () => {
     const result = await prerenderRoute(path);
     const html = await Bun.file(join(reference.dir, ".next/server/app", `${path}.html`)).text();
