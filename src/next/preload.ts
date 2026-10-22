@@ -483,7 +483,16 @@ const rscClientModule = (id: string) => {
   if (id.startsWith(RSC_CLIENT_PREFIX)) return rscClientModule(id.slice(RSC_CLIENT_PREFIX.length));
   if (id.startsWith(ACTION_FILE_PREFIX)) {
     require(id.slice(ACTION_FILE_PREFIX.length));
-    return new Proxy({}, { get: (_, actionId) => (typeof actionId === "string" ? serverActions.get(actionId) : undefined) });
+    // React の decodeAction（JS なしのフォームの送信）は hasOwnProperty で確かめてから読む
+    const action = (actionId: string | symbol) => (typeof actionId === "string" ? serverActions.get(actionId) : undefined);
+    return new Proxy({}, {
+      get: (_, actionId) => action(actionId),
+      has: (_, actionId) => !!action(actionId),
+      getOwnPropertyDescriptor: (_, actionId) => {
+        const value = action(actionId);
+        return value && { value, enumerable: true, configurable: true, writable: false };
+      },
+    });
   }
   // renderRSC の Client Reference（実行しない代わりのモジュール。src/testing/render-rsc.ts）
   // Server Action（decodeReply が引数の中の Server Reference を読むとき）

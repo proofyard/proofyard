@@ -64,3 +64,20 @@ for (const { path, cookies, headers, prerendered } of cases)
     for (const name of ["x-section", "set-cookie"]) expect(`${name}: ${ours.headers.get(name)}`).toBe(`${name}: ${real.headers.get(name)}`);
     if (!prerendered) expect(comparableHtml(await ours.text())).toBe(comparableHtml(await real.text()));
   });
+
+// JS なしのフォームの送信（progressive enhancement）。Action の id はビルドごとに違うので、それぞれの HTML から取る
+for (const [index, form] of ["addUser（revalidatePath）", "addAndOpen（redirect）"].entries())
+  test(`Server Action ${form} のフォームの送信は next start と同じ`, async () => {
+    const actionId = async (response: Response | Promise<Response>) => [...(await (await response).text()).matchAll(/name="(\$ACTION_ID_[0-9a-f]+)"/g)][index]![1]!;
+    const post = (id: string) => {
+      const body = new FormData();
+      body.set(id, "");
+      body.set("name", `Carol${index}`);
+      return body;
+    };
+    const ours = await requestRoute("/users", { method: "POST", body: post(await actionId(requestRoute("/users"))) });
+    const real = await fetch(`${reference.url}/users`, { method: "POST", redirect: "manual", body: post(await actionId(fetch(`${reference.url}/users`))) });
+    expect(ours.status).toBe(real.status);
+    expect(ours.headers.get("location")).toBe(real.headers.get("location"));
+    expect(comparableHtml(await ours.text())).toBe(comparableHtml(await real.text()));
+  });
