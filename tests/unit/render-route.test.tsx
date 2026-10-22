@@ -1,6 +1,6 @@
 // renderRoute の Client Mode で、Server Actions を Next.js 本体のルーター（fetch → メモリ内の handler）で動かす
 import { beforeEach, expect, test } from "bun:test";
-import { renderRoute } from "proofyard";
+import { renderRoute, requestRoute } from "proofyard";
 import { db } from "../fixtures/next-app/components/users/db";
 
 beforeEach(() => {
@@ -22,4 +22,20 @@ test("Server Action の redirect() でページが移る", async () => {
   await app.user.click(app.getByRole("button", { name: "Add and open" }));
   await app.findByRole("heading", { name: "Profile Carol" });
   expect(location.pathname).toBe("/users/Carol");
+});
+
+test("JS なしのフォームの送信（progressive enhancement）: Action の後のページ、redirect は 303", async () => {
+  const actionIds = [...(await (await requestRoute("/users")).text()).matchAll(/name="(\$ACTION_ID_[0-9a-f]+)"/g)].map((m) => m[1]!);
+  const form = (id: string, name: string) => {
+    const body = new FormData();
+    body.set(id, "");
+    body.set("name", name);
+    return body;
+  };
+  const added = await requestRoute("/users", { method: "POST", body: form(actionIds[0]!, "Bob") });
+  expect(added.status).toBe(200);
+  expect(await added.text()).toContain("<li>Bob</li>");
+  const opened = await requestRoute("/users", { method: "POST", body: form(actionIds[1]!, "Carol") });
+  expect(opened.status).toBe(303);
+  expect(opened.headers.get("location")).toBe("/users/Carol");
 });

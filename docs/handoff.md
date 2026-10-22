@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。150 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。151 件）
 
 ## 決めたこと
 
@@ -94,6 +94,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - **分かった違い**:
   - Bun の `Response.json()` は `content-type: application/json;charset=utf-8`（Node.js は `application/json`）。アプリのコードが Bun で動くため
   - next start は、静的なルート（`cacheComponents` でないアプリ）を build のときに描画した HTML で返し、PPR のルートは静的シェルの続き（resume）で返す。`requestRoute` は毎回ページ全体をリクエストのときに描画する（テストごとのデータやモックが効くように）。そのため、`useSearchParams()` の Suspense は next start では fallback（CSR に任せる）だが `requestRoute` では中身が入り、存在しない URL の 404（`_not-found`）は `<title>` の並びが違う
+  - JS なしのフォームの送信（`$ACTION_ID_`、React の `decodeAction`）が 500 だった（比較で発見して修正）。React は Action のモジュールを `hasOwnProperty` で確かめてから読むので、Proofyard の Action のモジュール（Proxy）に `getOwnPropertyDescriptor` と `has` を足した
   - next build は Suspense の外の `useSearchParams()` をエラーにする（`requestRoute` ではエラーにならない。`prerenderRoute` は `cacheComponents` のアプリだけ）。フィクスチャの `/dashboard` はこのため Suspense で囲んだ
 
 ## 分かった注意点
