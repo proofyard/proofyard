@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
 import { requestRoute } from "proofyard";
-import { comparableHtml, startReference, type Reference } from "./reference";
+import { comparableFlight, comparableHtml, comparableModule, referenceModulePaths, startReference, type Reference } from "./reference";
 
 let reference: Reference;
 beforeAll(async () => {
@@ -81,3 +81,35 @@ for (const [index, form] of ["addUser（revalidatePath）", "addAndOpen（redire
     expect(ours.headers.get("location")).toBe(real.headers.get("location"));
     expect(comparableHtml(await ours.text())).toBe(comparableHtml(await real.text()));
   });
+
+// RSC のペイロード（クライアントのナビゲーションのリクエスト）を Flight の意味論で比べる。
+// 比べるのはリクエストのときに描くルートだけ: next start は静的なルートに build のときの RSC（最初の HTML 用の形。`P`・`G` などがある）を返す
+const flightCases: Pick<Case, "path" | "cookies">[] = [
+  { path: "/users/Alice" },
+  { path: "/people/Alice" },
+  { path: "/admin", cookies: { session: "Bob" } },
+  { path: "/dashboard/teams/core" },
+  { path: "/gallery/photo/1" },
+  { path: "/meta/hello" },
+  { path: "/third-party/next?q=x", cookies: { locale: "ja" } },
+  { path: "/third-party/next", cookies: { locale: "fr" } },
+];
+const fixture = join(import.meta.dir, "../fixtures/next-app");
+for (const { path, cookies } of flightCases)
+  test(`RSC ${path}${cookies ? ` ${JSON.stringify(cookies)}` : ""} は next start と同じ Flight`, async () => {
+    // 送るヘッダーがないときの _rsc は空（Next.js の computeCacheBustingSearchParam）
+    const url = `${path}${path.includes("?") ? "&" : "?"}_rsc=`;
+    const cookie = cookies && Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join("; ");
+    const ours = await requestRoute(url, { cookies, headers: { rsc: "1" } });
+    const real = await fetch(reference.url + url, { redirect: "manual", headers: { rsc: "1", ...(cookie && { cookie }) } });
+    expect(real.headers.get("x-nextjs-prerender")).toBeNull();
+    expect(ours.status).toBe(real.status);
+    expect(ours.headers.get("content-type")).toBe(real.headers.get("content-type"));
+    const [oursText, realText] = [await ours.text(), await real.text()];
+    const paths = (modulePaths ??= referenceModulePaths(reference));
+    const dirs = [fixture, reference.dir];
+    expect(await comparableFlight(oursText, (id) => comparableModule(id, dirs))).toEqual(
+      await comparableFlight(realText, (id) => comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)),
+    );
+  });
+let modulePaths: Map<string, string> | undefined;

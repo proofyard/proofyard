@@ -90,11 +90,12 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - `bun run compat`（`compat:next-app` / `compat:src-app` / `compat:ppr`）。`bun run test` には入れない（next build を含み、1 つで 1〜2 分）
 - `tests/compatibility/reference.ts`: フィクスチャを JS に変えた写し（Next.js 同梱の SWC で型だけ消す。JSX は残す）を一時ディレクトリに作り、`next build --webpack` と `next start` で動かす。TypeScript のファイルがあると next build が TypeScript を自動でインストールするため。`node_modules` はパッケージごとのリンク（ディレクトリごとにリンクすると、インストールがプロジェクトの `node_modules` を書き換える）。Turbopack は外へのリンクを辿れないので webpack
 - 比べるもの: ステータス、Location、ヘッダー、HTML（script・link・ビルドごとに変わるものを除き、後から流れた Suspense の中身を fallback と入れ替えた後）。`prerenderRoute` は `.next/server/app/*.html` と（動的な部分があると .html は閉じタグなし）
-- 比べていないもの: RSC のペイロード（Flight）そのもの。行の番号、モジュールの id（本物は webpack の数字、Proofyard はファイルのパス）、build のときの描画の印（`"S"`）が違い、意味で比べるには Flight をデコードして木で比べる仕組みが要る（未実装）。RSC のリクエストは両方とも `_rsc` の検証で 307 になるのは同じ（`validateRSCRequestHeaders`）
+- RSC のペイロード（クライアントのナビゲーションの `RSC: 1` と `_rsc=`）は Flight の意味論で比べる（`comparableFlight`）: バイト列（行の番号、モジュールの id）ではなく、Next.js 同梱の React の Flight クライアント（本番版）でデコードし、Promise と lazy を待った値を比べる。Client Component は「モジュールのパス#export 名」にする（本物の id は webpack の数字なので `*_client-reference-manifest.js` でパスに戻す。読み込みの代わりに `__next_require__` を差し替える）。除くもの: ビルド ID（`b`）、静的な部分のバイト数（`a`、`l`。モジュールの id の長さで変わる）、Viewport / Metadata の key（リクエストの id）、prefetch hints の build 由来のビット（下）。比べるのはリクエストのときに描くルートだけ（静的なルートは、next start が build のときの RSC（最初の HTML 用の形。`P`・`G`・`c` がある）を返す）。RSC のリクエストは両方とも `_rsc` がないと 307（`validateRSCRequestHeaders`）
 - 揃えている違い（比べ方の都合）: JS に変えたことで変わる Server Action の id とメタデータの画像の `[contenthash]`
 - **分かった違い**:
   - Bun の `Response.json()` は `content-type: application/json;charset=utf-8`（Node.js は `application/json`）。アプリのコードが Bun で動くため
   - next start は、静的なルート（`cacheComponents` でないアプリ）を build のときに描画した HTML で返し、PPR のルートは静的シェルの続き（resume）で返す。`requestRoute` は毎回ページ全体をリクエストのときに描画する（テストごとのデータやモックが効くように）。そのため、`useSearchParams()` の Suspense は next start では fallback（CSR に任せる）だが `requestRoute` では中身が入り、存在しない URL の 404（`_not-found`）は `<title>` の並びが違う
+  - ルーターの木の prefetch hints（`h`。`PrefetchHint`）: `cacheComponents` のアプリでは、本物は next build がプリレンダリングで測った値（prefetch hints manifest。セグメントのインライン化、静的な先読みを試すか）を使う。Proofyard は build のときのプリレンダリングをしない（アプリのコードを先に動かすことになる）ので、manifest がないときの Next.js の代わりの値（全部のセグメントが `PrefetchDisabled`。Next.js のコメントでは「安全、キャッシュしにくいだけ」）になる。Link の先読みは静的なものを試さず、リクエストのときの先読みになる（未対応）
   - JS なしのフォームの送信（`$ACTION_ID_`、React の `decodeAction`）が 500 だった（比較で発見して修正）。React は Action のモジュールを `hasOwnProperty` で確かめてから読むので、Proofyard の Action のモジュール（Proxy）に `getOwnPropertyDescriptor` と `has` を足した
   - next build は Suspense の外の `useSearchParams()` をエラーにする（`requestRoute` ではエラーにならない。`prerenderRoute` は `cacheComponents` のアプリだけ）。フィクスチャの `/dashboard` はこのため Suspense で囲んだ
 

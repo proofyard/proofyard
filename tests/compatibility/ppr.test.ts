@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
 import { prerenderRoute, requestRoute } from "proofyard";
-import { comparableHtml, startReference, type Reference } from "./reference";
+import { comparableFlight, comparableHtml, comparableModule, referenceModulePaths, startReference, type Reference } from "./reference";
 
 let reference: Reference;
 beforeAll(async () => {
@@ -25,4 +25,19 @@ for (const path of ["/dashboard", "/about", "/posts/hello", "/products/[id]", "/
     // next build の .html は、動的な部分があれば閉じタグなし（続きは resume で流れる）
     const withoutClosingTags = (html: string) => comparableHtml(html).replace(/<\/body><\/html>$/, "");
     expect(withoutClosingTags(result.shell)).toBe(withoutClosingTags(html));
+  });
+
+// RSC のペイロード（クライアントのナビゲーション）を Flight の意味論で比べる（next-app.test.ts と同じ）。
+// /about は静的なルートで、next start は build のときの RSC を返すので比べない
+for (const path of ["/dashboard", "/posts/hello", "/products/1", "/private"])
+  test(`RSC ${path} は next start と同じ Flight`, async () => {
+    const ours = await requestRoute(`${path}?_rsc=`, { headers: { rsc: "1" } });
+    const real = await fetch(`${reference.url}${path}?_rsc=`, { redirect: "manual", headers: { rsc: "1" } });
+    expect(real.headers.get("x-nextjs-prerender")).toBeNull();
+    expect(ours.status).toBe(real.status);
+    const paths = referenceModulePaths(reference);
+    const dirs = [join(import.meta.dir, "../ppr/fixture"), reference.dir];
+    expect(await comparableFlight(await ours.text(), (id) => comparableModule(id, dirs))).toEqual(
+      await comparableFlight(await real.text(), (id) => comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)),
+    );
   });
