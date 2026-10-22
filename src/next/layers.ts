@@ -136,8 +136,10 @@ export function clientReferenceStub(path: string, source: string) {
   }
   const names = cjsExportNames(source);
   clientExports.set(path, names);
-  const lines = names.map((n) => `${JSON.stringify(n)}: ${registerStub(id, n)}`);
-  return `import { registerClientReference } from "react-server-dom-webpack/server";\nmodule.exports = { __esModule: true, ${lines.join(",\n")} };\n`;
+  // CommonJS は Next.js の next-flight-loader と同じく React の createClientModuleProxy。
+  // ESM で返す（実行時のプラグインでは module.exports が失われる）。default の import は webpack と同じく __esModule を見る
+  const lines = names.filter((n) => n !== "default").map((n) => `export const ${n} = proxy[${JSON.stringify(n)}];`);
+  return `import { createClientModuleProxy } from "react-server-dom-webpack/server";\nconst proxy = createClientModuleProxy(${id});\nexport default proxy.__esModule ? proxy.default : proxy;\n${lines.join("\n")}\n`;
 }
 
 export type LayerOptions = {

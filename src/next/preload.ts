@@ -396,12 +396,7 @@ while (nodeModuleImports.length) {
     visited.add(resolved);
     const dep = readFileSync(resolved, "utf8");
     if (USE_CLIENT.test(dep)) {
-      const stub = clientReferenceStub(resolved, dep);
-      // CJS の代わりのモジュール（module.exports）は実行時のプラグインでは CJS として読まれない
-      nativeReplacements.set(
-        resolved,
-        esmClientIds.has(resolved) ? stub : failModule(`[proofyard] Unsupported: CommonJS "use client" modules in node_modules (${resolved})`, clientExports.get(resolved)),
-      );
+      nativeReplacements.set(resolved, clientReferenceStub(resolved, dep));
       continue;
     }
     if (SERVER_DIRECTIVE.test(dep)) {
@@ -479,7 +474,7 @@ const ACTION_FILE_PREFIX = "proofyard-server-action-file:";
 // rsc 層の Flight クライアント（prerender や "use cache" の結果を rsc 層で読み直す）が読む Client Component は、
 // next build の rscModuleMapping と同じく rsc 層のモジュール（Client Reference）
 const RSC_CLIENT_PREFIX = "proofyard-rsc-client:";
-const { registerClientReference } = require(Bun.resolveSync(ALIASES.rsc["react-server-dom-webpack/server"], process.cwd()));
+const { createClientModuleProxy, registerClientReference } = require(Bun.resolveSync(ALIASES.rsc["react-server-dom-webpack/server"], process.cwd()));
 const rscClientModules = new Map<string, object>();
 const rscClientModule = (id: string) => {
   let m = rscClientModules.get(id);
@@ -487,7 +482,10 @@ const rscClientModule = (id: string) => {
     const fail = () => {
       throw new Error("[proofyard] client function called on the server");
     };
-    m = { __esModule: true, ...Object.fromEntries((clientExports.get(id) ?? []).map((name) => [name, registerClientReference(fail, id, name)])) };
+    // CommonJS は next-flight-loader と同じく createClientModuleProxy（default の import の "" も読める）
+    m = esmClientIds.has(id)
+      ? { __esModule: true, ...Object.fromEntries((clientExports.get(id) ?? []).map((name) => [name, registerClientReference(fail, id, name)])) }
+      : createClientModuleProxy(id);
     rscClientModules.set(id, m);
   }
   return m;

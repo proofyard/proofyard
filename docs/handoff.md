@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜4 が完了し、Phase 5（Client Navigation）を進行中。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。159 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。160 件）
 
 ## 決めたこと
 
@@ -121,7 +121,8 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 
 - 確かめていない版（仕様 24.2）: プリロードの最初で Next.js（16.4.2 だけ）と Bun（1.4.x）の版を確かめ、違えばエラー。React は Next.js 内蔵のものを使うので Next.js の版で決まる。`package.json` の `peerDependencies` も `next: 16.4.2`
 - `node_modules` 内の `"use cache"` / `"use server"`: 対応。Next.js の webpack と同じく、アプリのソースと同じ SWC（`getLoaderSWCOptions` はパスで `node_modules` かを見る）で変換する。rsc 層はアプリから辿った `node_modules` のファイルを読み込むときに変換し（Server Actions の manifest にも入れる）、SSR 層・ブラウザ層は指示子のあるファイルだけ変換する（Client Component から import すると Server Reference）。`tests/fixtures/next-app` の `fake-actions`（フォームと Client Component から。本物の next start と同じ HTML・Flight・Server Action の応答）と `tests/ppr` の `fake-cached`（静的シェル、キャッシュの再利用）
-- 独自の `cacheHandlers`、`node_modules` 内の CommonJS の `"use client"` / `"use server"` / `"use cache"`: エラーにしている（`node_modules` のものは読み込んだときに失敗する。Bun の実行時プラグインでは CommonJS の `module.exports` が失われるため）
+- `node_modules` 内の CommonJS の `"use client"`: 対応。Next.js の `next-flight-loader` と同じく React の `createClientModuleProxy` を rsc 層のモジュールにする（Bun の実行時プラグインでは CommonJS の `module.exports` が失われるので、ESM で返す。名前付きの export は CommonJS の export 名を正規表現で拾い、default の import は webpack と同じく `__esModule` を見て `proxy.default`（名前が `""` の参照））。本物の next start と同じ HTML・Flight（`/third-party/cjs`）。`renderRSC` でも default の参照の名前は `""`
+- 独自の `cacheHandlers`、`node_modules` 内の CommonJS の `"use server"` / `"use cache"`: エラーにしている（読み込んだときに失敗する。Next.js の SWC の変換が CommonJS をどう扱うか確かめていない）
 - rsc 層のネイティブ読み込みの `react-server` の条件: アプリから辿れる `node_modules` のパッケージのうち、`package.json` に `"react-server"` があるものは Bun の解決（`--conditions react-server`。別プロセス）で求め、元のファイルを読んだら react-server のファイルを読む（ESM だけ。CommonJS は Fail Closed）。テストのファイルから同じパッケージを読んでも react-server のファイルになる（`react` などの別名と同じ）。Bun の解決は `bun` の条件も使う（Next.js の webpack は使わない）
 - サードパーティのパッケージが `next/*` を import する場合: 対応（rsc 層のネイティブ読み込みでも `build.module` でアプリと同じ Next.js のモジュールになる。`next/headers`・`notFound`・クライアントの `next/navigation` の hooks を `tests/unit/advanced.test.tsx` で確認）
 - ビルド時のプリレンダリング: 静的なルートの静的シェルは `prerenderRoute` で見られる。`requestRoute` / `renderRoute` は毎回リクエスト時に描画（ISR の保存したページは返さない）。動的なルートの `prerenderRoute` は `generateStaticParams` が返さない URL と空のフォールバックのシェルが未対応
