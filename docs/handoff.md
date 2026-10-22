@@ -90,6 +90,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - `bun run compat`（`compat:next-app` / `compat:src-app` / `compat:ppr`）。`bun run test` には入れない（next build を含み、1 つで 1〜2 分）
 - `tests/compatibility/reference.ts`: フィクスチャを JS に変えた写し（Next.js 同梱の SWC で型だけ消す。JSX は残す）を一時ディレクトリに作り、`next build --webpack` と `next start` で動かす。TypeScript のファイルがあると next build が TypeScript を自動でインストールするため。`node_modules` はパッケージごとのリンク（ディレクトリごとにリンクすると、インストールがプロジェクトの `node_modules` を書き換える）。Turbopack は外へのリンクを辿れないので webpack
 - 比べるもの: ステータス、Location、ヘッダー、HTML（script・link・ビルドごとに変わるものを除き、後から流れた Suspense の中身を fallback と入れ替えた後）。`prerenderRoute` は `.next/server/app/*.html` と（動的な部分があると .html は閉じタグなし）
+- 比べていないもの: RSC のペイロード（Flight）そのもの。行の番号、モジュールの id（本物は webpack の数字、Proofyard はファイルのパス）、build のときの描画の印（`"S"`）が違い、意味で比べるには Flight をデコードして木で比べる仕組みが要る（未実装）。RSC のリクエストは両方とも `_rsc` の検証で 307 になるのは同じ（`validateRSCRequestHeaders`）
 - 揃えている違い（比べ方の都合）: JS に変えたことで変わる Server Action の id とメタデータの画像の `[contenthash]`
 - **分かった違い**:
   - Bun の `Response.json()` は `content-type: application/json;charset=utf-8`（Node.js は `application/json`）。アプリのコードが Bun で動くため
