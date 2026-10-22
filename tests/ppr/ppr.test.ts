@@ -1,6 +1,6 @@
 // Partial Prerendering（仕様 12 章）。静的シェルは本物の next build の .html と同じ（docs/handoff.md）
 import { expect, test } from "bun:test";
-import { createTestContext, prerenderRoute, requestRoute } from "proofyard";
+import { createTestContext, prerenderRoute, renderRoute, requestRoute } from "proofyard";
 import { stats } from "./fixture/app/dashboard/stats";
 // @ts-expect-error 型のない偽物のパッケージ
 import { stats as library } from "./fixture/node_modules/fake-cached";
@@ -102,4 +102,17 @@ test('node_modules のパッケージの "use cache"（静的シェルに入り�
   expect((await ctx.prerenderRoute("/library")).shell).toContain("<p>from library</p>");
   expect(await (await ctx.requestRoute("/library")).text()).toContain("<p>from library</p>");
   expect(library.calls - before).toBe(1);
+});
+
+test("next build の prefetch hints を使う Link の先読みとナビゲーション（静的なシェルの先読みから、動的な部分はリクエストのときに）", async () => {
+  const app = await renderRoute("/links", { cookies: { name: "Ann" } });
+  await app.user.click(app.getByRole("link", { name: "Dashboard" }));
+  await app.findByText("Hello, Ann");
+  expect(app.getByRole("heading").textContent).toBe("Dashboard");
+  expect(app.router.pathname).toBe("/dashboard");
+  await app.router.back();
+  await app.user.click(app.getByRole("link", { name: "Hello post" }));
+  await app.findByText("Views: 7");
+  expect(app.getByRole("heading").textContent).toBe("Post hello");
+  expect(app.errors).toEqual([]);
 });

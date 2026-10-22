@@ -42,7 +42,7 @@ const write = (path: string, data: unknown) => {
 
 const { default: nextAppLoader } = require("next/dist/build/webpack/loaders/next-app-loader/index.js");
 const { default: loadConfig } = require("next/dist/server/config");
-const { PHASE_PRODUCTION_BUILD } = require("next/dist/shared/lib/constants");
+const { PHASE_PRODUCTION_BUILD, PREFETCH_HINTS } = require("next/dist/shared/lib/constants");
 const { normalizeAppPath } = require("next/dist/shared/lib/router/utils/app-paths");
 const { createRequestResponseMocks } = require("next/dist/server/lib/mock-request");
 const { getDefineEnv } = require("next/dist/build/define-env");
@@ -61,6 +61,27 @@ const { generateRoutesManifest } = require("next/dist/build/generate-routes-mani
 
 let t = performance.now();
 const config = await loadConfig(PHASE_PRODUCTION_BUILD, projectDir, { silent: true });
+
+// next build の prefetch hints（server/prefetch-hints.json。クライアントが静的な先読みを試すか、どこを先読みしないか）。
+// next build は prerender のときに Next.js 本体（collectPrefetchHints）で求める。next build と同じく別のプロセスで、
+// このプリロードを静的なページの prerender（exportApp）だけのために動かして求める（collectPrefetchHintsManifest）。アプリのコードの副作用はテストのプロセスに残らない。
+// Next.js は manifest を読んだ結果（無いことも）をランタイムのバンドルの中に覚えるので、同じプロセスでは prerender の後に読み直させられない
+const PREFETCH_HINTS_OUTPUT = process.env.PROOFYARD_PREFETCH_HINTS_OUTPUT;
+const prefetchHintsBuild = !PREFETCH_HINTS_OUTPUT
+  ? (async () => {
+      const output = join(work, "prefetch-hints.json");
+      // テストのファイルの代わりにこのファイルを渡す（プリロードの最後で終わるので読み込まれない）
+      const proc = Bun.spawn([process.execPath, "test", "--preload", import.meta.path, import.meta.path], {
+        cwd: process.cwd(),
+        env: { ...process.env, PROOFYARD_PREFETCH_HINTS_OUTPUT: output },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      if (code !== 0) throw new Error(`[proofyard] collecting prefetch hints (next build) failed\n${stdout}${stderr}`);
+      return (await Bun.file(output).json()) as Record<string, unknown>;
+    })()
+  : undefined;
 // prerenderRoute が使う Next.js の静的シェルのデバッグ機能を有効にしてビルドする（getDefineEnv が define に入れる。
 // ?__nextppronly のリクエストだけが使う。next build をこの環境変数付きで実行するのと同じ）
 if (config.cacheComponents) process.env.__NEXT_EXPERIMENTAL_STATIC_SHELL_DEBUGGING = "1";
@@ -1055,10 +1076,68 @@ const ssrRuntime = (): typeof import("./ssr-runtime") => ssrModules.get(SSR_RUNT
 // SSR 層の Flight デコードの moduleMap（Client Reference の id → SSR 層のモジュール）
 const ssrModuleMap = () => Object.fromEntries([...clientIds].map((id) => [id, { "*": { id, name: "*", chunks: [], async: false } }]));
 
+// prefetch hints を求めるプロセス（prefetchHintsBuild）は、prerender して書き出したら終わる
+if (PREFETCH_HINTS_OUTPUT) {
+  write(PREFETCH_HINTS_OUTPUT, await collectPrefetchHintsManifest());
+  process.exit(0);
+}
 // テストが始まる前にビルドを終える（最初の render() のテストがビルドの時間でタイムアウトしないように）
 await Promise.all([buildBrowser(), routeBuild]);
 console.log(`[proofyard] browser layer: ${(performance.now() - t).toFixed(0)}ms`);
-(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild } satisfies NextHarness;
+
+// next build と同じく、Next.js の exportApp（静的なページの prerender。build/index.ts の static-generation）を
+// このプロセスで動かし（StaticWorker の代わりに export/worker を直接呼ぶ）、結果の metadata.prefetchHints をページごとに最初のものだけ残す。
+// exportPathMap は build/index.ts と同じく、各ページの generateStaticParams（loadStaticPaths）の URL
+async function collectPrefetchHintsManifest() {
+  const exportApp = require("next/dist/export").default;
+  const { exportPages } = require("next/dist/export/worker");
+  const map: Record<string, unknown> = {};
+  // prerender する URL → ルートのパス（hints のキー）
+  const routeOf = new Map<string, string>();
+  for (const [path, { page }] of routes) {
+    if (!page.endsWith("/page")) continue;
+    // 動的でないページは、そのパスだけ（build/index.ts と同じ。revalidate が 0 のページも入れるが、prerender で動的になり hints は出ない）
+    const paths = isDynamicRoute(path) ? await staticPaths(path) : [{ pathname: path, encodedPathname: path, fallbackRouteParams: [], throwOnEmptyStaticShell: true }];
+    for (const route of paths as any[]) {
+      // build/index.ts と同じく、cacheComponents でなければ動的なルートのセグメントが残る URL は prerender しない
+      if (route.fallbackRootParams?.length && !config.cacheComponents) continue;
+      map[route.pathname] = {
+        page,
+        _ssgPath: route.encodedPathname,
+        _fallbackRouteParams: route.fallbackRouteParams,
+        _isAppDir: true,
+        _isRoutePPREnabled: !!config.cacheComponents,
+        _allowEmptyStaticShell: !route.throwOnEmptyStaticShell,
+        _isFallbackUpgradeable: Boolean(config.partialPrefetching) && (route.remainingPrerenderableParams?.length ?? 0) > 0,
+      };
+      routeOf.set(route.pathname, path);
+    }
+  }
+  // prerender できないページ（next build なら失敗する）は、hints に入れずに続ける
+  const worker = {
+    exportPages: async (input: unknown) => ((await exportPages(input)) as any[]).map((item) => ("error" in (item.result ?? {}) ? { ...item, result: undefined } : item)),
+    setOnActivity() {},
+    setOnActivityAbort() {},
+  };
+  const result = await exportApp(
+    projectDir,
+    { nextConfig: { ...config, distDir: relative(projectDir, distDir), exportPathMap: () => map, experimental: { ...config.experimental, prerenderEarlyExit: false } }, enabledDirectories: { app: true, pages: false }, silent: true, buildExport: true, pages: [], outdir: join(distDir, "export"), numWorkers: 1, appDirOnly: true },
+    require("next/dist/trace").trace("proofyard-export"),
+    worker,
+  );
+  const hints: Record<string, unknown> = {};
+  for (const [path, page] of routeOf) {
+    const prefetchHints = result?.byPath.get(path)?.metadata?.prefetchHints;
+    if (prefetchHints && !(page in hints)) hints[page] = prefetchHints;
+  }
+  return hints;
+}
+const prefetchHints = (await prefetchHintsBuild) ?? {};
+if (prefetchHintsBuild) {
+  write(join(distDir, `server/${PREFETCH_HINTS}`), prefetchHints);
+  console.log(`[proofyard] prefetch hints (next build): ${Object.keys(prefetchHints).length} pages ${(performance.now() - t).toFixed(0)}ms`);
+}
+(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild, prefetchHints } satisfies NextHarness;
 export type NextHarness = {
   requestRoute: typeof requestRoute;
   prerenderRoute: typeof prerenderRoute;
@@ -1069,4 +1148,6 @@ export type NextHarness = {
   ssrModuleMap: typeof ssrModuleMap;
   // renderRoute の Client Mode のバンドル（ファイルのパス）
   routeBundle: () => Promise<string>;
+  // next build の prefetch-hints.json と同じもの（tests/compatibility で比べる）
+  prefetchHints: Record<string, unknown>;
 };

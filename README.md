@@ -57,7 +57,7 @@ DOM、React のルート、リクエストのコンテキスト、アプリの�
 ## 本物の Next.js との違い
 
 - `requestRoute` / `renderRoute` は、毎回ページ全体をリクエストのときに描画する（`next start` は静的なルートを build のときの HTML で返す）。テストごとのデータやモックが効くようにするため
-- `cacheComponents` のアプリで、Link の先読みは静的なものを試さず、リクエストのときの先読みになる（本物は next build で測った prefetch hints を使う。Proofyard は build のときのプリレンダリングをしない）
+- `cacheComponents` のアプリで、Link の静的な先読み（`/_tree` などのセグメントの先読み）の応答が違う。本物は build のときに作ったセグメントのデータを返すが、Proofyard はリクエストのときに描画する（prefetch hints 自体は next build と同じ）
 - アプリのコードは Bun で動く（例: `Response.json()` の `content-type` に `charset=utf-8` が付く）
 - 未対応のもの（Pages Router、Edge Runtime、`node_modules` の CommonJS の `"use server"` など）と、詳しい仕組みは [docs/handoff.md](docs/handoff.md)
 
