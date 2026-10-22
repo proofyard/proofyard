@@ -160,6 +160,17 @@ test("サードパーティの \"use client\"（パッケージの奥のファ�
   expect(app.errors).toEqual([]);
 });
 
+test('サードパーティの CommonJS の "use client"（Next.js と同じく createClientModuleProxy。default、名前付き、module.exports そのもの）', async () => {
+  const html = await (await requestRoute("/third-party/cjs")).text();
+  expect(html).toContain("<span data-badge=\"\">cjs</span>");
+  expect(html).toContain("Power: off");
+  const app = await renderRoute("/third-party/cjs");
+  await app.user.click(app.getByRole("button", { name: "Power: off" }));
+  await app.findByRole("button", { name: "Power: on" });
+  await app.waitFor(() => expect(app.getByText("hello from cjs").dataset.mounted).toBe("true"));
+  expect(app.errors).toEqual([]);
+});
+
 test('サードパーティの "use server"：Server Component のフォーム（JS なし・あり）と Client Component から呼ぶ', async () => {
   await resetEntries();
   const html = await (await requestRoute("/third-party/actions")).text();

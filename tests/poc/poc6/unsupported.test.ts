@@ -19,7 +19,8 @@ test('rsc 層のバンドルに入った node_modules の "use cache" はビル�
   );
 });
 
-for (const directive of ["use client", "use server"])
+// "use server" の CommonJS は Next.js の SWC の変換がどう扱うかを確かめていない（"use client" の CommonJS は対応。tests/unit/advanced.test.tsx）
+for (const directive of ["use server"])
   test(`node_modules の CommonJS の "${directive}" は未対応。サーバーで実行せず、読み込んだときに失敗させる`, async () => {
     const app = mkdtempSync(join(tmpdir(), "proofyard-third-party-client-"));
     mkdirSync(join(app, "app"));

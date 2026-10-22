@@ -3,6 +3,10 @@ import { join } from "node:path";
 import { renderRSC, type ServerReference } from "proofyard";
 import { UserList } from "../fixtures/next-app/components/user-list";
 import { LikeButton } from "../fixtures/next-app/components/like-button";
+// @ts-expect-error 型のない偽物のパッケージ
+import Hello from "../fixtures/next-app/node_modules/fake-cjs-hello";
+// @ts-expect-error 型のない偽物のパッケージ
+import Badge, { Toggle } from "../fixtures/next-app/node_modules/fake-cjs-ui";
 
 test("非同期の Server Component を Flight 経由で描画し、テキストで検査する", async () => {
   const result = await renderRSC(<UserList />);
@@ -112,4 +116,18 @@ test("mock.module の差し替えはテストの後に戻る（仕様 19 章）:
   const result = await renderRSC(<UserList />);
   expect(await result.findByText("Alice")).toBeTruthy();
   expect(result.queryByText("Leaked")).toBeNull();
+});
+
+test("CommonJS の \"use client\" のパッケージも Client Reference（default の import は名前が \"\"）", async () => {
+  const result = await renderRSC(
+    <main>
+      <Badge>cjs</Badge>
+      <Toggle label="Power" />
+      <Hello />
+    </main>,
+  );
+  expect(result.getClientReference(Badge).children).toEqual(["cjs"]);
+  expect(result.getClientReference(Toggle).props).toEqual({ label: "Power" });
+  expect(result.getClientReference(Hello).type.name).toBe("");
+  expect(result.getAllClientReferences().map((el) => el.type.name)).toEqual(["", "Toggle", ""]);
 });

@@ -1,6 +1,6 @@
 // RSC Mode（仕様 4.1）: Server Components を React 公式の RSC Renderer で描画し、Flight でシリアライズ・デシリアライズして、
 // 得られた React ツリーの構造を検査する。DOM は作らず、Client Components は実行しない（Client Reference のまま残す）。
-import { clientExports, clientIds } from "../next/layers";
+import { clientExports, clientIds, esmClientIds } from "../next/layers";
 
 const REACT_ELEMENT = Symbol.for("react.transitional.element");
 const REACT_LAZY = Symbol.for("react.lazy");
@@ -46,15 +46,16 @@ const placeholders = new Map<string, Record<string, unknown>>();
   const moduleId = id.slice(PLACEHOLDER_PREFIX.length);
   let module = placeholders.get(moduleId);
   if (!module) {
-    module = Object.fromEntries(
-      (clientExports.get(moduleId) ?? []).map((name) => {
-        const placeholder = () => {
+    const placeholder = (name: string) =>
+      Object.assign(
+        () => {
           throw new Error("[proofyard] Client Components are not executed in renderRSC");
-        };
-        Object.assign(placeholder, { [CLIENT_REFERENCE]: { id: moduleId, name } satisfies ClientReference });
-        return [name, placeholder];
-      }),
-    );
+        },
+        { [CLIENT_REFERENCE]: { id: moduleId, name } satisfies ClientReference },
+      );
+    module = Object.fromEntries((clientExports.get(moduleId) ?? []).map((name) => [name, placeholder(name)]));
+    // CommonJS の default の import は、createClientModuleProxy と同じく名前が "" の参照（React は __esModule を見て default を読む）
+    if (!esmClientIds.has(moduleId)) Object.assign(module, { __esModule: true, default: placeholder("") });
     placeholders.set(moduleId, module);
   }
   return module;

@@ -43,6 +43,7 @@ const cases: Case[] = [
   { path: "/third-party" },
   { path: "/third-party/server" },
   { path: "/third-party/actions" },
+  { path: "/third-party/cjs" },
   { path: "/third-party/next?q=x", cookies: { locale: "ja" } },
   { path: "/third-party/next", cookies: { locale: "fr" } },
   { path: "/does-not-exist", prerendered: "_not-found は build のときの HTML で、<title> の並びが違う（notFound() をリクエストのときに呼ぶ /third-party/next は同じ）" },
@@ -96,6 +97,7 @@ const flightCases: Pick<Case, "path" | "cookies">[] = [
   { path: "/third-party/next?q=x", cookies: { locale: "ja" } },
   { path: "/third-party/next", cookies: { locale: "fr" } },
   { path: "/third-party/actions" },
+  { path: "/third-party/cjs" },
 ];
 const fixture = join(import.meta.dir, "../fixtures/next-app");
 for (const { path, cookies } of flightCases)
