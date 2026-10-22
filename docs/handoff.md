@@ -87,7 +87,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 
 ## 本物の Next.js との比較（仕様 24.1）
 
-- `bun run compat`（`compat:next-app` / `compat:src-app` / `compat:ppr`）。`bun run test` には入れない（next build を含み、1 つで 1〜2 分）
+- `bun run compat`（`compat:next-app` / `compat:src-app` / `compat:ppr` / `compat:errors`（PoC 5 のフィクスチャ: `error.tsx`、`not-found.tsx`、Error Boundary なしの例外、`redirect()`））。`bun run test` には入れない（next build を含み、1 つで 1〜2 分）
 - `tests/compatibility/reference.ts`: フィクスチャを JS に変えた写し（Next.js 同梱の SWC で型だけ消す。JSX は残す）を一時ディレクトリに作り、`next build --webpack` と `next start` で動かす。TypeScript のファイルがあると next build が TypeScript を自動でインストールするため。`node_modules` はパッケージごとのリンク（ディレクトリごとにリンクすると、インストールがプロジェクトの `node_modules` を書き換える）。Turbopack は外へのリンクを辿れないので webpack
 - 比べるもの: ステータス、Location、ヘッダー、HTML（script・link・ビルドごとに変わるものを除き、後から流れた Suspense の中身を fallback と入れ替えた後）。`prerenderRoute` は `.next/server/app/*.html` と（動的な部分があると .html は閉じタグなし）
 - RSC のペイロード（クライアントのナビゲーションの `RSC: 1` と `_rsc=`）は Flight の意味論で比べる（`comparableFlight`）: バイト列（行の番号、モジュールの id）ではなく、Next.js 同梱の React の Flight クライアント（本番版）でデコードし、Promise と lazy を待った値を比べる。Client Component は「モジュールのパス#export 名」にする（本物の id は webpack の数字なので `*_client-reference-manifest.js` でパスに戻す。読み込みの代わりに `__next_require__` を差し替える）。除くもの: ビルド ID（`b`）、静的な部分のバイト数（`a`、`l`。モジュールの id の長さで変わる）、Viewport / Metadata の key（リクエストの id）、prefetch hints の build 由来のビット（下）。JS ありのクライアントからの Server Action（`Next-Action` と `encodeReply` の本文）の応答も同じく比べる（Bun の `FormData` は `toJSON` を持ち、`JSON.stringify` が React の判定より先に普通のオブジェクトにするので、テストでは隠す）。ソフトナビゲーション（`Next-Router-State-Tree` で今の木を送り、共通のレイアウトから下だけが返る。`Next-Url` のインターセプトも）も比べる（Router State）。比べるのはリクエストのときに描くルートだけ（静的なルートは、next start が build のときの RSC（最初の HTML 用の形。`P`・`G`・`c` がある）を返す）。RSC のリクエストは両方とも `_rsc` がないと 307（`validateRSCRequestHeaders`）
