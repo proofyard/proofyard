@@ -214,7 +214,9 @@ async function settle(value: any, seen: Set<object>): Promise<unknown> {
     if (value instanceof Map || value instanceof Set) return { [value.constructor.name]: await settle([...value], seen) };
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value))
-      out[key] = key === "h" && typeof item === "number" && "s" in value ? item & ~BUILD_PREFETCH_HINTS : await settle(item, seen);
+      if (key !== "h" || typeof item !== "number" || !("s" in value)) out[key] = await settle(item, seen);
+      // Next.js は 0 のときは h を省く
+      else if (item & ~BUILD_PREFETCH_HINTS) out[key] = item & ~BUILD_PREFETCH_HINTS;
     return out;
   } finally {
     seen.delete(value);

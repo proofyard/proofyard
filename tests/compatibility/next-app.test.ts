@@ -113,3 +113,28 @@ for (const { path, cookies } of flightCases)
     );
   });
 let modulePaths: Map<string, string> | undefined;
+
+// JS ありのクライアントからの Server Action（Next-Action ヘッダーと encodeReply の本文）の応答を Flight の意味論で比べる
+const { encodeReply } = require("next/dist/compiled/react-server-dom-webpack/cjs/react-server-dom-webpack-client.node.production.js");
+for (const [index, form] of ["addUser（revalidatePath）", "addAndOpen（redirect）"].entries())
+  test(`Server Action ${form} の fetch の応答は next start と同じ Flight`, async () => {
+    const actionId = async (response: Response | Promise<Response>) => [...(await (await response).text()).matchAll(/name="\$ACTION_ID_([0-9a-f]+)"/g)][index]![1]!;
+    const request = async (id: string) => {
+      const formData = new FormData();
+      formData.set("name", `Dave${index}`);
+      // Bun の FormData には toJSON があり、JSON.stringify が React の FormData の判定より先に普通のオブジェクトにする
+      Object.defineProperty(formData, "toJSON", { value: undefined });
+      return { method: "POST", headers: { "next-action": id, accept: "text/x-component" }, body: await encodeReply([formData]) };
+    };
+    const ours = await requestRoute("/users", await request(await actionId(requestRoute("/users"))));
+    const real = await fetch(`${reference.url}/users`, { redirect: "manual", ...(await request(await actionId(fetch(`${reference.url}/users`)))) });
+    expect(real.status).toBe(200);
+    if (index === 1) expect(real.headers.get("x-action-redirect")).toStartWith("/users/Dave1");
+    expect(ours.status).toBe(real.status);
+    for (const name of ["content-type", "x-action-redirect", "x-action-revalidated"]) expect(`${name}: ${ours.headers.get(name)}`).toBe(`${name}: ${real.headers.get(name)}`);
+    const paths = (modulePaths ??= referenceModulePaths(reference));
+    const dirs = [fixture, reference.dir];
+    expect(await comparableFlight(await ours.text(), (id) => comparableModule(id, dirs))).toEqual(
+      await comparableFlight(await real.text(), (id) => comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)),
+    );
+  });
