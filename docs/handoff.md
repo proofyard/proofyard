@@ -85,6 +85,17 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - キャッシュ: グローバルな `beforeEach` で、`"use cache"` のハンドラーとタグの記録をテストごとに空にする
 - 対象アプリは環境変数 `PROOFYARD_NEXT_APP` で指定する（未指定なら PoC 5 のフィクスチャ）
 
+## 本物の Next.js との比較（仕様 24.1）
+
+- `bun run compat`（`compat:next-app` / `compat:src-app` / `compat:ppr`）。`bun run test` には入れない（next build を含み、1 つで 1〜2 分）
+- `tests/compatibility/reference.ts`: フィクスチャを JS に変えた写し（Next.js 同梱の SWC で型だけ消す。JSX は残す）を一時ディレクトリに作り、`next build --webpack` と `next start` で動かす。TypeScript のファイルがあると next build が TypeScript を自動でインストールするため。`node_modules` はパッケージごとのリンク（ディレクトリごとにリンクすると、インストールがプロジェクトの `node_modules` を書き換える）。Turbopack は外へのリンクを辿れないので webpack
+- 比べるもの: ステータス、Location、ヘッダー、HTML（script・link・ビルドごとに変わるものを除き、後から流れた Suspense の中身を fallback と入れ替えた後）。`prerenderRoute` は `.next/server/app/*.html` と（動的な部分があると .html は閉じタグなし）
+- 揃えている違い（比べ方の都合）: JS に変えたことで変わる Server Action の id とメタデータの画像の `[contenthash]`
+- **分かった違い**:
+  - Bun の `Response.json()` は `content-type: application/json;charset=utf-8`（Node.js は `application/json`）。アプリのコードが Bun で動くため
+  - next start は、静的なルート（`cacheComponents` でないアプリ）を build のときに描画した HTML で返し、PPR のルートは静的シェルの続き（resume）で返す。`requestRoute` は毎回ページ全体をリクエストのときに描画する（テストごとのデータやモックが効くように）。そのため、`useSearchParams()` の Suspense は next start では fallback（CSR に任せる）だが `requestRoute` では中身が入り、存在しない URL の 404（`_not-found`）は `<title>` の並びが違う
+  - next build は Suspense の外の `useSearchParams()` をエラーにする（`requestRoute` ではエラーにならない。`prerenderRoute` は `cacheComponents` のアプリだけ）。フィクスチャの `/dashboard` はこのため Suspense で囲んだ
+
 ## 分かった注意点
 
 - **`NODE_ENV`**: `bun test` では `"test"` になるが、Next.js は `"production"` か `"development"` の前提。define では production 扱いに揃える（揃えないと開発用と本番用のコードが混ざって壊れる）
