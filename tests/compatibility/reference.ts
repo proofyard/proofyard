@@ -58,7 +58,10 @@ export async function startReference(fixture: string, { exclude = [] }: { exclud
     }
   const next = join(root, "node_modules/next/dist/bin/next");
   const build = Bun.spawnSync(["node", next, "build", "--webpack"], { cwd: dir, env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" } });
-  if (!build.success) throw new Error(`next build failed in ${dir}\n${build.stdout}\n${build.stderr}`);
+  if (!build.success) {
+    rmSync(dir, { recursive: true, force: true });
+    throw new Error(`next build failed\n${build.stdout}\n${build.stderr}`);
+  }
   const port = 4000 + Math.floor(Math.random() * 2000);
   const server = Bun.spawn(["node", next, "start", "-p", String(port)], { cwd: dir, env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" }, stdout: "pipe", stderr: "pipe" });
   const url = `http://localhost:${port}`;
@@ -97,7 +100,10 @@ export function comparableHtml(html: string) {
   html = html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, "")
     .replace(/<link\b[^>]*>/g, "")
-    .replace(/<meta name="next-size-adjust"[^>]*>/g, "");
+    .replace(/<meta name="next-size-adjust"[^>]*>/g, "")
+    // JS に変えた写しでビルドするので変わるもの: Server Action の id（ファイル名から）、メタデータの画像の URL の [contenthash]
+    .replace(/\$ACTION_ID_[0-9a-f]+/g, "$ACTION_ID_<id>")
+    .replace(/\?[0-9a-f]{16}"/g, '?<contenthash>"');
   // 流れてきた中身は body の最後に <div hidden id="S:n">…</div> で並ぶ
   const [page, ...segments] = html.split(/<div hidden id="S:/);
   let result = page!;
