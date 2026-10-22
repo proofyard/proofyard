@@ -122,11 +122,6 @@ export function comparableHtml(html: string) {
 // Client Component は「モジュールのパス#export 名」にする（本物の id は webpack の数字なので client-reference-manifest でパスに戻す）
 const { createFromReadableStream } = require("next/dist/compiled/react-server-dom-webpack/cjs/react-server-dom-webpack-client.node.production.js");
 const CLIENT = Symbol("client");
-// ルーターの木の prefetch hints（PrefetchHint）のうち、next build の測定（prefetch hints manifest）から来るもの。
-// Proofyard は build のときのプリレンダリングをしないので、Next.js の代わりの値（全部 PrefetchDisabled）になる（docs/handoff.md）。
-// InliningHintsStale (512)、インライン化 (32, 64, 128, 256)、PrefetchDisabled (1024)、ShouldAttemptStaticShell / Prefetch
-const BUILD_PREFETCH_HINTS = 32 | 64 | 128 | 256 | 512 | 1024 | (1 << 14) | (1 << 15);
-
 // 本物の webpack のモジュールの id → ファイルのパス
 export function referenceModulePaths(reference: Reference) {
   const paths = new Map<string, string>();
@@ -213,10 +208,7 @@ async function settle(value: any, seen: Set<object>): Promise<unknown> {
     }
     if (value instanceof Map || value instanceof Set) return { [value.constructor.name]: await settle([...value], seen) };
     const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value))
-      if (key !== "h" || typeof item !== "number" || !("s" in value)) out[key] = await settle(item, seen);
-      // Next.js は 0 のときは h を省く
-      else if (item & ~BUILD_PREFETCH_HINTS) out[key] = item & ~BUILD_PREFETCH_HINTS;
+    for (const [key, item] of Object.entries(value)) out[key] = await settle(item, seen);
     return out;
   } finally {
     seen.delete(value);
