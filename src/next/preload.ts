@@ -80,15 +80,17 @@ const leader = (() => {
     return false;
   }
 })();
+// 最初のワーカーが runDir に書いた結果（name.json か、失敗なら name.error）を待つ
+const waitForLeader = async (name: string) => {
+  const [output, failure] = [join(runDir!, `${name}.json`), join(runDir!, `${name}.error`)];
+  while (!existsSync(output) && !existsSync(failure)) await Bun.sleep(50);
+  if (existsSync(failure)) throw new Error(readFileSync(failure, "utf8"));
+  return Bun.file(output).json();
+};
 const buildOutput = BUILD_OUTPUT
   ? undefined
   : !leader
-    ? (async () => {
-        const [output, failure] = [join(runDir!, "build-output.json"), join(runDir!, "build-output.error")];
-        while (!existsSync(output) && !existsSync(failure)) await Bun.sleep(50);
-        if (existsSync(failure)) throw new Error(readFileSync(failure, "utf8"));
-        return (await Bun.file(output).json()) as BuildOutput;
-      })()
+    ? (waitForLeader("build-output") as Promise<BuildOutput>)
     : (async () => {
         const output = join(runDir ?? work, "build-output.json");
         // テストのファイルの代わりにこのファイルを渡す（プリロードの最後で終わるので読み込まれない）
@@ -404,7 +406,32 @@ for (const file of new Set([...nextFacades.values(), MANIFESTS_SINGLETON])) {
   write(entry, `import * as m from ${JSON.stringify(file)};\nexport default m;\n`);
   facadeEntries.set(file, entry);
 }
-const rsc = await buildLayer("rsc", [...entries, ...facadeEntries.values()], { define, generatedDir, nativeDir: projectDir, style });
+// 層のビルド。bun test --parallel のワーカーどうしは、最初のワーカーが 1 回だけビルドして（出力は runDir）共有する。
+// ビルドの副作用（rsc 層のバンドルで見つけた Client Reference）も一緒に渡す。
+// 入口は同じコードと同じアプリから同じ順で作るので、出力は順番で対応させる（生成した入口のパスはワーカーごとに違う）
+const shareLayer = async (name: string, entries: string[], build: (outdir: string) => Promise<Map<string, string>>): Promise<Map<string, string>> => {
+  if (!runDir) return build(join(work, name));
+  if (leader) {
+    const file = join(runDir, `${name}.json`);
+    try {
+      const out = await build(join(runDir, name));
+      write(`${file}.${process.pid}`, { outputs: [...out.values()], clientIds: [...clientIds], esmClientIds: [...esmClientIds], clientExports: [...clientExports] });
+      renameSync(`${file}.${process.pid}`, file);
+      return out;
+    } catch (error) {
+      write(join(runDir, `${name}.error`), Bun.inspect(error));
+      throw error;
+    }
+  }
+  const shared = await waitForLeader(name);
+  if (shared.outputs.length !== entries.length) throw new Error(`[proofyard] the shared ${name} layer has ${shared.outputs.length} outputs for ${entries.length} entries`);
+  for (const id of shared.clientIds) clientIds.add(id);
+  for (const id of shared.esmClientIds) esmClientIds.add(id);
+  for (const [id, names] of shared.clientExports) clientExports.set(id, names);
+  return new Map(entries.map((entry, i) => [entry, shared.outputs[i]]));
+};
+const rscEntries = [...entries, ...facadeEntries.values()];
+const rsc = await shareLayer("rsc", rscEntries, (outdir) => buildLayer("rsc", rscEntries, { outdir, define, generatedDir, nativeDir: projectDir, style }));
 
 // アプリの "use client" ファイルを Client Reference として登録する（Next.js 本体のものは rsc 層のビルドで登録済み）
 const sourceLoader = (path: string) => (path.match(/\.([jt]sx?)$/)?.[1] ?? "js") as "js" | "jsx" | "ts" | "tsx";
@@ -491,7 +518,8 @@ while (nodeModuleImports.length) {
   }
 }
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
-const ssr = await buildLayer("ssr", [...clientIds, SSR_RUNTIME], { define, transform: swcTransformFor("ssr"), style });
+const ssrEntries = [...clientIds, SSR_RUNTIME];
+const ssr = await shareLayer("ssr", ssrEntries, (outdir) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style }));
 
 // ネイティブで読み込むアプリ（と、その依存）の rsc 層の解決と変換
 // - react などは Next.js 内蔵の React に（build.module は CJS の require も含めて置き換える）
@@ -1067,8 +1095,10 @@ const clientDefine = Object.fromEntries(
   ).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]),
 );
 let browserBuild: ReturnType<typeof buildLayer> | undefined;
+const browserEntries = () => [...clientIds, BROWSER_RUNTIME];
 const buildBrowser = () =>
-  (browserBuild ??= buildLayer("browser", [...clientIds, BROWSER_RUNTIME], {
+  (browserBuild ??= shareLayer("browser", browserEntries(), (outdir) => buildLayer("browser", browserEntries(), {
+    outdir,
     transform: swcTransformFor("browser"),
     style,
     redirect: browserRedirect,
@@ -1082,7 +1112,7 @@ const buildBrowser = () =>
       __webpack_chunk_load__: "globalThis.__proofyardBrowserChunkLoad",
       "globalThis.__next_require__": "globalThis.__proofyardBrowserRequire",
     },
-  }));
+  })));
 
 // renderRoute の Client Mode: Next.js 本体のクライアント（app-next.js）と Client Component を 1 つのファイルにまとめる。
 // バンドル全体を 1 つの関数（createRoute）で包み、renderRoute のたびに呼ぶ（ルーターなどのモジュールの状態をテストごとに新しくする）。
@@ -1121,7 +1151,8 @@ write(
   ].join("\n"),
 );
 // next build の prerender のプロセス（buildOutput）はブラウザ層を使わないので作らない
-const routeBuild = BUILD_OUTPUT ? undefined : buildLayer("browser", [ROUTE_ENTRY], {
+const routeBuild = BUILD_OUTPUT ? undefined : shareLayer("route", [ROUTE_ENTRY], (outdir) => buildLayer("browser", [ROUTE_ENTRY], {
+  outdir,
   style,
   transform: swcTransformFor("route"),
   redirect: browserRedirect,
@@ -1150,8 +1181,8 @@ const routeBuild = BUILD_OUTPUT ? undefined : buildLayer("browser", [ROUTE_ENTRY
   if (!code.endsWith(tail)) throw new Error(`[proofyard] the route bundle does not end with ${tail}`);
   const factory = out.replace(/\.js$/, ".factory.js");
   write(factory, `export default function createRoute() {\n${code.slice(0, -tail.length)}\nreturn require_route_entry();\n}\n`);
-  return factory;
-});
+  return new Map([[ROUTE_ENTRY, factory]]);
+})).then((outputs) => outputs.get(ROUTE_ENTRY)!);
 let browser: Promise<typeof import("../client/runtime")> | undefined;
 const loadBrowser = () =>
   (browser ??= (async () => {
