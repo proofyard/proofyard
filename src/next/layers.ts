@@ -8,7 +8,6 @@
 // - *.external.js と runtime バンドルは層をまたいで共有するので外部のまま（handle-externals.ts）
 import { readFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
-import { tmpdir } from "node:os";
 import { STYLE_FILE } from "./css";
 
 const VENDORED = "next/dist/server/route-modules/app-page/vendored";
@@ -143,6 +142,8 @@ export function clientReferenceStub(path: string, source: string) {
 }
 
 export type LayerOptions = {
+  // 出力先（--parallel のワーカーどうしで共有するときは、実行ごとのディレクトリ）
+  outdir: string;
   // Next.js の getDefineEnv の結果（環境で決まる分岐を next build と同じく畳む）
   define: Record<string, string>;
   // next-app-loader が生成したエントリの置き場所。そこからの import はプロジェクトルートから解決する
@@ -161,15 +162,13 @@ export type LayerOptions = {
   splitting?: boolean;
 };
 
-let builds = 0;
 export type Layer = "rsc" | "ssr" | "browser";
 
-export async function buildLayer(layer: Layer, entries: string[], { define, generatedDir, transform, nativeDir, redirect, aliases: override, style, splitting = true }: LayerOptions) {
+export async function buildLayer(layer: Layer, entries: string[], { outdir, define, generatedDir, transform, nativeDir, redirect, aliases: override, style, splitting = true }: LayerOptions) {
   const aliases: Record<string, string> = ALIASES[layer];
   const bundledAliases = Object.fromEntries(
     Object.entries({ ...BUNDLED_ALIASES[layer], ...override }).filter((e): e is [string, string] => e[1] !== undefined),
   );
-  const outdir = join(tmpdir(), `proofyard-next-${process.pid}`, `${layer}-${builds++}`);
   const entryPaths = entries.map((e) => (e.startsWith("/") ? e : abs(e)));
   const result = await Bun.build({
     entrypoints: entryPaths,
