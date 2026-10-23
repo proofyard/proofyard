@@ -308,7 +308,8 @@ const swcOptions = (filename: string, layer: keyof typeof SWC_LAYERS = "rsc") =>
     optimizeServerReact: config.experimental.optimizeServerReact,
     jsConfig,
     supportedBrowsers: undefined,
-    swcCacheDir: join(work, "swc"),
+    // SWC のプラグインのキャッシュ（jsc.experimental.cacheRoot）。変換結果のキーに入るので、プロセスごとに変えない
+    swcCacheDir: join(cacheDir, "swc-plugins"),
     relativeFilePathFromRoot: relative(projectDir, filename),
     serverComponents: true,
     serverReferenceHashSalt: encryptionKey,
@@ -328,7 +329,7 @@ mkdirSync(swcCacheDir, { recursive: true });
 const swcCompile = (filename: string, source: string, layer: keyof typeof SWC_LAYERS = "rsc"): string => {
   const options = { ...swcOptions(filename, layer), filename, sourceFileName: filename };
   if (config.experimental.swcPlugins?.length) return transformSync(source, options).code;
-  const key = new Bun.CryptoHasher("sha256").update(JSON.stringify([NEXT_VERSION, { ...options, swcCacheDir: undefined }], (_, v) => (v instanceof RegExp || typeof v === "function" ? String(v) : v))).update(source).digest("hex");
+  const key = new Bun.CryptoHasher("sha256").update(JSON.stringify([NEXT_VERSION, options], (_, v) => (v instanceof RegExp || typeof v === "function" ? String(v) : v))).update(source).digest("hex");
   const file = join(swcCacheDir, `${key}.js`);
   if (existsSync(file)) return readFileSync(file, "utf8");
   const { code } = transformSync(source, options);
