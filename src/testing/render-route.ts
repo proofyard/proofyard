@@ -296,12 +296,13 @@ function routeFetch(jar: Map<string, string>, headers?: Record<string, string>) 
 
 export async function renderRoute(url: string, { mode = "client", streaming = false, headers, cookies = {} }: RenderRouteOptions = {}): Promise<RenderRouteResult> {
   ensureDom();
+  // 同じテストの前のページは、ブラウザでページを読み込み直したときと同じく捨てる（React のルートを外してから文書を置き換える）
+  cleanup();
   const h = harness();
   const browser = await h.loadBrowser();
   const jar = new Map(Object.entries(cookies));
   const errors: unknown[] = [];
   const onError = (event: Event) => void errors.push((event as ErrorEvent).error);
-  stopErrors?.();
   window.addEventListener("error", onError);
   stopErrors = () => window.removeEventListener("error", onError);
   const { url: finalUrl, response } = await navigate(url, jar, headers);
