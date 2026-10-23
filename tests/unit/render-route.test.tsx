@@ -16,6 +16,19 @@ test("form の Server Action と revalidatePath で、Server Components の表�
   expect(app.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Alice", "Bob"]);
 });
 
+test("同じテストで renderRoute をもう一度呼ぶと、ブラウザでページを読み込み直したのと同じく前のページを捨てる", async () => {
+  const first = await renderRoute("/users");
+  await first.user.type(first.getByRole("textbox", { name: "new user" }), "Bob");
+  await first.user.click(first.getByRole("button", { name: "Add" }));
+  await first.findByText("Bob");
+  const app = await renderRoute("/users");
+  expect(app.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Alice", "Bob"]);
+  await app.user.type(app.getByRole("textbox", { name: "new user" }), "Carol");
+  await app.user.click(app.getByRole("button", { name: "Add" }));
+  await app.findByText("Carol");
+  expect(app.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Alice", "Bob", "Carol"]);
+});
+
 test("Server Action の redirect() でページが移る", async () => {
   const app = await renderRoute("/users");
   await app.user.type(app.getByRole("textbox", { name: "open user" }), "Carol");
