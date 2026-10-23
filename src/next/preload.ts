@@ -11,7 +11,7 @@ if (!Bun.version.startsWith("1.4.")) throw new Error(`[proofyard] Unsupported: B
 require("next/dist/server/node-environment-baseline"); // globalThis.AsyncLocalStorage
 // Next.js の runtime バンドル（vendored React を含む）。層をまたいで共有する
 require("next/dist/server/route-modules/app-page/module.compiled");
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -25,7 +25,7 @@ const projectDir = resolve(process.env.PROOFYARD_NEXT_APP ?? process.cwd());
 const work = join(tmpdir(), `proofyard-next-${process.pid}`);
 // 前の実行（終わったプロセス）の生成物を消す
 for (const name of readdirSync(tmpdir())) {
-  const pid = Number(name.match(/^proofyard-next-(\d+)$/)?.[1]);
+  const pid = Number(name.match(/^proofyard-(?:next|run)-(\d+)$/)?.[1]);
   if (!pid) continue;
   try {
     process.kill(pid, 0); // まだ動いているプロセスのもの
@@ -67,21 +67,45 @@ const config = await loadConfig(PHASE_PRODUCTION_BUILD, projectDir, { silent: tr
 // このプリロードを静的なページの prerender（exportApp）だけのために動かして求める（collectBuildOutput）。アプリのコードの副作用はテストのプロセスに残らない。
 // Next.js は manifest を読んだ結果（無いことも）をランタイムのバンドルの中に覚えるので、同じプロセスでは prerender の後に読み直させられない
 const BUILD_OUTPUT = process.env.PROOFYARD_BUILD_OUTPUT;
-const buildOutput = !BUILD_OUTPUT
-  ? (async () => {
-      const output = join(work, "build-output.json");
-      // テストのファイルの代わりにこのファイルを渡す（プリロードの最後で終わるので読み込まれない）
-      const proc = Bun.spawn([process.execPath, "test", "--preload", import.meta.path, import.meta.path], {
-        cwd: process.cwd(),
-        env: { ...process.env, PROOFYARD_BUILD_OUTPUT: output },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-      if (code !== 0) throw new Error(`[proofyard] prerendering (next build) failed\n${stdout}${stderr}`);
-      return (await Bun.file(output).json()) as BuildOutput;
-    })()
-  : undefined;
+// bun test --parallel のワーカーどうしは、同じ実行（親のプロセス）の中で 1 回だけ作って共有する（next build も 1 回）。
+// 最初のワーカーが作り、他のワーカーはその結果（失敗も）を待つ
+const runDir = process.env.BUN_TEST_WORKER_ID && !BUILD_OUTPUT ? join(tmpdir(), `proofyard-run-${process.ppid}`) : undefined;
+const leader = (() => {
+  if (!runDir) return true;
+  try {
+    mkdirSync(runDir);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    return false;
+  }
+})();
+const buildOutput = BUILD_OUTPUT
+  ? undefined
+  : !leader
+    ? (async () => {
+        const [output, failure] = [join(runDir!, "build-output.json"), join(runDir!, "build-output.error")];
+        while (!existsSync(output) && !existsSync(failure)) await Bun.sleep(50);
+        if (existsSync(failure)) throw new Error(readFileSync(failure, "utf8"));
+        return (await Bun.file(output).json()) as BuildOutput;
+      })()
+    : (async () => {
+        const output = join(runDir ?? work, "build-output.json");
+        // テストのファイルの代わりにこのファイルを渡す（プリロードの最後で終わるので読み込まれない）
+        const proc = Bun.spawn([process.execPath, "test", "--preload", import.meta.path, import.meta.path], {
+          cwd: process.cwd(),
+          env: { ...process.env, PROOFYARD_BUILD_OUTPUT: output },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+        if (code !== 0) {
+          const message = `[proofyard] prerendering (next build) failed\n${stdout}${stderr}`;
+          if (runDir) write(join(runDir, "build-output.error"), message);
+          throw new Error(message);
+        }
+        return (await Bun.file(output).json()) as BuildOutput;
+      })();
 // prerenderRoute が使う Next.js の静的シェルのデバッグ機能を有効にしてビルドする（getDefineEnv が define に入れる。
 // ?__nextppronly のリクエストだけが使う。next build をこの環境変数付きで実行するのと同じ）
 if (config.cacheComponents) process.env.__NEXT_EXPERIMENTAL_STATIC_SHELL_DEBUGGING = "1";
@@ -231,7 +255,21 @@ const nextDefine: Record<string, unknown> = getDefineEnv({
 // webpack の DefinePlugin と同じく undefined は undefined に（Bun.build は文字列だけ受け付ける）
 const define = Object.fromEntries(Object.entries(nextDefine).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]));
 // rsc 層のアプリのソースは next-swc-loader と同じ SWC 変換（"use cache" / "use server" はここで変換される）
-const encryptionKey = randomBytes(32).toString("base64");
+// 実行をまたいで使うもの（SWC の変換結果など）。プロセスどうしでも共有する
+const cacheDir = resolve(process.env.PROOFYARD_CACHE_DIR ?? join(tmpdir(), "proofyard-cache"));
+// next build と同じく、鍵は環境変数（NEXT_SERVER_ACTIONS_ENCRYPTION_KEY）か、保存したもの（next build は distDir/cache/.rscinfo）を使い回す。
+// Server Action の id もこの鍵で決まるので、SWC の変換結果を使い回せる
+const encryptionKey = (() => {
+  if (process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY) return process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY;
+  const file = join(cacheDir, "encryption-key");
+  mkdirSync(cacheDir, { recursive: true });
+  try {
+    writeFileSync(file, randomBytes(32).toString("base64"), { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  return readFileSync(file, "utf8");
+})();
 // アプリのソースファイル（node_modules と隠しディレクトリ（.next など）を除く）
 function* appSources(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -279,8 +317,25 @@ const swcOptions = (filename: string, layer: keyof typeof SWC_LAYERS = "rsc") =>
     trackDynamicImports: !!config.cacheComponents && SWC_LAYERS[layer].isServer,
     pageExtensions,
   });
-const swcCompile = (filename: string, source: string, layer: keyof typeof SWC_LAYERS = "rsc"): string =>
-  transformSync(source, { ...swcOptions(filename, layer), filename, sourceFileName: filename }).code;
+// 変換結果は、Next.js の版・SWC の設定・ファイル名・中身が同じなら同じなので、保存して使い回す（プロセスどうし・実行どうし）。
+// SWC のプラグインは中身がキーに入らないので、使うアプリでは保存しない
+// ponytail: 古い結果は消さない。増えすぎたら PROOFYARD_CACHE_DIR ごと消す
+const NEXT_VERSION: string = require("next/package.json").version;
+const swcCacheDir = join(cacheDir, "swc");
+mkdirSync(swcCacheDir, { recursive: true });
+const swcCompile = (filename: string, source: string, layer: keyof typeof SWC_LAYERS = "rsc"): string => {
+  const options = { ...swcOptions(filename, layer), filename, sourceFileName: filename };
+  if (config.experimental.swcPlugins?.length) return transformSync(source, options).code;
+  const key = new Bun.CryptoHasher("sha256").update(JSON.stringify([NEXT_VERSION, { ...options, swcCacheDir: undefined }], (_, v) => (v instanceof RegExp || typeof v === "function" ? String(v) : v))).update(source).digest("hex");
+  const file = join(swcCacheDir, `${key}.js`);
+  if (existsSync(file)) return readFileSync(file, "utf8");
+  const { code } = transformSync(source, options);
+  // 別のプロセスが同時に書いても壊れないよう、書き終えてから名前を付ける
+  const temp = `${file}.${process.pid}`;
+  writeFileSync(temp, code);
+  renameSync(temp, file);
+  return code;
+};
 
 // CSS と next/font（src/next/css.ts）
 const { style, font } = createStyleLoader(projectDir, config);
@@ -1065,7 +1120,8 @@ write(
     `require(${JSON.stringify(join(nextDist, "client/app-next.js"))});`,
   ].join("\n"),
 );
-const routeBuild = buildLayer("browser", [ROUTE_ENTRY], {
+// next build の prerender のプロセス（buildOutput）はブラウザ層を使わないので作らない
+const routeBuild = BUILD_OUTPUT ? undefined : buildLayer("browser", [ROUTE_ENTRY], {
   style,
   transform: swcTransformFor("route"),
   redirect: browserRedirect,
@@ -1127,7 +1183,9 @@ const ssrModuleMap = () => Object.fromEntries([...clientIds].map((id) => [id, { 
 
 // next build の prerender のプロセス（buildOutput）は、prerender して書き出したら終わる
 if (BUILD_OUTPUT) {
-  write(BUILD_OUTPUT, await collectBuildOutput());
+  // 書き終えてから名前を付ける（他のワーカーが書きかけを読まないように）
+  write(`${BUILD_OUTPUT}.${process.pid}`, await collectBuildOutput());
+  renameSync(`${BUILD_OUTPUT}.${process.pid}`, BUILD_OUTPUT);
   process.exit(0);
 }
 // テストが始まる前にビルドを終える（最初の render() のテストがビルドの時間でタイムアウトしないように）
@@ -1291,7 +1349,7 @@ write(join(distDir, `server/${PREFETCH_HINTS}`), prefetchHints);
 Object.assign(prerenderManifest, prerendered);
 write(join(distDir, "prerender-manifest.json"), prerenderManifest);
 console.log(`[proofyard] next build (prerender): ${Object.keys(prefetchHints).length} pages ${(performance.now() - t).toFixed(0)}ms`);
-(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild, prefetchHints, prerenderManifest } satisfies NextHarness;
+(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild!, prefetchHints, prerenderManifest } satisfies NextHarness;
 export type NextHarness = {
   requestRoute: typeof requestRoute;
   prerenderRoute: typeof prerenderRoute;
