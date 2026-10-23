@@ -1,0 +1,13 @@
+generated/
+site/bench/
+site/.next/
+site/.vite/
+site/.vitest/
+site/next-env.d.ts
+site/tsconfig.json
+site/test-results/
+site/playwright-report/
+results/
+site/node_modules/
+site/package.json
+site/pnpm-lock.yaml

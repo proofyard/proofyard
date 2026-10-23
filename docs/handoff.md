@@ -5,7 +5,7 @@
 Next.js App Router の React Server Components を、ブラウザも Next.js サーバーも起動せず、Bun（`bun test`）の中だけでテストするフレームワーク。
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
-- 現状: Phase 0〜7 が完了（Edge Runtime は Fail Closed）。Phase 8（性能）はほぼ完了で、残りはほかのテストの方法とのベンチマークの比較。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
+- 現状: Phase 0〜7 が完了（Edge Runtime は Fail Closed）。Phase 8（性能）も完了（ほかのテストの方法とのベンチマークの比較を含む）。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
 - テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。165 件）
 
 ## 決めたこと
@@ -153,6 +153,18 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 - 後片付け（プリロードの `afterEach`）: フォーカスを外してから React のルートを外し、body を空にする（turbo-dom は取り除いた要素を activeElement に残す）
 - テストの期限: Next.js モードのテストは `--timeout 20000`（マシンの負荷が高いと最初のリクエストなどが 5 秒を超える）。ブラウザ層のビルドはプリロードで待つ
 - 速度（Phase 8）: `bun run bench:api` で 1 テストあたりの時間（後片付けを含む中央値）。2026-10 の測定（2 コアで他のビルドが動いている負荷の高い状態。値は大きく揺れる）: `requestRoute` 約 24ms、`renderRoute` ssr 約 80ms、client 約 200ms、client + 入力 + Server Action 約 1s（2026-10-23 にクライアントのバンドルを関数で包んで作り直すようにして、client 約 27ms、Server Action 約 70ms）。大規模なアプリ（`bun run bench:large`。101 ルート、Client Component 301、テスト 1,000 件を生成）は 2 コアの `--parallel --no-isolate` で 315 秒 → 71 秒（起動はプロセスごとに約 18 秒）。起動（プリロード）は数秒で、大半は next-app-loader（エントリの生成）と層のビルド。next-app-loader は webpack と同じく `_compilation` を共有してディレクトリの中身をキャッシュする（共有しないと 30 ルートで約 4 秒余計にかかっていた）。SWC の変換結果は、Next.js の版・設定・ファイル名・中身をキーに `PROOFYARD_CACHE_DIR`（既定は一時ディレクトリの `proofyard-cache`）に保存し、プロセスどうし・実行どうしで使い回す（Server Action の鍵も next build の `.rscinfo` と同じく保存して使い回す。SWC のプラグインを使うアプリは保存しない。SWC に渡す swcCacheDir（プラグインのキャッシュ。設定の cacheRoot になる）もキーに入るので、プロセスごとのディレクトリにしない。2026-10-23 まではプロセスごとで、使い回せていなかった。直して大規模なアプリの起動の CPU 時間がワーカー 2 つで約 28 秒 → 約 20 秒、1,000 件で 120 秒 → 104 秒）。`--parallel` のワーカーどうしは next build の prerender の子プロセスを 1 回だけ動かして結果を共有する（`BUN_TEST_WORKER_ID` と親のプロセス。大規模なアプリの CPU 時間 146 秒 → 126 秒）。層のビルド（rsc / ssr / browser / renderRoute のクライアント）も最初のワーカーが 1 回だけして、出力（親のプロセスごとの一時ディレクトリ）とビルドの副作用（rsc 層のバンドルで見つけた Client Reference）を他のワーカーに渡す（起動の CPU 時間がワーカー 1 つあたり約 6 秒減る）。それ以外の、実行をまたいだビルドのキャッシュは見送り（ビルドの副作用（Client Reference の記録など）も保存が要り、解決できなかった依存がインストールで解決できるようになる変化は入力のハッシュでは分からない。正確性を優先）
+- ほかのテストの方法との比較（仕様 20.5）: `bun run bench:compare`（`tests/benchmarks/compare/`）。同じ内容のテスト（`/` を開き、async な Server Component が読んだデータを確かめ、Client Component のボタンを押して表示が変わるのを待つ）をツールごとに生成して測る。起動はテスト 1 件で、コールドはキャッシュ（bun のトランスパイル、`PROOFYARD_CACHE_DIR`、vite の依存の最適化、Playwright は `.next` を消して next build から）を消して 1 回、ウォームは 3 回の中央値。1 件あたりは (1,000 件 − 100 件) / 900。メモリはプロセスツリー全体の PSS のピーク（50ms ごと）と、起動したプロセス自身の最大 RSS の大きい方。各実行で合格の件数を確かめ、ログは `results/` に残す。2026-10-24 の測定（2 コア、メモリ 7GB）:
+
+  | | コールド起動 | ウォーム起動 | 100 件 | 1,000 件 | 1 件あたり | メモリのピーク |
+  |---|---|---|---|---|---|---|
+  | Bun のテストだけ（描画しない。データの関数だけ） | 0.02s | 0.08s | 0.03s | 0.11s | 0.09ms | 30MB |
+  | RTL + happy-dom（Client Component だけ） | 1.0s | 0.60s | 2.7s | 15.6s | 14ms | 127MB |
+  | RTL + turbo-dom（Client Component だけ） | 0.51s | 0.29s | 2.2s | 13.0s | 12ms | 101MB |
+  | Proofyard（`--parallel --no-isolate`、2 ワーカー） | 6.2s | 2.3s | 13.9s | 41.8s | 31ms | 486MB |
+  | vitest-plugin-rsc 0.4.0-alpha.0（Vitest Browser Mode の Chromium、開発ビルド） | 32.9s | 16.8s | 48.1s | 341s | 325ms | 1,539MB |
+  | Playwright（next start、2 ワーカー。コールドは next build を含む） | 30.6s | 5.2s | 72.0s | 615s | 604ms | 962MB |
+
+  RTL と Bun のテストだけのものはサーバー・Flight・ルーティングを通らないので、確かめている範囲が狭い（RTL はページの代わりにデータを渡した ItemsView を描画する）。Proofyard は RTL より 1 件あたり約 2.6 倍遅く、vitest-plugin-rsc より約 10 倍、Playwright より約 19 倍速い。Bun のテストだけのものは短すぎて時間の順番がそろわない（誤差）。注意: (1) この環境は root がなく Chromium のシステムライブラリとフォントが無いので、apt でダウンロードだけして `~/.cache/proofyard-chromium-libs` に展開し、`LD_LIBRARY_PATH` と `FONTCONFIG_FILE` で渡している（`run.ts` は、そのディレクトリが無ければ普通に動く）。フォントが無いと文字の高さが 0 になり、vitest-plugin-rsc の `toBeVisible` が失敗した。(2) `site/` で next build をすると、TypeScript が見つからないので Next.js が pnpm で `site/` に typescript を入れ、`site/package.json` を作る。`site/package.json` があると vite が `site` をルートとみなしてリポジトリの `node_modules` を配信せず、vitest-plugin-rsc の setup の読み込みが失敗する（`.gitignore` 済み。できたら消す）。
 - 並列（仕様 20.4）: `bun test --parallel`（プロセスを分ける）は動く。`--parallel` の既定（`--isolate`）はファイルごとにプリロードをやり直すので遅い。`--no-isolate` ならワーカーごとに 1 回（ファイルどうしでモジュールを共有する）。生成物（`/tmp/proofyard-next-<pid>`）はテストの後に消さず、次の実行の起動時に、終わったプロセスのものを消す（`afterAll` で消すと、`--no-isolate` では `afterAll` がファイルごとに動いて次のファイルが失敗し、`--watch` では読み込んだファイルの変更として再実行が止まらなかった。bun test は exit のイベントを出さない）。`bun test --watch` は変更なしで 1 回だけ動き、テストのファイルとアプリのファイル（Server Component が読むもの、Client Component）を変えると再実行する（`tests/unit/watch.test.ts`）。Bun はランタイムのプラグインの onLoad で読んだファイル（rsc 層のアプリのソース・スタイル）と、層のバンドル（Bun.build）にだけ入るファイルを監視しない（oven-sh/bun#5844）ので、プリロードがアプリのソースとスタイルをクエリ付きのパス（プラグインを通らない）でテキストとして読み込んで監視させる（`--watch` かどうかはプロセスから分からないので毎回。1,464 ファイルの大規模なアプリで約 0.16 秒）。起動の後に足したファイルは、import されるまで監視されない。同じプロセスで同時に動くテスト（`test.concurrent` / `--concurrent`）は、DOM とキャッシュの分離ができないので `beforeEach` で Fail Closed（`afterEach` は `beforeEach` が失敗しても動くので数は合う）
 - メモリ（Phase 8）: `renderRoute` の Client Mode はテストごとに Next.js のクライアントを作り直す（バンドル全体を包んだ関数 `createRoute` を呼ぶ。ページの読み込みと同じく状態を分ける）。後片付けで、ページの読み込みから付いた window / document のイベントリスナーと `setInterval` を外す（ブラウザでページを離れたときと同じ）。外さないと前のテストのモジュールが残り続ける（以前は 1 テストあたり約 2.6MB 増え、60 テストでヒープが 45MB → 203MB。いまは 300 テストで 50MB 前後のまま）
 
