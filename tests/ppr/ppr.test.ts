@@ -48,14 +48,21 @@ test("動的なルート: generateStaticParams が返す URL は params が分�
   expect(result.postponed).toBe(true);
 });
 
-test("動的なルート: generateStaticParams が返さない URL と、空でもよいフォールバックのシェルは未対応（Fail Closed）", async () => {
-  const other = await prerenderRoute("/posts/other").catch((e) => e);
-  expect(String(other)).toContain("Unsupported: prerenderRoute for /posts/other, which generateStaticParams of /posts/[slug] does not return");
-  const unknown = await prerenderRoute("/products/1").catch((e) => e);
-  expect(String(unknown)).toContain("which generateStaticParams of /products/[id] does not return");
-  // next build は [slug].html を空で出す（params を Suspense の外で待つので）
-  const shell = await prerenderRoute("/posts/[slug]").catch((e) => e);
-  expect(String(shell)).toContain("Unsupported: prerenderRoute for the fallback shell of /posts/[slug], which next build allows to be empty");
+test("動的なルート: generateStaticParams が返さない URL は、next start と同じくフォールバックのシェル", async () => {
+  const result = await prerenderRoute("/products/1");
+  expect(result.shell).toContain("<main><h1>Product page</h1><!--$?--><template id=\"B:0\"></template><p>Loading product</p><!--/$--></main>");
+  expect(result.postponed).toBe(true);
+});
+
+test("動的なルート: フォールバックのシェルが空でもよいルートは、next start と同じくその URL を prerender する", async () => {
+  const result = await prerenderRoute("/posts/other");
+  expect(result.shell).toContain("<main><h1>Post <!-- -->other</h1><!--$?--><template id=\"B:0\"></template><p>Loading views</p><!--/$--></main>");
+  expect(result.postponed).toBe(true);
+});
+
+test("動的なルート: next build が空で書き出すフォールバックのシェル（params を Suspense の外で待つ）は空", async () => {
+  const result = await prerenderRoute("/posts/[slug]");
+  expect(result).toEqual({ status: 200, shell: "</body></html>", postponed: true, dynamicBoundaries: [] });
 });
 
 test("createTestContext: 同じテストの中では \"use cache\" の結果を再利用する（仕様 11.5）", async () => {

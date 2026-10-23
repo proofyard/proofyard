@@ -63,7 +63,8 @@ export async function startReference(fixture: string, { exclude = [] }: { exclud
     throw new Error(`next build failed\n${build.stdout}\n${build.stderr}`);
   }
   const port = 4000 + Math.floor(Math.random() * 2000);
-  const server = Bun.spawn(["node", next, "start", "-p", String(port)], { cwd: dir, env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" }, stdout: "pipe", stderr: "pipe" });
+  // 静的シェルのデバッグ（?__nextppronly）を有効にする。クエリがなければ next start の動作は変わらない
+  const server = Bun.spawn(["node", next, "start", "-p", String(port)], { cwd: dir, env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1", __NEXT_EXPERIMENTAL_STATIC_SHELL_DEBUGGING: "1" }, stdout: "pipe", stderr: "pipe" });
   const url = `http://localhost:${port}`;
   for (let i = 0; ; i++) {
     try {

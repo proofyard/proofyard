@@ -46,6 +46,33 @@ for (const path of ["/dashboard", "/about", "/posts/hello", "/products/[id]", "/
     expect(withoutClosingTags(result.shell)).toBe(withoutClosingTags(html));
   });
 
+// generateStaticParams が返さない URL。next start はフォールバックのシェル（/products/1）か、
+// フォールバックのシェルが空でもよいルートならその URL をリクエストのときに prerender したもの（/posts/other）を返す。
+// /posts/other は、next start の静的シェルのデバッグが失敗する（500）ので、ふつうのリクエストの応答の先頭（シェル）と比べる
+test("prerenderRoute /products/1 は next start の静的シェルと同じ", async () => {
+  const result = await prerenderRoute("/products/1");
+  const real = await fetch(`${reference.url}/products/1?__nextppronly=1`);
+  expect(result.status).toBe(real.status);
+  expect(comparableHtml(result.shell)).toBe(comparableHtml(await real.text()));
+});
+test("prerenderRoute /posts/other は next start の応答のシェルと同じ", async () => {
+  const result = await prerenderRoute("/posts/other");
+  const real = await fetch(`${reference.url}/posts/other`);
+  expect(real.headers.get("x-nextjs-postponed")).toBe("1");
+  const shell = comparableHtml(result.shell).replace(/<\/body><\/html>$/, "");
+  // 流れてきた中身（<div hidden id="S:n">）より前がシェル
+  const page = (await real.text()).split('<div hidden id="S:')[0]!;
+  expect(comparableHtml(page).slice(0, shell.length)).toBe(shell);
+});
+test("prerenderRoute /posts/[slug]（空のフォールバックのシェル）は next start と同じ", async () => {
+  const result = await prerenderRoute("/posts/[slug]");
+  const real = await fetch(`${reference.url}/posts/[slug]?__nextppronly=fallback`);
+  expect(result.status).toBe(real.status);
+  expect(result.postponed).toBe(real.headers.get("x-nextjs-postponed") === "1");
+  expect(result.shell).toBe(await real.text());
+  expect(await Bun.file(join(reference.dir, ".next/server/app/posts/[slug].html")).text()).toBe("");
+});
+
 // RSC のペイロード（クライアントのナビゲーション）を Flight の意味論で比べる（next-app.test.ts と同じ）。
 // /about は静的なルートで、next start は build のときの RSC を返すので比べない
 for (const path of ["/dashboard", "/posts/hello", "/products/1", "/private"])
