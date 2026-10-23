@@ -1030,7 +1030,8 @@ const buildBrowser = () =>
   }));
 
 // renderRoute の Client Mode: Next.js 本体のクライアント（app-next.js）と Client Component を 1 つのファイルにまとめる。
-// renderRoute のたびにクエリ付きで import し直す（ルーターなどのモジュールの状態をテストごとに新しくする）。
+// バンドル全体を 1 つの関数（createRoute）で包み、renderRoute のたびに呼ぶ（ルーターなどのモジュールの状態をテストごとに新しくする）。
+// ファイルの解析は 1 回で、JSC の最適化もテストをまたいで効く（以前はクエリ付きで import し直していて、毎回の解析と最適化のやり直しで 1 テストあたり数倍遅かった）
 // next build のブラウザ向けと同じく本番版（React も本番版なので act はない。表示は findBy / waitFor で待つ）
 // instrumentation-client: Next.js のローダーが書く、設定の instrumentationClientInject とアプリのファイルを読むモジュール。
 // アプリのファイルは private-next-instrumentation-client-user（src/ を先に探す。なければ空のモジュール）
@@ -1086,7 +1087,15 @@ const routeBuild = buildLayer("browser", [ROUTE_ENTRY], {
     // ハイドレーションの完了を window.__NEXT_HYDRATED_CB で知らせる（Next.js 自身のテストと同じ）
     "process.env.__NEXT_TEST_MODE": "true",
   },
-}).then((outputs) => outputs.get(ROUTE_ENTRY)!);
+}).then((outputs) => {
+  const out = outputs.get(ROUTE_ENTRY)!;
+  const code = readFileSync(out, "utf8").trimEnd();
+  const tail = "export default require_route_entry();";
+  if (!code.endsWith(tail)) throw new Error(`[proofyard] the route bundle does not end with ${tail}`);
+  const factory = out.replace(/\.js$/, ".factory.js");
+  write(factory, `export default function createRoute() {\n${code.slice(0, -tail.length)}\nreturn require_route_entry();\n}\n`);
+  return factory;
+});
 let browser: Promise<typeof import("../client/runtime")> | undefined;
 const loadBrowser = () =>
   (browser ??= (async () => {

@@ -64,7 +64,6 @@ export type RouteRouter = {
 };
 
 const ORIGIN = "http://localhost";
-let bundles = 0;
 let stopErrors: (() => void) | undefined;
 
 // テストごとの後片付け（プリロードの afterEach から呼ばれる）
@@ -87,7 +86,7 @@ function cleanup() {
 (globalThis as any)[Symbol.for("proofyard.routeCleanup")] = cleanup;
 
 // ブラウザがページを離れると消えるもの（window / document のイベントリスナー、setInterval）を、ページの読み込みから後片付けまで記録して消す。
-// Next.js のクライアントはテストごとに読み込み直すので、残すと前のテストのモジュールがメモリに残り続ける
+// Next.js のクライアントはテストごとに作り直すので、残すと前のテストのモジュールがメモリに残り続ける
 let stopPage: (() => void) | undefined;
 function trackPage() {
   const undo: (() => void)[] = [];
@@ -114,8 +113,6 @@ function trackPage() {
   });
   return () => {
     for (const fn of undo.reverse()) fn();
-    // 読み込んだクライアントのバンドル（?route=N）をモジュールの登録から外す
-    for (const key of Object.keys(require.cache)) if (key.includes("?route=")) delete require.cache[key];
   };
 }
 
@@ -320,7 +317,7 @@ export async function renderRoute(url: string, { mode = "client", streaming = fa
     Object.defineProperty(document, "currentScript", { configurable: true, get: () => main });
     stopPage = trackPage();
     try {
-      await import(`${await h.routeBundle()}?route=${bundles++}`);
+      (await import(await h.routeBundle())).default();
     } finally {
       Object.defineProperty(document, "currentScript", { configurable: true, get: () => null });
     }
