@@ -823,15 +823,12 @@ export type PrerenderRouteResult = {
   // リクエストのときまで待つ Suspense 境界（シェルでは fallback が出ている）の id
   dynamicBoundaries: string[];
 };
-const { getRouteRegex } = require("next/dist/shared/lib/router/utils/route-regex");
 const { isDynamicRoute } = require("next/dist/shared/lib/router/utils/is-dynamic");
 const { format } = require("node:util");
-// next build が prerender する URL（generateStaticParams）。next dev と同じ Next.js の loadStaticPaths で求める。
+const { ENCODED_TAGS } = require("next/dist/server/stream-utils/encoded-tags");
+// Next.js の StaticPathsResult（build/static-paths/types.ts。next build の isPageStatic と同じ buildAppStaticPaths の結果）。
+// next build が prerender する URL（generateStaticParams）を、next dev と同じ Next.js の loadStaticPaths で求める。
 // loadStaticPaths は globalThis.__incrementalCache を作り直すので、ルーターのものに戻す（next build の prerender のプロセスはルーターを使わない）
-async function staticPaths(path: string): Promise<{ pathname: string; fallbackRouteParams?: unknown[]; throwOnEmptyStaticShell?: boolean }[]> {
-  return (await staticPathsResult(path)).prerenderedRoutes ?? [];
-}
-// Next.js の StaticPathsResult（build/static-paths/types.ts。next build の isPageStatic と同じ buildAppStaticPaths の結果）
 async function staticPathsResult(path: string): Promise<any> {
   if (!BUILD_OUTPUT) await getRouter();
   const { loadStaticPaths } = require("next/dist/server/dev/static-paths-worker");
@@ -872,18 +869,14 @@ async function prerenderRoute(url: string): Promise<PrerenderRouteResult> {
   const target = new URL(url, "http://localhost");
   // 動的なルートは、ルートのパス（/products/[id]）ならフォールバックのシェル（パラメーターを使うところは Suspense の fallback のまま）。
   // Next.js の静的シェルのデバッグの fallback を使う（next build の [id].html と同じ）。
-  // 具体的な URL（/posts/hello）は、generateStaticParams がすべてのパラメーターを返したものだけ（next build もその URL を prerender する）
+  // 具体的な URL は、next start と同じく Next.js が prerender-manifest から選ぶ（generateStaticParams が返さなければフォールバックのシェルか、
+  // フォールバックのシェルが空でもよいルートならその URL の prerender）
   const fallback = routes.has(target.pathname) && isDynamicRoute(target.pathname);
-  if (!routes.has(target.pathname))
-    for (const path of routes.keys())
-      if (isDynamicRoute(path) && getRouteRegex(path).re.test(target.pathname)) {
-        const paths = await staticPaths(path);
-        if (!paths.some((route) => route.pathname === decodeURIComponent(target.pathname) && !route.fallbackRouteParams?.length))
-          throw new Error(
-            `[proofyard] Unsupported: prerenderRoute for ${target.pathname}, which generateStaticParams of ${path} does not return. Pass the route path for the fallback shell`,
-          );
-        break;
-      }
+  // next build が空のシェルを書き出したフォールバック（generateStaticParams があり、params を Suspense の外で待つ）。
+  // next start はそれをキャッシュから返すが、ここで描画すると（キャッシュがないので）空のシェルを許さずに失敗する。
+  // next start と同じく、空のシェルに Next.js のデバッグ用の閉じタグだけを足して返す
+  if (fallback && emptyStaticShells.includes(target.pathname))
+    return { status: 200, shell: new TextDecoder().decode(ENCODED_TAGS.CLOSED.BODY_AND_HTML), postponed: true, dynamicBoundaries: [] };
   target.searchParams.set("__nextppronly", fallback ? "fallback" : "1");
   // prerender の失敗（Suspense の外の動的なデータなど）は、Next.js がログに出す（next build と同じ文面）
   const logged: string[] = [];
@@ -896,10 +889,6 @@ async function prerenderRoute(url: string): Promise<PrerenderRouteResult> {
     const response = await requestRoute(target.pathname + target.search);
     const shell = await response.text();
     if (response.status >= 500) {
-      // generateStaticParams があると、next build はフォールバックのシェルが空でもよいとする（その URL はリクエストのときに描画を待つ）。
-      // 静的シェルのデバッグにはその設定がないので、ここでは描画に失敗する
-      if (fallback && (await staticPaths(target.pathname)).some((route) => route.pathname === target.pathname && route.throwOnEmptyStaticShell === false))
-        throw new Error(`[proofyard] Unsupported: prerenderRoute for the fallback shell of ${target.pathname}, which next build allows to be empty (generateStaticParams)`);
       throw new Error(`[proofyard] prerendering ${url} failed (status ${response.status})\n${logged.join("\n")}`);
     }
     return {
@@ -1276,13 +1265,21 @@ async function collectBuildOutput(): Promise<BuildOutput> {
     if (hints && !(page in prefetchHints)) prefetchHints[page] = hints;
   }
   const manifest = config.cacheComponents ? prerenderManifestRoutes(exported, pages.map(([path], i) => [path, results[i]])) : { routes: {}, dynamicRoutes: {}, notFoundRoutes: [] };
-  return { prefetchHints, ...manifest };
+  const emptyStaticShells = [...routeOf.keys()].filter((path) => exported?.byPath.get(path)?.hasEmptyStaticShell);
+  return { prefetchHints, emptyStaticShells, ...manifest };
 }
-type BuildOutput = { prefetchHints: Record<string, unknown>; routes: Record<string, unknown>; dynamicRoutes: Record<string, unknown>; notFoundRoutes: string[] };
+type BuildOutput = {
+  prefetchHints: Record<string, unknown>;
+  // next build が空の静的シェル（.html）を書き出した URL（generateStaticParams があり、params を Suspense の外で待つフォールバックのシェルなど）
+  emptyStaticShells: string[];
+  routes: Record<string, unknown>;
+  dynamicRoutes: Record<string, unknown>;
+  notFoundRoutes: string[];
+};
 // prerender-manifest の App Router のページの項目（build/index.ts の static-generation の後半と同じ。cacheComponents のアプリなので、
 // どのページも Partial Prerendering）。next start が読む項目だけ作る（routeType などの分類、experimentalBypassFor、allowHeader、htmlSize は
 // デプロイ先のアダプター向けで、next start は読まない）。prerender できなかったページ（next build なら失敗する）は入れない
-function prerenderManifestRoutes(exported: any, pages: [string, any][]): Omit<BuildOutput, "prefetchHints"> {
+function prerenderManifestRoutes(exported: any, pages: [string, any][]): Omit<BuildOutput, "prefetchHints" | "emptyStaticShells"> {
   const { FallbackMode, fallbackModeToFallbackField } = require("next/dist/lib/fallback");
   const { collectMeta } = require("next/dist/build/utils");
   const { normalizeRouteRegex } = require("next/dist/lib/load-custom-routes");
@@ -1376,7 +1373,7 @@ function prerenderManifestRoutes(exported: any, pages: [string, any][]): Omit<Bu
   }
   return { routes: routesOut, dynamicRoutes, notFoundRoutes: [...(exported?.ssgNotFoundPaths ?? [])] };
 }
-const { prefetchHints, ...prerendered } = (await buildOutput)!;
+const { prefetchHints, emptyStaticShells, ...prerendered } = (await buildOutput)!;
 write(join(distDir, `server/${PREFETCH_HINTS}`), prefetchHints);
 Object.assign(prerenderManifest, prerendered);
 write(join(distDir, "prerender-manifest.json"), prerenderManifest);
