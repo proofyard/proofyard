@@ -17,7 +17,7 @@ Next.js App Router と React Server Components のアプリを、ブラウザも
 preload = ["proofyard/preload"]
 ```
 
-対象のアプリは `PROOFYARD_NEXT_APP`（既定はカレントディレクトリ）。
+対象のアプリは `PROOFYARD_NEXT_APP`（既定はカレントディレクトリ）。SWC の変換結果などの保存先は `PROOFYARD_CACHE_DIR`（既定は一時ディレクトリの `proofyard-cache`。CI で実行をまたいで残すと起動が速くなる）。
 
 ```tsx
 import { expect, test } from "bun:test";
