@@ -273,12 +273,12 @@ const encryptionKey = (() => {
   return readFileSync(file, "utf8");
 })();
 // アプリのソースファイル（node_modules と隠しディレクトリ（.next など）を除く）
-function* appSources(dir: string): Generator<string> {
+function* appSources(dir: string, pattern = /\.[cm]?[jt]sx?$/): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) yield* appSources(path);
-    else if (/\.[cm]?[jt]sx?$/.test(entry.name) && !entry.name.endsWith(".d.ts")) yield path;
+    if (entry.isDirectory()) yield* appSources(path, pattern);
+    else if (pattern.test(entry.name) && !entry.name.endsWith(".d.ts")) yield path;
   }
 }
 const dev = process.env.NODE_ENV === "development";
@@ -345,16 +345,8 @@ const { style, font } = createStyleLoader(projectDir, config);
 // next/font: SWC が書き換えた import（target.css?{...}）を、起動時に生成したモジュールに置き換える
 // （rsc 層のネイティブ読み込みの変換は同期で、フォントの読み込みは非同期なので、アプリのソースから先に集めて作っておく）
 const fonts = new Map<string, string>(); // import の指定子 → 生成したファイル
-function* sourceFiles(dir: string): Generator<string> {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) yield* sourceFiles(path);
-    else if (/\.[cm]?[jt]sx?$/.test(entry.name)) yield path;
-  }
-}
 await Promise.all(
-  [...sourceFiles(projectDir)].flatMap((file) => {
+  [...appSources(projectDir)].flatMap((file) => {
     const source = readFileSync(file, "utf8");
     if (!source.includes("next/font/")) return [];
     return [...swcCompile(file, source).matchAll(FONT_IMPORT)].map(async ([specifier, target, query]) => {
@@ -564,6 +556,10 @@ Bun.plugin({
     });
   },
 });
+// bun test --watch: Bun はランタイムのプラグインの onLoad で読んだファイル（上のアプリのソース・スタイル）を監視しない（oven-sh/bun#5844）。
+// 層のバンドル（Bun.build）にだけ入るファイル（Client Component など）も監視しない。アプリのソースとスタイルを、プラグインを通らない
+// パス（クエリ付き）でテキストとして読み込んで、Bun に監視させる（コードは実行しない。--watch かどうかは分からないので毎回）
+await Promise.all([...appSources(projectDir, /\.(?:[cm]?[jt]sx?|css|scss|sass)$/)].map((file) => import(`${file}?proofyard-watch`, { with: { type: "text" } })));
 console.log(`[proofyard] rsc+ssr layers: ${(performance.now() - t).toFixed(0)}ms, client references: ${clientIds.size}`);
 t = performance.now();
 
