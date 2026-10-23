@@ -46,7 +46,7 @@ test("Route Handler と Proxy", async () => {
 | API | 内容 |
 | --- | --- |
 | `requestRoute(url, { method, headers, cookies, body })` | `next start` と同じリクエスト処理（Proxy、next.config の redirects / rewrites / headers、Route Handler、Server Actions）を通し、`Response` を返す |
-| `renderRoute(url, { mode, streaming, headers, cookies })` | ルートの HTML を DOM に入れる。`mode: "client"`（既定）は Next.js 本体のクライアントでハイドレーションし、`app.router`・Link・Server Actions が動く |
+| `renderRoute(url, { mode, streaming, headers, cookies })` | ルートの HTML を DOM に入れる。`mode: "client"`（既定）は Next.js 本体のクライアントでハイドレーションし、`app.router`・Link・Server Actions が動く。同じテストでもう一度呼ぶと、ページを読み込み直したのと同じく前のページを捨てる |
 | `prerenderRoute(url)` | `cacheComponents` のアプリの静的シェル（Partial Prerendering）。`next build` の `.html` と同じ |
 | `renderRSC(element)` | Server Components を Flight 経由で描画した木を調べる（Client Component は実行しない） |
 | `render(element, { mode, hydrate })` | コンポーネント単位の SSR / Client / ハイドレーション |
