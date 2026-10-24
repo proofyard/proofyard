@@ -2,6 +2,10 @@
 import { beforeEach, expect, test } from "bun:test";
 import { flushAfter, renderRoute, requestRoute } from "proofyard";
 import { db } from "../fixtures/next-app/components/users/db";
+import { createStyleLoader } from "../../src/next/css";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 // @ts-expect-error 型のない偽物のパッケージ
 import { listEntries, resetEntries } from "../fixtures/next-app/node_modules/fake-actions";
 
@@ -134,13 +138,22 @@ test("next/image の画像の最適化（/_next/image）", async () => {
   expect(res.headers.get("content-type")).toBe("image/webp");
 });
 
-test("CSS: CSS Modules のクラス名は next build と同じ（Server / Client Component）。普通の CSS は読み込むだけ", async () => {
+test("CSS: CSS Modules のクラス名（別のファイルからの composes を含む）は next build と同じ（Server / Client Component）。普通の CSS は読み込むだけ", async () => {
   const html = await (await requestRoute("/styled")).text();
-  expect(html).toContain('<h1 class="page_title__NlRtp">');
+  expect(html).toContain('<h1 class="page_title__NlRtp typography_heading__QbXVJ">');
   const app = await renderRoute("/styled");
-  expect(app.getByRole("heading").className).toBe("page_title__NlRtp");
-  expect(app.getByRole("button", { name: "Styled" }).className).toBe("styled-button_button__wkz7j");
+  expect(app.getByRole("heading").className).toBe("page_title__NlRtp typography_heading__QbXVJ");
+  expect(app.getByRole("button", { name: "Styled" }).className).toBe("styled-button_button__wkz7j typography_heading__QbXVJ typography_label__g9Nhv");
   expect(app.errors).toEqual([]);
+});
+
+test("CSS: CSS Modules でないファイルからの composes は Fail Closed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "proofyard-composes-"));
+  writeFileSync(join(dir, "global.css"), ".base { color: red; }\n");
+  writeFileSync(join(dir, "button.module.css"), '.button { composes: base from "./global.css"; }\n');
+  const config = await require("next/dist/server/config").default("phase-production-build", dir);
+  const { style } = createStyleLoader(dir, config);
+  await expect(style(join(dir, "button.module.css"))).rejects.toThrow(`[proofyard] Unsupported: composes from ${join(dir, "global.css")}`);
 });
 
 test("next/font/local: クラス名とフォント名は Next.js のローダーが作る", async () => {
