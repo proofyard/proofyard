@@ -52,6 +52,25 @@ const cases: Case[] = [
   { path: "/does-not-exist", prerendered: "_not-found は build のときの HTML で、<title> の並びが違う（notFound() をリクエストのときに呼ぶ /third-party/next は同じ）" },
   { path: "/robots.txt" },
   { path: "/sitemap.xml" },
+  { path: "/docs/a/b/c" },
+  { path: "/shop" },
+  { path: "/shop/x/y" },
+  { path: "/grouped" },
+  { path: "/moved" },
+  { path: "/rethrow" },
+  { path: "/rethrow?missing=1" },
+  { path: "/no-store" },
+  { path: "/cached" },
+  { path: "/draft" },
+  { path: "/tagged" },
+  { path: "/scripts" },
+  { path: "/search?q=x" },
+  { path: "/link-status" },
+  { path: "/inserted" },
+  { path: "/manifest.webmanifest" },
+  { path: "/badges" },
+  { path: "/catalog/sitemap/0.xml" },
+  { path: "/catalog/sitemap/1.xml" },
 ];
 
 // Bun の Response.json() は charset を付ける（Node.js は付けない）。アプリのコードは Bun で動く
@@ -96,6 +115,61 @@ test("next/font の preload とフォントのファイルは next start と同�
   expect(fontHeader(await requestRoute("/styled"))).toEqual([]);
 });
 
+// unstable_noStore(): リクエストのたびに描画する（静的なページの s-maxage ではない）
+test("unstable_noStore() のページの Cache-Control は next start と同じ", async () => {
+  const [ours, real] = await Promise.all([requestRoute("/no-store"), fetch(`${reference.url}/no-store`)]);
+  expect(real.headers.get("cache-control")).toContain("no-store");
+  expect(ours.headers.get("cache-control")).toBe(real.headers.get("cache-control"));
+});
+
+// draftMode(): Route Handler の enable() が __prerender_bypass のクッキーを付け、そのクッキーで isEnabled になる。
+// クッキーの値（previewModeId）はビルドごとに違うので、それぞれのクッキーで比べる
+test("draftMode() は next start と同じ", async () => {
+  const [ours, real] = await Promise.all([requestRoute("/api/draft"), fetch(`${reference.url}/api/draft`)]);
+  const bypass = (response: Response) => response.headers.getSetCookie().find((cookie) => cookie.startsWith("__prerender_bypass="))!;
+  const attributes = (cookie: string) => cookie.split("; ").slice(1);
+  expect(attributes(bypass(ours))).toEqual(attributes(bypass(real)));
+  const value = (response: Response) => bypass(response).split(";")[0]!.split("=")[1]!;
+  const [oursDraft, realDraft] = await Promise.all([
+    requestRoute("/draft", { cookies: { __prerender_bypass: value(ours) } }),
+    fetch(`${reference.url}/draft`, { headers: { cookie: `__prerender_bypass=${value(real)}` } }),
+  ]);
+  const html = comparableHtml(await realDraft.text());
+  expect(html).toContain("Draft <!-- -->on");
+  expect(comparableHtml(await oursDraft.text())).toBe(html);
+  expect(oursDraft.headers.get("cache-control")).toBe(realDraft.headers.get("cache-control"));
+});
+
+// generateImageMetadata: ページの <link rel="icon"> と、それぞれの画像
+test("generateImageMetadata のアイコンは next start と同じ", async () => {
+  const icons = (html: string) => (html.match(/<link rel="icon"[^>]*>/g) ?? []).map((link) => link.replace(/\?[0-9a-f]{16}"/, '?<contenthash>"'));
+  const [ours, real] = await Promise.all([requestRoute("/badges"), fetch(`${reference.url}/badges`)]);
+  const links = icons(await real.text());
+  expect(links.some((link) => link.includes("/badges/icon/small"))).toBe(true);
+  expect(icons(await ours.text())).toEqual(links);
+  for (const id of ["small", "large"]) {
+    const [mine, theirs] = await Promise.all([requestRoute(`/badges/icon/${id}`), fetch(`${reference.url}/badges/icon/${id}`)]);
+    expect(mine.status).toBe(theirs.status);
+    expect(mine.headers.get("content-type")).toBe(theirs.headers.get("content-type"));
+    expect(Buffer.from(await mine.arrayBuffer()).equals(Buffer.from(await theirs.arrayBuffer()))).toBe(true);
+  }
+});
+
+// updateTag（Server Action）: JS なしのフォームの送信の後の HTML に新しい値が入る
+test("Server Action の updateTag は next start と同じ", async () => {
+  const post = async (html: string) => {
+    const body = new FormData();
+    body.set(html.match(/name="(\$ACTION_ID_[0-9a-f]+)"/)![1]!, "");
+    return body;
+  };
+  const ours = await requestRoute("/tagged", { method: "POST", body: await post(await (await requestRoute("/tagged")).text()) });
+  const real = await fetch(`${reference.url}/tagged`, { method: "POST", redirect: "manual", body: await post(await (await fetch(`${reference.url}/tagged`)).text()) });
+  expect(ours.status).toBe(real.status);
+  const html = comparableHtml(await real.text());
+  expect(html).toContain("Tagged <!-- -->1");
+  expect(comparableHtml(await ours.text())).toBe(html);
+});
+
 // JS なしのフォームの送信（progressive enhancement）。Action の id はビルドごとに違うので、それぞれの HTML から取る
 for (const [index, form] of ["addUser（revalidatePath）", "addAndOpen（redirect）"].entries())
   test(`Server Action ${form} のフォームの送信は next start と同じ`, async () => {
@@ -126,6 +200,9 @@ const flightCases: Pick<Case, "path" | "cookies">[] = [
   { path: "/third-party/next", cookies: { locale: "fr" } },
   { path: "/third-party/actions" },
   { path: "/third-party/cjs" },
+  { path: "/scripts" },
+  { path: "/search?q=x" },
+  { path: "/docs/a/b/c" },
 ];
 const fixture = join(import.meta.dir, "../fixtures/next-app");
 for (const { path, cookies } of flightCases)

@@ -116,9 +116,72 @@ function trackPage() {
     globalThis.setInterval = setInterval;
     for (const id of intervals) clearInterval(id);
   });
+  undo.push(runInsertedScripts());
   return () => {
     for (const fn of undo.reverse()) fn();
   };
+}
+
+// ブラウザと同じく、document.createElement で作って文書に入れた <script> を実行する（next/script や React の <script async> など）。
+// innerHTML で作った script（React が描画する <script> や、HTML の続きの塊）は、ブラウザでも実行されない。
+// 外部の script は同じオリジンのものだけ（メモリ内の handler から取る。public/ など）。届いたら load、失敗したら error を出す
+function runInsertedScripts() {
+  const created = new WeakSet<Element>();
+  const createElement = Document.prototype.createElement;
+  Document.prototype.createElement = function (this: Document, ...args: Parameters<Document["createElement"]>) {
+    const element = createElement.apply(this, args);
+    if (element.localName === "script") created.add(element);
+    return element;
+  } as Document["createElement"];
+  const { appendChild, insertBefore } = Node.prototype;
+  const inserted = (node: Node) => {
+    if (node.nodeType !== 1 || !node.isConnected) return;
+    const element = node as Element;
+    for (const script of element.localName === "script" ? [element] : Array.from(element.querySelectorAll("script")))
+      if (created.delete(script)) runInserted(script);
+  };
+  Node.prototype.appendChild = function <T extends Node>(this: Node, node: T) {
+    const result = appendChild.call(this, node) as T;
+    inserted(node);
+    return result;
+  };
+  Node.prototype.insertBefore = function <T extends Node>(this: Node, node: T, child: Node | null) {
+    const result = insertBefore.call(this, node, child) as T;
+    inserted(node);
+    return result;
+  };
+  return () => {
+    Document.prototype.createElement = createElement;
+    Object.assign(Node.prototype, { appendChild, insertBefore });
+  };
+}
+function runInserted(script: Element) {
+  const type = script.getAttribute("type");
+  if (type && type !== "text/javascript" && type !== "module") return;
+  const src = script.getAttribute("src");
+  if (!src) return evaluate(script, script.textContent ?? "");
+  const url = new URL(src, location.href);
+  if (url.origin !== ORIGIN) throw new Error(`[proofyard] Unsupported: loading <script src="${src}"> from another origin`);
+  void (async () => {
+    // Next.js のチャンクはバンドルで読み込んでいる
+    if (!url.pathname.startsWith(`${harness().assetPrefix}/_next/static/`)) {
+      const response = await harness().requestRoute(url.pathname + url.search);
+      if (!response.ok) return script.dispatchEvent(new Event("error"));
+      evaluate(script, await response.text());
+    }
+    script.dispatchEvent(new Event("load"));
+  })();
+}
+// script の中の例外は、ブラウザと同じく window の error イベントに報告する（入れた側には投げない）
+function evaluate(script: Element, code: string) {
+  Object.defineProperty(document, "currentScript", { configurable: true, get: () => script });
+  try {
+    (0, eval)(code);
+  } catch (error) {
+    window.dispatchEvent(new ErrorEvent("error", { error, message: String(error) }));
+  } finally {
+    Object.defineProperty(document, "currentScript", { configurable: true, get: () => null });
+  }
 }
 
 // 応答の Set-Cookie を cookie の入れ物に反映する
@@ -157,7 +220,7 @@ function loadDocument(html: string) {
 // script を実行する（インラインのもの。Next.js のチャンクはバンドルで読み込む）
 function runScript(script: Element) {
   const src = script.getAttribute("src");
-  if (src?.startsWith("/_next/static/")) return;
+  if (src?.startsWith(`${harness().assetPrefix}/_next/static/`)) return;
   if (src) throw new Error(`[proofyard] Unsupported: external <script src="${src}"> in the HTML`);
   const type = script.getAttribute("type");
   if (type && type !== "text/javascript" && type !== "module") return;
@@ -318,7 +381,7 @@ export async function renderRoute(url: string, { mode = "client", streaming = fa
   if (mode === "client") {
     const hydrated = new Promise<void>((resolve) => ((globalThis as any).__NEXT_HYDRATED_CB = resolve));
     // Next.js のクライアントは読み込み中の <script>（document.currentScript）から assetPrefix を求める（client/asset-prefix.ts）
-    const main = document.querySelector('script[src^="/_next/static/chunks/main-app"]');
+    const main = document.querySelector(`script[src^="${h.assetPrefix}/_next/static/chunks/main-app"]`);
     if (!main) throw new Error(`[proofyard] the HTML (status ${response.status}) has no Next.js client script (main-app)`);
     Object.defineProperty(document, "currentScript", { configurable: true, get: () => main });
     stopPage = trackPage();
