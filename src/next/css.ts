@@ -32,7 +32,8 @@ export function createStyleLoader(projectDir: string, config: any) {
   const supportedBrowsers = getSupportedBrowsers(projectDir, false);
   const postcss = () => lazyPostCSS(projectDir, supportedBrowsers, config.experimental.disablePostcssPresetEnv, config.experimental.useLightningcss);
   // webpack のローダーを 1 つ動かす（必要な分だけのローダーのコンテキスト）
-  const run = (loader: Function, resourcePath: string, resourceQuery: string, options: object, input: unknown[]) =>
+  // emitted: ローダーが出力したファイル（next-font-loader のフォント。static/media/<hash>[.p].<ext>）
+  const run = (loader: Function, resourcePath: string, resourceQuery: string, options: object, input: unknown[], emitted?: Map<string, Buffer>) =>
     new Promise<LoaderResult>((resolve, reject) => {
       // async 関数のローダー（sass-loader）は、this.async() の前の例外を Promise で返す
       const returned = loader.apply(
@@ -56,7 +57,7 @@ export function createStyleLoader(projectDir: string, config: any) {
           },
           emitWarning: (warning: unknown) => console.warn(warning),
           emitError: (error: unknown) => console.error(error),
-          emitFile() {},
+          emitFile: (name: string, content: Buffer) => emitted?.set(name, content),
           // webpack の入力のファイルシステム（next/font/local がフォントのファイルを読む）
           fs,
           addDependency() {},
@@ -100,11 +101,11 @@ export function createStyleLoader(projectDir: string, config: any) {
     };
     return toModule(path, (await run(cssLoader, path, "", options, [css])).code);
   };
-  const cache = new Map<string, Promise<string>>();
-  const cached = (key: string, make: () => Promise<string>) => {
-    let code = cache.get(key);
-    if (!code) cache.set(key, (code = make()));
-    return code;
+  const cache = new Map<string, Promise<unknown>>();
+  const cached = <T>(key: string, make: () => Promise<T>) => {
+    let result = cache.get(key) as Promise<T> | undefined;
+    if (!result) cache.set(key, (result = make()));
+    return result;
   };
 
   // Bun のプラグインの onLoad の結果
@@ -113,25 +114,24 @@ export function createStyleLoader(projectDir: string, config: any) {
     return { loader: "js", contents: await cached(path, () => cssModule(path)) };
   };
 
-  // config/blocks/css/loaders/next-font.ts の getNextFontLoader のサーバー側と同じ（next-font-loader → css-loader）
+  // config/blocks/css/loaders/next-font.ts の getNextFontLoader のサーバー側と同じ（next-font-loader → css-loader）。
+  // files: クライアント側の next-font-loader が出力したフォントのファイル（名前 → 中身）
   const font = (target: string, query: string) =>
-    cached(`${target}?${query}`, async () => {
+    cached(`${target}?${query}`, async (): Promise<{ code: string; files: Map<string, Buffer> }> => {
+      const files = new Map<string, Buffer>();
       const resourcePath = require.resolve(target);
       const kind = target.includes("/google/") ? "google" : "local";
-      const loaded = await run(
-        nextFontLoader,
-        resourcePath,
-        `?${query}`,
-        {
-          isDev: false,
-          isServer: true,
-          assetPrefix: config.assetPrefix,
-          deploymentId: config.deploymentId,
-          fontLoaderPath: require.resolve(`next/dist/compiled/@next/font/${kind}/loader`),
-          postcss,
-        },
-        [],
-      );
+      const fontOptions = (isServer: boolean) => ({
+        isDev: false,
+        isServer,
+        assetPrefix: config.assetPrefix,
+        deploymentId: config.deploymentId,
+        fontLoaderPath: require.resolve(`next/dist/compiled/@next/font/${kind}/loader`),
+        postcss,
+      });
+      const loaded = await run(nextFontLoader, resourcePath, `?${query}`, fontOptions(true), []);
+      // ファイルを出力するのはクライアント側の設定だけ（next-font-loader の emitFontFile）。同じ設定で動かしてファイルだけ受け取る
+      await run(nextFontLoader, resourcePath, `?${query}`, fontOptions(false), [], files);
       const options = {
         postcss,
         importLoaders: 1,
@@ -145,7 +145,7 @@ export function createStyleLoader(projectDir: string, config: any) {
         },
         fontLoader: true,
       };
-      return toModule(resourcePath, (await run(cssLoader, resourcePath, `?${query}`, options, [loaded.code, null, loaded.meta])).code);
+      return { code: toModule(resourcePath, (await run(cssLoader, resourcePath, `?${query}`, options, [loaded.code, null, loaded.meta])).code), files };
     });
 
   return { style, font };
