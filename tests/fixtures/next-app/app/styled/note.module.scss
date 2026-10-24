@@ -1,0 +1,10 @@
+$accent: #c00;
+
+.note {
+  composes: label from "../../components/typography.module.css";
+  color: $accent;
+
+  .emphasis {
+    font-weight: bold;
+  }
+}
