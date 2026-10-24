@@ -66,7 +66,7 @@ DOM、React のルート、リクエストのコンテキスト、アプリの�
 ```sh
 bun run test       # 全部のテスト
 bun run compat     # 本物の next build / next start と比べる（HTML、RSC の Flight、Server Actions、エラー。遅い）
-bun run bench:api  # 1 テストあたりの時間
+bun run bench:api  # 1 テストあたりの時間と内訳（Flight、DOM の初期化、Server Action、後片付け）
 bun run bench:compare  # ほかのテストの方法（RTL、vitest-plugin-rsc、Playwright など）と比べる。結果は docs/handoff.md
 ```
 
