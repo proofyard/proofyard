@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { dirname, join, posix, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
-import { actionModule, serverActions } from "../testing/actions";
+import { actionModule, serverActions, type ActionCall } from "../testing/actions";
 import { ALIASES, BUNDLED_ALIASES, SERVER_DIRECTIVE, USE_CLIENT, buildLayer, cjsExportNames, clientExports, clientIds, clientReferenceStub, esmClientIds } from "./layers";
 import { FONT_IMPORT, STYLE_FILE, createStyleLoader, unquote } from "./css";
 
@@ -591,12 +591,28 @@ const rscClientModule = (id: string) => {
   }
   return m;
 };
+// Next.js の handler が呼ぶ Server Action の呼び出し（引数は decodeReply の後。.bind した引数を含む）を、テストごとに記録する（renderRoute の actions.getCalls）
+const routeActionCalls: ActionCall[] = [];
+const recordingActions = new WeakMap<Function, Function>();
+const recordingAction = (id: string) => {
+  const action = serverActions.get(id);
+  if (!action) return undefined;
+  let recording = recordingActions.get(action);
+  if (!recording) {
+    recording = function (this: unknown, ...args: unknown[]) {
+      routeActionCalls.push({ id, name: action.name, args });
+      return action.apply(this, args);
+    };
+    recordingActions.set(action, recording);
+  }
+  return recording;
+};
 (globalThis as any).__proofyardNextRequire = (id: string) => {
   if (id.startsWith(RSC_CLIENT_PREFIX)) return rscClientModule(id.slice(RSC_CLIENT_PREFIX.length));
   if (id.startsWith(ACTION_FILE_PREFIX)) {
     require(id.slice(ACTION_FILE_PREFIX.length));
     // React の decodeAction（JS なしのフォームの送信）は hasOwnProperty で確かめてから読む
-    const action = (actionId: string | symbol) => (typeof actionId === "string" ? serverActions.get(actionId) : undefined);
+    const action = (actionId: string | symbol) => (typeof actionId === "string" ? recordingAction(actionId) : undefined);
     return new Proxy({}, {
       get: (_, actionId) => action(actionId),
       has: (_, actionId) => !!action(actionId),
@@ -1035,6 +1051,7 @@ afterEach(() => {
   (globalThis as any)[Symbol.for("proofyard.cleanup")]?.();
   (globalThis as any)[Symbol.for("proofyard.routeCleanup")]?.();
   if (typeof document !== "undefined") document.body.innerHTML = "";
+  routeActionCalls.length = 0;
   restoreMocks(testMocks);
 });
 
@@ -1374,11 +1391,13 @@ write(join(distDir, `server/${PREFETCH_HINTS}`), prefetchHints);
 Object.assign(prerenderManifest, prerendered);
 write(join(distDir, "prerender-manifest.json"), prerenderManifest);
 console.log(`[proofyard] next build (prerender): ${Object.keys(prefetchHints).length} pages ${(performance.now() - t).toFixed(0)}ms`);
-(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild!, prefetchHints, prerenderManifest } satisfies NextHarness;
+(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, actionCalls: () => [...routeActionCalls], flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild!, prefetchHints, prerenderManifest } satisfies NextHarness;
 export type NextHarness = {
   requestRoute: typeof requestRoute;
   prerenderRoute: typeof prerenderRoute;
   invalidatedTags: typeof invalidatedTags;
+  // このテストで Next.js の handler が呼んだ Server Action
+  actionCalls: () => ActionCall[];
   flushAfter: typeof flushAfter;
   loadBrowser: typeof loadBrowser;
   ssrRuntime: typeof ssrRuntime;

@@ -5,7 +5,7 @@
 import type { NextHarness } from "../next/preload";
 import { installDom } from "../dom/environment";
 import { renderFlight } from "./render-rsc";
-import { runAction, type ActionCall } from "./actions";
+import { filterCalls, runAction, type ActionCall } from "./actions";
 
 type BrowserRuntime = typeof import("../client/runtime");
 type Queries = ReturnType<BrowserRuntime["within"]>;
@@ -66,12 +66,7 @@ async function ssrHtml(stream: ReadableStream<Uint8Array>, serverError: (error: 
   }
 }
 
-const actionsOf = (calls: ActionCall[]): RenderResult["actions"] => ({
-  getCalls: (action) =>
-    action === undefined
-      ? [...calls]
-      : calls.filter((call) => (typeof action === "string" ? call.name === action : call.id === (action as { $$id?: string }).$$id)),
-});
+const actionsOf = (calls: ActionCall[]): RenderResult["actions"] => ({ getCalls: (action) => filterCalls(calls, action) });
 
 export async function render(ui: unknown, { mode = "client", hydrate = false }: RenderOptions = {}): Promise<RenderResult> {
   ensureDom();

@@ -4,6 +4,7 @@
 // クエリは Testing Library（document.body 全体）。
 import { nextHistoryWrite, resetLocation } from "../dom/environment";
 import { ensureDom, harness } from "./render";
+import { filterCalls, type ActionCall } from "./actions";
 
 type BrowserRuntime = typeof import("../client/runtime");
 type Queries = ReturnType<BrowserRuntime["within"]>;
@@ -40,6 +41,10 @@ export type RenderRouteResult = Queries & {
     // after() に渡された処理が終わるまで待つ（仕様 16.2）
     flushAfter(): Promise<void>;
   };
+  // このテストで呼ばれた Server Action（名前か Action そのもので絞る。仕様 18.5）
+  actions: { getCalls(action?: string | Function): ActionCall[] };
+  // このテストで無効化されたキャッシュタグ（revalidateTag / updateTag / revalidatePath。仕様 11.5）
+  cache: { getInvalidatedTags(): string[] };
   // いまの文書の <head> にある Next.js が描画した metadata（仕様 16.1。遷移すると変わる）
   metadata: RouteMetadata;
   unmount(): void;
@@ -357,6 +362,8 @@ export async function renderRoute(url: string, { mode = "client", streaming = fa
     waitFor: browser.waitFor,
     errors,
     lifecycle: { flushAfter: h.flushAfter },
+    actions: { getCalls: (action) => filterCalls(h.actionCalls(), action) },
+    cache: { getInvalidatedTags: h.invalidatedTags },
     metadata,
     unmount: cleanup,
   } as unknown as RenderRouteResult;
