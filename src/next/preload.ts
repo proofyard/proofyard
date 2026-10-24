@@ -992,10 +992,13 @@ function resetCache() {
     throw new Error("[proofyard] Unsupported: custom cacheHandlers cannot be isolated between tests by the current runtime");
   for (const name of ["@next/cache-handlers-map", "@next/cache-handlers-set", "@next/cache-handlers-built-in"]) delete g[Symbol.for(name)];
   tagsManifest.clear();
+  const memory = require("next/dist/server/lib/incremental-cache/memory-cache.external").getMemoryCache(config.cacheMaxMemorySize);
+  // unstable_cache と fetch のキャッシュ（FETCH。ファイルは distDir/cache/fetch-cache）
+  for (const [key, entry] of [...memory]) if (entry?.value?.kind === "FETCH") memory.remove(key);
+  rmSync(join(distDir, "cache/fetch-cache"), { recursive: true, force: true });
   // テストの中で作った build の結果（warmBuildOutput）を捨てる
   if (warmed.size) {
     warmed.clear();
-    const memory = require("next/dist/server/lib/incremental-cache/memory-cache.external").getMemoryCache(config.cacheMaxMemorySize);
     for (const [key, entry] of [...memory]) if (entry?.value?.kind === "APP_PAGE") memory.remove(key);
     rmSync(join(distDir, "server/route-cache"), { recursive: true, force: true });
   }
@@ -1442,7 +1445,7 @@ write(join(distDir, `server/${PREFETCH_HINTS}`), prefetchHints);
 Object.assign(prerenderManifest, prerendered);
 write(join(distDir, "prerender-manifest.json"), prerenderManifest);
 console.log(`[proofyard] next build (prerender): ${Object.keys(prefetchHints).length} pages ${(performance.now() - t).toFixed(0)}ms`);
-(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, actionCalls: () => [...routeActionCalls], flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild!, prefetchHints, prerenderManifest } satisfies NextHarness;
+(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, actionCalls: () => [...routeActionCalls], flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild!, prefetchHints, prerenderManifest, assetPrefix: config.assetPrefix } satisfies NextHarness;
 export type NextHarness = {
   requestRoute: typeof requestRoute;
   prerenderRoute: typeof prerenderRoute;
@@ -1459,4 +1462,6 @@ export type NextHarness = {
   prefetchHints: Record<string, unknown>;
   // next build の prerender-manifest.json と同じもの（next start が読む項目だけ）
   prerenderManifest: typeof prerenderManifest;
+  // Next.js のチャンクの URL の前に付くもの（next.config の assetPrefix。空なら basePath。server/config.ts）
+  assetPrefix: string;
 };
