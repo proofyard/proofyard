@@ -1,1 +1,1 @@
-.button { color: blue; }
+.button { composes: heading label from "./typography.module.css"; color: blue; }

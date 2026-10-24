@@ -3,7 +3,8 @@
 //   どの層でも同じモジュールを使うので、クラス名は next build と同じ
 // - next/font: SWC が書き換えた target.css?{...} の import を、Next.js の next-font-loader → css-loader（同じくサーバー側の設定）で生成する
 // - それ以外の CSS: 空のモジュール（Next.js はページに <link rel="stylesheet"> を入れるが、ここでは入れない）
-// - Sass / 別のファイルからの composes: Fail Closed
+// - 別のファイルからの composes: css-loader が出す require を、そのファイル（同じく CSS Modules として読む）の import にする
+// - Sass: Fail Closed
 import { dirname } from "node:path";
 import * as fs from "node:fs";
 
@@ -16,6 +17,9 @@ const { getSupportedBrowsers } = require("next/dist/build/get-supported-browsers
 export const STYLE_FILE = /\.(?:css|scss|sass)$/;
 // SWC の next-transform-font の出力: import brand from 'next/font/local/target.css?{"path":...,"arguments":[...]}'
 export const FONT_IMPORT = /'(next\/font\/(?:google|local)\/target\.css)\?((?:[^'\\]|\\.)*)'/g;
+
+// css-loader の出力の require のリクエストに入る、このローダーの名前
+const CSS_MODULE_REQUEST = "proofyard-css-module";
 
 type LoaderResult = { code: string; meta?: unknown };
 // Next.js のトレース（記録しない）
@@ -52,6 +56,9 @@ export function createStyleLoader(projectDir: string, config: any) {
           // webpack の入力のファイルシステム（next/font/local がフォントのファイルを読む）
           fs,
           addDependency() {},
+          // css-loader は composes の先のファイルを、このローダーを通すリクエストにする（下の toModule で import にする）
+          loaders: [{ request: CSS_MODULE_REQUEST }],
+          loaderIndex: 0,
           utils: { contextify: (_: string, request: string) => request },
         },
         input,
@@ -59,9 +66,15 @@ export function createStyleLoader(projectDir: string, config: any) {
     });
   // css-loader の出力（esModule: false の CJS）を ESM に（Bun の実行時のプラグインの js は module.exports を default にしない）
   const toModule = (path: string, code: string) => {
-    // 別のファイルのクラスを使う composes は、webpack のローダーのリクエストを require する
-    if (/\brequire\(/.test(code)) throw new Error(`[proofyard] Unsupported: composes from another file in CSS Modules (${path})`);
-    if (!/^module\.exports = /m.test(code)) throw new Error(`[proofyard] unexpected css-loader output for ${path}`);
+    // 別のファイルのクラスを使う composes: var ___CSS_LOADER_ICSS_IMPORT_0___ = require("-!<このローダー>!/abs/other.module.css");
+    code = code.replace(/^var (\w+) = require\(("(?:[^"\\]|\\.)*")\);$/gm, (line, name: string, literal: string) => {
+      const request: string = JSON.parse(literal);
+      const prefix = `-!${CSS_MODULE_REQUEST}!`;
+      const file = request.startsWith(prefix) ? request.slice(prefix.length) : undefined;
+      if (!file || !/\.module\.css$/.test(file)) throw new Error(`[proofyard] Unsupported: composes from ${file ?? request} in ${path} (only CSS Modules files)`);
+      return `import ${name} from ${JSON.stringify(file)};`;
+    });
+    if (/\brequire\(/.test(code) || !/^module\.exports = /m.test(code)) throw new Error(`[proofyard] unexpected css-loader output for ${path}`);
     return code.replace(/^module\.exports = /m, "export default ");
   };
   // config/blocks/css/loaders/modules.ts の getCssModuleLoader のサーバー側と同じオプション
