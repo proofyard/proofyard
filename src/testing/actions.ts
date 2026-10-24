@@ -10,6 +10,12 @@ export type ActionCall = {
   args: unknown[];
 };
 
+// 呼び出しを名前（関数名）か Action そのもの（$$id）で絞る
+export const filterCalls = (calls: ActionCall[], action?: string | Function): ActionCall[] =>
+  action === undefined
+    ? [...calls]
+    : calls.filter((call) => (typeof action === "string" ? call.name === action : call.id === (action as { $$id?: string }).$$id));
+
 export const serverActions: Map<string, Function> = ((globalThis as any)[Symbol.for("proofyard.serverActions")] ??= new Map());
 
 // decodeReply で Server Reference（bind した Action など）を引くときのモジュール id
