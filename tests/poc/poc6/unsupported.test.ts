@@ -1,6 +1,6 @@
 // 未対応のケースは通常の JS として実行せず、明示的にエラーにする（Fail Closed）
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempDisposableSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildLayer } from "../../../src/next/layers";
@@ -8,7 +8,8 @@ import { buildLayer } from "../../../src/next/layers";
 // rsc 層のバンドルは Next.js 本体だけ（アプリと node_modules はネイティブで読み込み、"use cache" はそこで変換する）。
 // 変換を通らずにバンドルに入れば、ビルドを失敗させる
 test('rsc 層のバンドルに入った node_modules の "use cache" はビルドを失敗させる', async () => {
-  const dir = mkdtempSync(join(tmpdir(), "proofyard-unsupported-"));
+  using tmp = mkdtempDisposableSync(join(tmpdir(), "proofyard-unsupported-"));
+  const dir = tmp.path;
   mkdirSync(join(dir, "node_modules/cached-lib"), { recursive: true });
   writeFileSync(join(dir, "node_modules/cached-lib/index.js"), `export async function load() {\n  "use cache";\n  return 1;\n}\n`);
   writeFileSync(join(dir, "entry.js"), `export { load } from "cached-lib";\n`);
@@ -22,7 +23,8 @@ test('rsc 層のバンドルに入った node_modules の "use cache" はビル�
 // "use server" の CommonJS は Next.js の SWC の変換がどう扱うかを確かめていない（"use client" の CommonJS は対応。tests/unit/advanced.test.tsx）
 for (const directive of ["use server"])
   test(`node_modules の CommonJS の "${directive}" は未対応。サーバーで実行せず、読み込んだときに失敗させる`, async () => {
-    const app = mkdtempSync(join(tmpdir(), "proofyard-third-party-client-"));
+    using tmp = mkdtempDisposableSync(join(tmpdir(), "proofyard-third-party-client-"));
+    const app = tmp.path;
     mkdirSync(join(app, "app"));
     mkdirSync(join(app, "node_modules/fake-ui"), { recursive: true });
     writeFileSync(join(app, "node_modules/fake-ui/package.json"), JSON.stringify({ name: "fake-ui", main: "index.js" }));
@@ -45,7 +47,8 @@ for (const directive of ["use server"])
   }, 60_000);
 
 test("同じプロセスで同時に動くテスト（test.concurrent）は、DOM とキャッシュを分けられないので Fail Closed", async () => {
-  const app = mkdtempSync(join(tmpdir(), "proofyard-concurrent-"));
+  using tmp = mkdtempDisposableSync(join(tmpdir(), "proofyard-concurrent-"));
+  const app = tmp.path;
   mkdirSync(join(app, "app"));
   writeFileSync(join(app, "app/layout.tsx"), `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`);
   writeFileSync(join(app, "app/page.tsx"), `export default function P() { return <p>home</p>; }\n`);
