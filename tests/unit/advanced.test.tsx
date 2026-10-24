@@ -138,12 +138,15 @@ test("next/image の画像の最適化（/_next/image）", async () => {
   expect(res.headers.get("content-type")).toBe("image/webp");
 });
 
-test("CSS: CSS Modules のクラス名（別のファイルからの composes を含む）は next build と同じ（Server / Client Component）。普通の CSS は読み込むだけ", async () => {
+test("CSS: CSS Modules のクラス名（別のファイルからの composes、Sass を含む）は next build と同じ（Server / Client Component）。普通の CSS と Sass は読み込むだけ", async () => {
   const html = await (await requestRoute("/styled")).text();
   expect(html).toContain('<h1 class="page_title__NlRtp typography_heading__QbXVJ">');
   const app = await renderRoute("/styled");
   expect(app.getByRole("heading").className).toBe("page_title__NlRtp typography_heading__QbXVJ");
   expect(app.getByRole("button", { name: "Styled" }).className).toBe("styled-button_button__wkz7j typography_heading__QbXVJ typography_label__g9Nhv");
+  // .module.scss（変数、入れ子、.module.css からの composes）
+  expect(app.getByText("Note").className).toBe("note_note__sgNv2 typography_label__g9Nhv");
+  expect(app.getByText("here").className).toBe("note_emphasis__vAEyq");
   expect(app.errors).toEqual([]);
 });
 
