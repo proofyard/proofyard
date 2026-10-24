@@ -12,7 +12,7 @@ require("next/dist/server/node-environment-baseline"); // globalThis.AsyncLocalS
 // Next.js の runtime バンドル（vendored React を含む）。層をまたいで共有する
 require("next/dist/server/route-modules/app-page/module.compiled");
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, posix, relative, resolve } from "node:path";
+import { basename, dirname, join, posix, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { actionModule, serverActions, type ActionCall } from "../testing/actions";
@@ -345,18 +345,69 @@ const { style, font } = createStyleLoader(projectDir, config);
 // next/font: SWC が書き換えた import（target.css?{...}）を、起動時に生成したモジュールに置き換える
 // （rsc 層のネイティブ読み込みの変換は同期で、フォントの読み込みは非同期なので、アプリのソースから先に集めて作っておく）
 const fonts = new Map<string, string>(); // import の指定子 → 生成したファイル
+const fontFiles = new Map<string, string[]>(); // import の指定子 → next-font-loader が出力したフォントのファイル（static/media/...）
+const sourceFonts = new Map<string, string[]>(); // アプリのソース → その中の next/font の import の指定子
 await Promise.all(
   [...appSources(projectDir)].flatMap((file) => {
     const source = readFileSync(file, "utf8");
     if (!source.includes("next/font/")) return [];
-    return [...swcCompile(file, source).matchAll(FONT_IMPORT)].map(async ([specifier, target, query]) => {
+    const imports = [...swcCompile(file, source).matchAll(FONT_IMPORT)];
+    sourceFonts.set(file, imports.map(([specifier]) => specifier));
+    return imports.map(async ([specifier, target, query]) => {
       if (fonts.has(specifier)) return;
       const out = join(work, "fonts", `${fonts.size}.js`);
       fonts.set(specifier, out);
-      write(out, await font(target!, unquote(query!)));
+      const { code, files } = await font(target!, unquote(query!));
+      write(out, code);
+      // next start は .next/static を /_next/static で配信する
+      for (const [name, content] of files) {
+        mkdirSync(dirname(join(distDir, name)), { recursive: true });
+        writeFileSync(join(distDir, name), content);
+      }
+      fontFiles.set(specifier, [...files.keys()]);
     });
   }),
 );
+// next-font-manifest.json（next build の NextFontManifestPlugin）。Next.js はレイアウト・ページなどのファイル（拡張子なし）ごとに、
+// ここにあるフォントを preload する。next build ではそのファイルのクライアントのエントリ（チャンクグループ）にある next/font のモジュールのフォントで、
+// ここではそのファイルから静的な import（Client Component の先も）でたどれるアプリのソースの next/font。動的な import() は webpack では別のチャンクになるので、たどらない
+const nextFontManifest = { pages: {}, app: {} as Record<string, string[]>, appUsingSizeAdjust: false, pagesUsingSizeAdjust: false };
+if (fontFiles.size) {
+  const transpiler = new Bun.Transpiler({ loader: "tsx" });
+  const importsOf = new Map<string, string[]>();
+  const staticImports = (file: string) => {
+    let imports = importsOf.get(file);
+    if (!imports) {
+      importsOf.set(file, (imports = []));
+      for (const { path, kind } of transpiler.scanImports(readFileSync(file, "utf8"))) {
+        if (kind === "dynamic-import") continue;
+        try {
+          const resolved = Bun.resolveSync(path, dirname(file));
+          if (resolved.startsWith(projectDir + "/") && !resolved.includes("/node_modules/") && /\.[cm]?[jt]sx?$/.test(resolved)) imports.push(resolved);
+        } catch {} // 解決できない import は Next.js のビルドがエラーにする（ここではフォントを探すだけ）
+      }
+    }
+    return imports;
+  };
+  const SEGMENT_FILE = /^(?:layout|page|template|loading|error|global-error|not-found|global-not-found|forbidden|unauthorized|default)\.[cm]?[jt]sx?$/;
+  for (const file of appSources(appDir)) {
+    if (!SEGMENT_FILE.test(basename(file))) continue;
+    const seen = new Set<string>();
+    const stack = [file];
+    const files: string[] = [];
+    while (stack.length) {
+      const current = stack.pop()!;
+      if (seen.has(current)) continue;
+      seen.add(current);
+      for (const specifier of sourceFonts.get(current) ?? []) files.push(...fontFiles.get(specifier)!);
+      stack.push(...staticImports(current));
+    }
+    if (!files.length) continue;
+    // size-adjust の代わりのフォント（-s）と preload するもの（.p.）は、next-font-loader がファイル名で表す
+    if (files.some((name) => name.includes("-s"))) nextFontManifest.appUsingSizeAdjust = true;
+    nextFontManifest.app[file.replace(/\.[^.]+$/, "")] = files.filter((name) => /\.p\.(woff|woff2|eot|ttf|otf)$/.test(name));
+  }
+}
 const withFonts = (code: string) =>
   code.replace(FONT_IMPORT, (specifier) => {
     const file = fonts.get(specifier);
@@ -690,7 +741,7 @@ write(join(distDir, "build-manifest.json"), {
   lowPriorityFiles: [],
   pages: { "/_app": [] },
 });
-write(join(distDir, "server/next-font-manifest.json"), { pages: {}, app: {}, appUsingSizeAdjust: false, pagesUsingSizeAdjust: false });
+write(join(distDir, "server/next-font-manifest.json"), nextFontManifest);
 const serverActionsManifest = {
   node: Object.fromEntries(
     [...actionFiles].map(([id, path]) => [

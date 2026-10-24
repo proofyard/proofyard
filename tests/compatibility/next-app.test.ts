@@ -6,17 +6,12 @@ import { comparableFlight, comparableHtml, comparableModule, referenceModulePath
 
 let reference: Reference;
 beforeAll(async () => {
-  reference = await startReference(join(import.meta.dir, "../fixtures/next-app"), {
-    // 中身が偽物のフォント（next build が失敗する）
-    exclude: ["app/fonts"],
-  });
+  reference = await startReference(join(import.meta.dir, "../fixtures/next-app"));
 }, 300_000);
 afterAll(() => reference?.stop());
 
 test("prefetch hints（server/prefetch-hints.json）は next build と同じ", async () => {
-  // /fonts は next build に写していない（app/fonts を除いている）
-  const { "/fonts": _, ...ours } = (globalThis as any)[Symbol.for("proofyard.next")].prefetchHints;
-  expect(ours).toEqual(await Bun.file(join(reference.dir, ".next/server/prefetch-hints.json")).json());
+  expect((globalThis as any)[Symbol.for("proofyard.next")].prefetchHints).toEqual(await Bun.file(join(reference.dir, ".next/server/prefetch-hints.json")).json());
 });
 
 // prerendered: next start は build のときに描画した HTML を返し、requestRoute は毎回リクエストのときに描画する（docs/handoff.md）。
@@ -43,6 +38,8 @@ const cases: Case[] = [
   { path: "/compat" },
   { path: "/concurrent" },
   { path: "/styled" },
+  { path: "/fonts" },
+  { path: "/fonts/live" },
   { path: "/og" },
   { path: "/state" },
   { path: "/query" },
@@ -73,6 +70,31 @@ for (const { path, cookies, headers, prerendered } of cases)
     for (const name of ["x-section", "set-cookie"]) expect(`${name}: ${ours.headers.get(name)}`).toBe(`${name}: ${real.headers.get(name)}`);
     if (!prerendered) expect(comparableHtml(await ours.text())).toBe(comparableHtml(await real.text()));
   });
+
+// next/font の preload（next-font-manifest.json）。フォントのファイルの名前は中身のハッシュ（Next.js の next-font-loader が付ける）。
+// リクエストのときの描画では、React が preload を Link ヘッダーにする（HTML の <link> には入らない）。
+// build のときの描画（静的なページ）では HTML の <link> になる。requestRoute は静的なページも毎回リクエストのときに描画する
+const fontHeader = (response: Response) => (response.headers.get("link")?.split(/,\s*(?=<)/) ?? []).filter((entry) => entry.includes('as="font"'));
+const fontLinks = (html: string) => html.match(/<link[^>]*as="font"[^>]*>/g) ?? [];
+test("next/font の preload とフォントのファイルは next start と同じ", async () => {
+  const [ours, real] = await Promise.all([requestRoute("/fonts/live"), fetch(`${reference.url}/fonts/live`)]);
+  expect(fontHeader(real)).not.toEqual([]);
+  expect(fontHeader(ours)).toEqual(fontHeader(real));
+  expect(fontLinks(await ours.text())).toEqual(fontLinks(await real.text()));
+  // 静的なページ: next start は build のときの HTML の <link>
+  const [oursStatic, realStatic] = await Promise.all([requestRoute("/fonts"), fetch(`${reference.url}/fonts`)]);
+  const hrefs = fontLinks(await realStatic.text()).map((link) => link.match(/href="([^"]+)"/)![1]!);
+  expect(hrefs).not.toEqual([]);
+  expect(fontHeader(oursStatic).map((entry) => entry.match(/^<([^>]+)>/)![1]!)).toEqual(hrefs);
+  for (const href of hrefs) {
+    const [mine, theirs] = await Promise.all([requestRoute(href), fetch(reference.url + href)]);
+    expect(mine.status).toBe(theirs.status);
+    expect(mine.headers.get("content-type")).toBe(theirs.headers.get("content-type"));
+    expect(Buffer.from(await mine.arrayBuffer()).equals(Buffer.from(await theirs.arrayBuffer()))).toBe(true);
+  }
+  // フォントを使わないページには出ない
+  expect(fontHeader(await requestRoute("/styled"))).toEqual([]);
+});
 
 // JS なしのフォームの送信（progressive enhancement）。Action の id はビルドごとに違うので、それぞれの HTML から取る
 for (const [index, form] of ["addUser（revalidatePath）", "addAndOpen（redirect）"].entries())

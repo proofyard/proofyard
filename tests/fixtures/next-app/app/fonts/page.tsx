@@ -1,4 +1,4 @@
-// ダミーのフォントのファイル（adjustFontFallback: false。中身の解析の失敗は Next.js のローダーが警告するだけ）
+// ダミーのフォントのファイル（adjustFontFallback: false。中身の解析の失敗は Next.js のローダーが警告するだけで、next build も通る）
 import localFont from "next/font/local";
 
 const brand = localFont({ src: "./brand.woff2", adjustFontFallback: false, variable: "--font-brand" });

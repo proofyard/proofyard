@@ -3,7 +3,7 @@ import { beforeEach, expect, test } from "bun:test";
 import { flushAfter, renderRoute, requestRoute } from "proofyard";
 import { db } from "../fixtures/next-app/components/users/db";
 import { createStyleLoader } from "../../src/next/css";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-expect-error 型のない偽物のパッケージ
@@ -165,6 +165,17 @@ test("next/font/local: クラス名とフォント名は Next.js のローダー
   expect(text.className).toMatch(/^__className_[0-9a-f]{6} __variable_[0-9a-f]{6}$/);
   expect(text.dataset.family).toBe("'brand'");
   expect(app.errors).toEqual([]);
+});
+
+test("next/font/local: preload は Link ヘッダーで、フォントのファイルは /_next/static/media で返る", async () => {
+  const response = await requestRoute("/fonts");
+  const [, href] = response.headers.get("link")!.match(/<(\/_next\/static\/media\/[0-9a-f]+\.p\.woff2)>; rel=preload; as="font"/)!;
+  const font = await requestRoute(href!);
+  expect(font.status).toBe(200);
+  expect(font.headers.get("content-type")).toBe("font/woff2");
+  expect(Buffer.from(await font.arrayBuffer()).equals(readFileSync(join(import.meta.dir, "../fixtures/next-app/app/fonts/brand.woff2")))).toBe(true);
+  // フォントを使わないページにはない
+  expect((await requestRoute("/styled")).headers.get("link") ?? "").not.toContain('as="font"');
 });
 
 test("サードパーティの \"use client\"（パッケージの奥のファイル、別のパッケージ）は Client Reference になる", async () => {
