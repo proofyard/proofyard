@@ -1,4 +1,4 @@
-# Proofyard 引き継ぎメモ（2026-10-23）
+# Proofyard 引き継ぎメモ（2026-10-24）
 
 ## プロジェクト
 
@@ -6,7 +6,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - 仕様書: `docs/spec.md`（v1.0）。**必ず最初に全文を読むこと**
 - 現状: Phase 0〜7 が完了（Edge Runtime は Fail Closed）。Phase 8（性能）も完了（ほかのテストの方法とのベンチマークの比較を含む）。ライブラリは `src/`（公開 API は `src/index.ts`、パッケージの `exports` は `proofyard` と `proofyard/preload`）
-- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。165 件）
+- テスト: `bun run test`（`tests/unit`（Phase 7 の確認は `advanced.test.tsx`）、PoC 1〜6、`tests/src-app`（`src/app` と tsconfig の `paths` のアプリ）、`tests/ppr`（`cacheComponents` のアプリ）。167 件）
 
 ## 決めたこと
 
@@ -34,6 +34,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
   - `app.router`（仕様 18.6）: `push` / `replace` / `refresh` / `back` / `forward` / `prefetch`、`pathname` / `searchParams`。Next.js の `useRouter` と同じインスタンス（`window.next.router`）を呼び、新しい状態がコミットされるまで待つ（Next.js がコミットのたびに書く `history` の pushState / replaceState で分かる。`prefetch` は fetch が終わるまで）
   - Link のクリック、`useRouter()`、Layout / Template、loading.tsx、Parallel / Intercepting Routes、Suspense を伴う遷移は Next.js 本体のクライアントルーターがそのまま動く
   - `location` / `history` は DOM アダプターの自前の実装（turbo-dom のものは固定）。ページの再読み込み（`location.assign` など）は Fail Closed
+  - `app.actions.getCalls(nameOrAction)`（仕様 18.5 / 28 章）: このテストで Next.js の handler が呼んだ Server Action（`render()` と同じく名前か Action そのもの（`$$id`）で絞る。引数は decodeReply の後で、`.bind` した引数を含む）。Next.js が Action を読むモジュール（`proofyard-server-action-file:`）から、呼び出しを記録してから元の関数を呼ぶ関数を返す。記録はテストの後に消す（同じテストの `requestRoute` の呼び出しも入る）。`app.cache.getInvalidatedTags()`: `getInvalidatedTags()` と同じ
   - `app.errors`: window に報告されたエラー（Next.js は Hydration Mismatch などを `reportError` で報告する。DOM アダプターの `reportError` はブラウザと同じく window に `error` イベントを送り、取り消されなければ console.error。Bun のものは捕まえられなかった例外になる）。`app.waitFor`: Testing Library の `waitFor`
   - Phase 7 で確認したもの（Next.js 本体の処理のまま動く）: Metadata（`title.template`、`generateMetadata`、`generateViewport`、`icon.svg`、`opengraph-image.tsx`（`next/og`）、`sitemap.ts` / `robots.ts`。metadata のファイルは next-app-loader の出力が `next-metadata-route-loader` / `next-metadata-image-loader` を import するので、それも Next.js のローダーで生成する（export 名は SWC の `getModuleNamedExports`）。生成コードに知らないローダーが残ったら起動時に Fail Closed）、遷移後の `document.title`。Next.js 16 は metadata を本文と別に流すので、遷移のコミットより後に変わる。ルーターの操作は React の作業が落ち着くまで待つので、戻った時点で変わっている）、`after()`（応答のあと。`flushAfter()` で待つ）、`next/dynamic`（`ssr: false`）と `import()`、Hydration Mismatch、`useDeferredValue` / `startTransition` の中の `router.push`。仕様 16.3: `.env` の環境変数（Next.js の `loadConfig` が読む）、`server-only`、`next/image`（`/_next/image` の最適化も）。
   - CSS（`src/next/css.ts`）: CSS Modules は Next.js の css-loader を、サーバー側と同じ設定（`exportOnlyLocals`。クラス名だけ）で全部の層に使う（クラス名は next build と同じ `page_title__NlRtp` の形）。普通の CSS は空のモジュール（スタイルは DOM に入れない。`<link rel="stylesheet">` も出ない）。Sass と、別のファイルからの `composes` は Fail Closed
