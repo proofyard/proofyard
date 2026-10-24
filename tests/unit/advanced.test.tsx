@@ -3,7 +3,7 @@ import { beforeEach, expect, test } from "bun:test";
 import { flushAfter, renderRoute, requestRoute } from "proofyard";
 import { db } from "../fixtures/next-app/components/users/db";
 import { createStyleLoader } from "../../src/next/css";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempDisposableSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-expect-error 型のない偽物のパッケージ
@@ -151,7 +151,8 @@ test("CSS: CSS Modules のクラス名（別のファイルからの composes、
 });
 
 test("CSS: CSS Modules でないファイルからの composes は Fail Closed", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "proofyard-composes-"));
+  using tmp = mkdtempDisposableSync(join(tmpdir(), "proofyard-composes-"));
+  const dir = tmp.path;
   writeFileSync(join(dir, "global.css"), ".base { color: red; }\n");
   writeFileSync(join(dir, "button.module.css"), '.button { composes: base from "./global.css"; }\n');
   const config = await require("next/dist/server/config").default("phase-production-build", dir);

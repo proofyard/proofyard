@@ -12,8 +12,9 @@
 // - Worker にも `--conditions` は個別に渡せない
 // Bun.build はプロセスの `--conditions` を引き継がない（実測）ので、client vendor は条件なしで解決される。
 import { plugin } from "bun";
+import { afterAll } from "bun:test";
 import { dirname, join } from "node:path";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 export const CLIENT = "?client";
@@ -44,6 +45,7 @@ const VENDOR_SOURCE: Record<string, string> = {
 // ponytail: 毎回ビルドする（約0.1〜0.5秒）。内容ハッシュでキャッシュして再利用できる
 const projectRoot = join(import.meta.dir, "../../..");
 const vendorDir = join(tmpdir(), `proofyard-client-vendor-${process.pid}`);
+afterAll(() => rmSync(vendorDir, { recursive: true, force: true })); // preload の afterAll は全部のテストの後に 1 回
 
 // spec -> facade モジュールのパス（名前付き export を持つ ESM）
 const clientPackages = await buildClientVendor();

@@ -1,11 +1,12 @@
 // ファイルの直下の mock.module は、次のファイルに残らない（bun test は既定で全部のファイルを 1 つのプロセスで動かす）
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempDisposableSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 test("前のファイルの mock.module は次のファイルに残らない", async () => {
-  const app = mkdtempSync(join(tmpdir(), "proofyard-mock-files-"));
+  using tmp = mkdtempDisposableSync(join(tmpdir(), "proofyard-mock-files-"));
+  const app = tmp.path;
   mkdirSync(join(app, "app"));
   writeFileSync(join(app, "app/layout.tsx"), `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`);
   writeFileSync(join(app, "app/page.tsx"), `export default function P() { return <p>home</p>; }\n`);

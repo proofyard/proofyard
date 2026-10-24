@@ -1,12 +1,13 @@
 // bun test --watch: アプリのファイル（Server Component が読むもの、Client Component）を変えると、テストが再実行されて変更が反映される。
 // Bun はランタイムのプラグインで読んだファイルと、層のバンドルにだけ入るファイルを監視しないので、プリロードが監視させている
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempDisposableSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 test("bun test --watch は、Server Component が読むファイルと Client Component の変更で再実行する", async () => {
-  const app = mkdtempSync(join(tmpdir(), "proofyard-watch-"));
+  using tmp = mkdtempDisposableSync(join(tmpdir(), "proofyard-watch-"));
+  const app = tmp.path;
   mkdirSync(join(app, "app"));
   writeFileSync(join(app, "app/layout.tsx"), `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`);
   writeFileSync(join(app, "app/message.ts"), `export const message = "server 1";\n`);
