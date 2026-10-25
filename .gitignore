@@ -4,3 +4,4 @@ node_modules/
 .proofyard/
 tests/benchmarks/large/app/
 tests/benchmarks/large/tests/
+test-results/
