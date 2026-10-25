@@ -25,6 +25,8 @@ async function copyAsJs(from: string, to: string, exclude: string[]) {
       const { code } = await transformSync(readFileSync(source, "utf8"), {
         filename: source,
         jsc: { parser: { syntax: "typescript", tsx: name.endsWith(".tsx") }, target: "esnext", transform: { react: { runtime: "preserve" } } },
+        // Next.js の SWC は既定で、ページの getServerSideProps / getStaticProps をクライアント向けに消す（pages/ のフィクスチャ）
+        disableNextSsg: true,
         sourceMaps: false,
       });
       // next.config は ESM（package.json の type がないので .mjs）

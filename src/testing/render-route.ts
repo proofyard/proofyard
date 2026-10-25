@@ -1,6 +1,6 @@
 // renderRoute（仕様 18.3 / 18.4）: URL を Next.js 本体の handler で HTML にし、document に入れる。
 //   ssr:    HTML だけ（JavaScript は動かさない。JavaScript を切ったブラウザと同じ）
-//   client: HTML の script（self.__next_f など）を実行し、Next.js 本体のクライアント（app-next.js）でハイドレーションする
+//   client: HTML の script（self.__next_f など）を実行し、Next.js 本体のクライアント（App Router は app-next.js、Pages Router は next.js）でハイドレーションする
 // クエリは Testing Library（document.body 全体）。
 import { nextHistoryWrite, resetLocation } from "../dom/environment";
 import { ensureDom, harness } from "./render";
@@ -82,7 +82,12 @@ function cleanup() {
   const html = document.documentElement;
   for (const { name } of Array.from(html.attributes)) html.removeAttribute(name);
   html.replaceChildren(document.createElement("head"), document.createElement("body"));
-  for (const name of ["__next_f", "__next_s", "next", "__NEXT_HYDRATED", "__NEXT_HYDRATED_AT", "__NEXT_HYDRATED_CB"]) delete (globalThis as any)[name];
+  for (const name of [
+    "__next_f", "__next_s", "next", "__NEXT_HYDRATED", "__NEXT_HYDRATED_AT", "__NEXT_HYDRATED_CB",
+    // Pages Router のクライアント
+    "__NEXT_DATA__", "__NEXT_P", "__BUILD_MANIFEST", "__BUILD_MANIFEST_CB", "__SSG_MANIFEST", "__SSG_MANIFEST_CB", "__next_set_public_path__", "__proofyardPageChunk", "__proofyardPublicPath",
+  ])
+    delete (globalThis as any)[name];
   delete (document as any).readyState;
   resetLocation("/");
   stopPage?.();
@@ -163,8 +168,9 @@ function runInserted(script: Element) {
   const url = new URL(src, location.href);
   if (url.origin !== ORIGIN) throw new Error(`[proofyard] Unsupported: loading <script src="${src}"> from another origin`);
   void (async () => {
-    // Next.js のチャンクはバンドルで読み込んでいる
-    if (!url.pathname.startsWith(`${harness().assetPrefix}/_next/static/`)) {
+    // Next.js のチャンクはバンドルで読み込んでいる（Pages Router のページのチャンクは、そのページを登録する。preload.ts）
+    if (url.pathname.startsWith(`${harness().assetPrefix}/_next/static/`)) (globalThis as any).__proofyardPageChunk?.(decodeURIComponent(url.pathname));
+    else {
       const response = await harness().requestRoute(url.pathname + url.search);
       if (!response.ok) return script.dispatchEvent(new Event("error"));
       evaluate(script, await response.text());
@@ -311,8 +317,10 @@ const settled = async () => {
   while (inflight > 0 || reactBusy());
 };
 
-// ルーターの操作。Next.js の useRouter のインスタンス（app-router-instance.ts の window.next.router）を使う
+// ルーターの操作。Next.js の useRouter のインスタンス（app-router-instance.ts / Pages Router の client/index.tsx の window.next.router）を使う
 function routeRouter(): RouteRouter {
+  // Pages Router の push / replace は (url, as, options)
+  const pages = () => "__NEXT_DATA__" in globalThis;
   const next = () => {
     const router = (globalThis as any).next?.router;
     if (!router) throw new Error('[proofyard] the Next.js router is not running (use renderRoute with mode: "client")');
@@ -331,13 +339,16 @@ function routeRouter(): RouteRouter {
     get searchParams() {
       return new URLSearchParams(location.search);
     },
-    push: (href, options) => commit(() => next().push(href, options)),
-    replace: (href, options) => commit(() => next().replace(href, options)),
-    refresh: () => commit(() => next().refresh()),
+    push: (href, options) => commit(() => (pages() ? next().push(href, undefined, options) : next().push(href, options))),
+    replace: (href, options) => commit(() => (pages() ? next().replace(href, undefined, options) : next().replace(href, options))),
+    refresh: () => {
+      if (pages()) throw new Error("[proofyard] Unsupported: router.refresh() in the Pages Router (router.reload() reloads the page; call renderRoute again)");
+      return commit(() => next().refresh());
+    },
     back: () => commit(() => next().back()),
     forward: () => commit(() => next().forward()),
     prefetch: async (href) => {
-      next().prefetch(href);
+      await next().prefetch(href);
       await settled();
     },
   };
@@ -380,13 +391,20 @@ export async function renderRoute(url: string, { mode = "client", streaming = fa
   await page.shell;
   if (mode === "client") {
     const hydrated = new Promise<void>((resolve) => ((globalThis as any).__NEXT_HYDRATED_CB = resolve));
-    // Next.js のクライアントは読み込み中の <script>（document.currentScript）から assetPrefix を求める（client/asset-prefix.ts）
-    const main = document.querySelector(`script[src^="${h.assetPrefix}/_next/static/chunks/main-app"]`);
-    if (!main) throw new Error(`[proofyard] the HTML (status ${response.status}) has no Next.js client script (main-app)`);
+    // Next.js のクライアントは読み込み中の <script>（document.currentScript）から assetPrefix を求める（client/asset-prefix.ts）。
+    // Pages Router のページは __NEXT_DATA__ と main.js
+    const pages = !!document.getElementById("__NEXT_DATA__");
+    const name = pages ? "main.js" : "main-app";
+    const main = document.querySelector(`script[src^="${h.assetPrefix}/_next/static/chunks/${name}"]`);
+    if (!main) throw new Error(`[proofyard] the HTML (status ${response.status}) has no Next.js client script (${name})`);
     Object.defineProperty(document, "currentScript", { configurable: true, get: () => main });
     stopPage = trackPage();
     try {
-      (await import(await h.routeBundle())).default();
+      (await import(await (pages ? h.pagesRouteBundle() : h.routeBundle()))).default();
+      // HTML にあるページのチャンク（_app とそのページ）を登録する
+      if (pages)
+        for (const script of Array.from(document.querySelectorAll(`script[src^="${h.assetPrefix}/_next/static/"]`)))
+          (globalThis as any).__proofyardPageChunk(decodeURIComponent(new URL(script.getAttribute("src")!, location.href).pathname));
     } finally {
       Object.defineProperty(document, "currentScript", { configurable: true, get: () => null });
     }
