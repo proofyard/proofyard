@@ -1,6 +1,6 @@
 # Proofyard
 
-Next.js（App Router と React Server Components、Pages Router）のアプリを、ブラウザも Next.js のサーバーも起動せずに `bun test` でテストする。
+Next.js App Router と React Server Components のアプリを、ブラウザも Next.js のサーバーも起動せずに `bun test` でテストする。
 
 - Next.js 本体の実装（ルーター、レンダリング、Flight、Server Actions、キャッシュ）をそのまま使い、React の内部を作り直さない
 - DOM は turbo-dom。クエリと操作は Testing Library / user-event
@@ -52,7 +52,7 @@ test("Route Handler と Proxy", async () => {
 | API | 内容 |
 | --- | --- |
 | `requestRoute(url, { method, headers, cookies, body })` | `next start` と同じリクエスト処理（Proxy、next.config の redirects / rewrites / headers、Route Handler、Server Actions）を通し、`Response` を返す |
-| `renderRoute(url, { mode, streaming, headers, cookies })` | ルートの HTML を DOM に入れる。`mode: "client"`（既定）は Next.js 本体のクライアントでハイドレーションし、`app.router`・Link・Server Actions が動く（Pages Router のページは `next/router` で。`router.refresh()` はない）。同じテストでもう一度呼ぶと、ページを読み込み直したのと同じく前のページを捨てる。`app.actions.getCalls(nameOrAction)` でこのテストの Server Action の呼び出し、`app.cache.getInvalidatedTags()` で無効化したキャッシュタグ |
+| `renderRoute(url, { mode, streaming, headers, cookies })` | ルートの HTML を DOM に入れる。`mode: "client"`（既定）は Next.js 本体のクライアントでハイドレーションし、`app.router`・Link・Server Actions が動く。同じテストでもう一度呼ぶと、ページを読み込み直したのと同じく前のページを捨てる。`app.actions.getCalls(nameOrAction)` でこのテストの Server Action の呼び出し、`app.cache.getInvalidatedTags()` で無効化したキャッシュタグ |
 | `prerenderRoute(url)` | `cacheComponents` のアプリの静的シェル（Partial Prerendering）。`next build` の `.html` と同じ。動的なルートは、ルートのパス（`/products/[id]`）でフォールバックのシェル、具体的な URL で `next start` が最初に返すシェル |
 | `renderRSC(element)` | Server Components を Flight 経由で描画した木を調べる（Client Component は実行しない） |
 | `render(element, { mode, hydrate })` | コンポーネント単位の SSR / Client / ハイドレーション |
@@ -65,7 +65,7 @@ DOM、React のルート、リクエストのコンテキスト、アプリの�
 - `requestRoute` / `renderRoute` は、毎回ページ全体をリクエストのときに描画する（`next start` は静的なルートを build のときの HTML で返す）。テストごとのデータやモックが効くようにするため
 - `cacheComponents` のアプリの Link の静的な先読み（`/_tree` などのセグメントの先読み）は、本物は build のときに作ったデータを返す。Proofyard はテストの中でそのページを最初にリクエストしたときに build と同じもの（静的な部分だけの prerender）を作り、そのテストの間はそこから返す（テストの後に捨てる）。そのため、静的な部分（`"use cache"` など）はテストごとに一度だけ動く
 - アプリのコードは Bun で動く（例: `Response.json()` の `content-type` に `charset=utf-8` が付く）
-- 未対応のもの（Edge Runtime、Pages Router のバンドルに入るモジュールの `mock.module`、`node_modules` の CommonJS の `"use server"` など）と、詳しい仕組みは [docs/handoff.md](docs/handoff.md)
+- 未対応のもの（Pages Router、Edge Runtime、`node_modules` の CommonJS の `"use server"` など）と、詳しい仕組みは [docs/handoff.md](docs/handoff.md)
 
 ## ライセンス
 
