@@ -16,7 +16,7 @@ import { basename, dirname, join, posix, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { actionModule, serverActions, type ActionCall } from "../testing/actions";
-import { ALIASES, BUNDLED_ALIASES, SERVER_DIRECTIVE, USE_CLIENT, buildLayer, type LayerOptions, cjsExportNames, clientExports, clientIds, clientReferenceStub, esmClientIds } from "./layers";
+import { ALIASES, BUNDLED_ALIASES, SERVER_DIRECTIVE, USE_CLIENT, buildLayer, cjsExportNames, clientExports, clientIds, clientReferenceStub, esmClientIds } from "./layers";
 import { FONT_IMPORT, STYLE_FILE, createStyleLoader, unquote } from "./css";
 
 // 対象アプリ（next.config と app/ のあるディレクトリ）。既定は bun test を実行したディレクトリ
@@ -112,10 +112,11 @@ const buildOutput = BUILD_OUTPUT
 // ?__nextppronly のリクエストだけが使う。next build をこの環境変数付きで実行するのと同じ）
 if (config.cacheComponents) process.env.__NEXT_EXPERIMENTAL_STATIC_SHELL_DEBUGGING = "1";
 const pageExtensions: string[] = config.pageExtensions;
-// app/ と pages/（src/ の下も。next build と同じ findPagesDir）
+// app/ か src/app/（next build と同じ findPagesDir）
 const { appDir, pagesDir } = require("next/dist/lib/find-pages-dir").findPagesDir(projectDir) as { appDir?: string; pagesDir?: string };
-if (!appDir && !pagesDir) throw new Error(`[proofyard] no app or pages directory in ${projectDir}`);
-const isSrcDir = relative(projectDir, (appDir ?? pagesDir)!).startsWith("src");
+if (pagesDir) throw new Error(`[proofyard] Unsupported Next.js feature: the Pages Router (${pagesDir})`);
+if (!appDir) throw new Error(`[proofyard] no app directory in ${projectDir}`);
+const isSrcDir = relative(projectDir, appDir).startsWith("src");
 
 // next build と同じルートの発見とエントリ（build/index.ts の discoverRoutes / createPagesMapping / createEntrypoints）
 // - app/ のページ・Route Handler と、組み込みの _not-found / _global-error: next-app-loader
@@ -123,16 +124,16 @@ const isSrcDir = relative(projectDir, (appDir ?? pagesDir)!).startsWith("src");
 const customRoutes = await loadCustomRoutes(config);
 // Proxy などのファイルは app/ の親（src/ を使うなら src/）にある。パスはプロジェクトからの "/src/proxy.ts" の形
 const ROOT_FILE = new RegExp(`^(?:proxy|middleware|instrumentation)\\.(?:${pageExtensions.join("|")})$`);
-const rootDir = dirname((appDir ?? pagesDir)!);
+const rootDir = dirname(appDir);
 const rootPaths = readdirSync(rootDir)
   .filter((file) => ROOT_FILE.test(file))
   .map((file) => "/" + relative(projectDir, join(rootDir, file)));
 const rootFile = (name: string) => rootPaths.some((path) => path.slice(path.lastIndexOf("/") + 1).startsWith(`${name}.`));
 if (rootFile("proxy") && rootFile("middleware"))
   throw new Error('[proofyard] Both "middleware" and "proxy" files are detected. Please use "proxy" only (same as next build)');
-const discovery = await discoverRoutes({ appDir, pagesDir, pageExtensions, isDev: false, baseDir: projectDir, isSrcDir });
+const discovery = await discoverRoutes({ appDir, pageExtensions, isDev: false, baseDir: projectDir, isSrcDir, appDirOnly: true });
 // next build と同じく、ページの一覧（URL の形）と Intercepting Routes の rewrite（beforeFiles）
-const appPaths = [...new Set(Object.keys(discovery.mappedAppPages ?? {}).map((page) => normalizeAppPath(page)))];
+const appPaths = [...new Set(Object.keys(discovery.mappedAppPages).map((page) => normalizeAppPath(page)))];
 customRoutes.rewrites.beforeFiles.push(...generateInterceptionRoutesRewrites(appPaths, config.basePath));
 const entrypoints = await createEntrypoints({
   buildId: "proofyard",
@@ -140,9 +141,8 @@ const entrypoints = await createEntrypoints({
   envFiles: [],
   isDev: false,
   pages: discovery.mappedPages ?? {},
-  pagesDir,
   rootDir: projectDir,
-  rootPaths: await createPagesMapping({ isDev: false, pageExtensions, pagePaths: rootPaths, pagesType: "root", pagesDir, appDir, appDirOnly: discovery.appDirOnly }),
+  rootPaths: await createPagesMapping({ isDev: false, pageExtensions, pagePaths: rootPaths, pagesType: "root", appDir, appDirOnly: true }),
   appDir,
   appPaths: discovery.mappedAppPages,
   appDefaultPaths: discovery.mappedAppDefaults,
@@ -154,14 +154,8 @@ if (Object.keys(entrypoints.edgeServer).length > 0)
   throw new Error(`[proofyard] Unsupported Next.js feature: the edge runtime (${Object.keys(entrypoints.edgeServer).join(", ")})`);
 const middlewareMatchers = entrypoints.middlewareMatchers;
 // webpack と同じく、ローダーのオプションはクエリ文字列（getOptions は querystring.parse）
-// - pages/ のページと API Route: next-route-loader（_app と _document はローダーを通さないファイルそのもの）
-const LOADERS: Record<string, Function> = {
-  "next-app-loader": nextAppLoader,
-  "next-middleware-loader": nextMiddlewareLoader,
-  "next-route-loader": require("next/dist/build/webpack/loaders/next-route-loader").default,
-};
+const LOADERS: Record<string, Function> = { "next-app-loader": nextAppLoader, "next-middleware-loader": nextMiddlewareLoader };
 const routes = new Map<string, { page: string; entry: string }>(); // pathname → エントリ
-const pageRoutes = new Map<string, string>(); // Pages Router のページ（/_app、/api/hello など）→ エントリ
 let middlewareEntry: string | undefined;
 let instrumentationEntry: string | undefined;
 // ローダーはルートごとに独立しているので並行に動かす（ファイルの存在確認などの待ちが多い）。登録は元の順
@@ -199,22 +193,14 @@ async function loadMetadataFiles(code: string, prefix: string) {
 // webpack の compilation（next-app-loader はこれごとにディレクトリの中身をキャッシュする。ないと確認のたびに readdir する）
 const compilation = {};
 const loaded = await Promise.all(
-  Object.entries(entrypoints.server as Record<string, string | string[] | { import: string; layer?: string }>).map(async ([name, value], i) => {
+  Object.entries(entrypoints.server as Record<string, string | { import: string; layer?: string }>).map(async ([name, value], i) => {
     const entry = join(generatedDir, `${i}.js`);
     // instrumentation はローダーを通さず、ファイルそのもの（getInstrumentationEntry。Proxy と同じ react-server の層）
     if (typeof value === "object" && value.layer === "instrument") {
       write(entry, `export * from ${JSON.stringify(value.import.replace(/^private-next-root-dir\//, `${projectDir}/`))};\n`);
       return { kind: "instrumentation", entry } as const;
     }
-    // webpack の resolve.alias（private-next-root-dir → プロジェクト、private-next-pages → pages/）
-    const resolveAliases = (code: string) =>
-      code.replace(/(["'])private-next-root-dir\//g, `$1${projectDir}/`).replace(/(["'])private-next-pages\//g, `$1${pagesDir}/`);
-    const request = Array.isArray(value) ? value[0]! : typeof value === "string" ? value : value.import;
-    if (Array.isArray(value) && !request.includes("!")) {
-      const file = JSON.stringify(request);
-      write(entry, resolveAliases(`export * from ${file};\nexport { default } from ${file};\n`));
-      return { kind: "pages", entry, page: name.slice("pages".length) } as const;
-    }
+    const request = typeof value === "string" ? value : value.import;
     const [, loader, query] = request.match(/^([^?!]+)\?(.*)!$/) ?? [];
     if (!loader || !LOADERS[loader]) throw new Error(`[proofyard] Unsupported Next.js entry: ${name} (${request})`);
     const options = querystring.parse(query!);
@@ -231,33 +217,29 @@ const loaded = await Promise.all(
     }), String(i));
     write(
       entry,
-      resolveAliases(code)
+      code
         .replace(/\s+with\s*\{\s*'turbopack-transition'[^}]*\}/g, "") // Turbopack 用の import 属性
         // export * from entry-base（CJS）の名前は Bun.build の ESM の出力では消える。名前空間でも出し、server/app/*.js で戻す
         .replace(/^export \* from (['"][^'"]*\/entry-base['"]);?$/m, "$&\nexport * as __proofyardEntryBase from $1;")
         // Client Component の読み込み（webpack の __webpack_require__ の代わり）
-        .replace("const __next_app_require__ = __webpack_require__", "const __next_app_require__ = (id) => globalThis.__proofyardNextRequire(id)"),
+        .replace("const __next_app_require__ = __webpack_require__", "const __next_app_require__ = (id) => globalThis.__proofyardNextRequire(id)")
+        // webpack の resolve.alias（private-next-root-dir → プロジェクト）
+        .replace(/(["'])private-next-root-dir\//g, `$1${projectDir}/`),
     );
     if (loader === "next-middleware-loader") return { kind: "middleware", entry } as const;
-    if (loader === "next-route-loader") return { kind: "pages", entry, page: options.page as string } as const;
     return { kind: "page", entry, page: options.page as string } as const;
   }),
 );
 for (const result of loaded) {
   if (result.kind === "instrumentation") instrumentationEntry = result.entry;
   else if (result.kind === "middleware") middlewareEntry = result.entry;
-  else if (result.kind === "pages") pageRoutes.set(result.page, result.entry);
   else routes.set(normalizeAppPath(result.page), { page: result.page, entry: result.entry });
 }
-console.log(`[proofyard] entries: ${routes.size + pageRoutes.size} routes${middlewareEntry ? " + proxy" : ""}${instrumentationEntry ? " + instrumentation" : ""} ${(performance.now() - t).toFixed(0)}ms`);
+console.log(`[proofyard] entries: ${routes.size} routes${middlewareEntry ? " + proxy" : ""}${instrumentationEntry ? " + instrumentation" : ""} ${(performance.now() - t).toFixed(0)}ms`);
 
 t = performance.now();
 // next build と同じ define（nodejs のサーバー。bun test の NODE_ENV=test は production 扱い）
 const hasRewrites = Object.values(customRoutes.rewrites as Record<string, unknown[]>).some((r) => r.length > 0);
-// App Router と Pages Router の両方があるアプリで、Pages Router のクライアントが App Router のページを見分けるもの（build/index.ts と同じ）
-const clientRouterFilters = appDir && pagesDir && config.experimental.clientRouterFilter
-  ? require("next/dist/lib/create-client-router-filter").createClientRouterFilter(appPaths, [], config.experimental.clientRouterFilterAllowedRate)
-  : undefined;
 const nextDefine: Record<string, unknown> = getDefineEnv({
   isTurbopack: false,
   config,
@@ -271,7 +253,6 @@ const nextDefine: Record<string, unknown> = getDefineEnv({
   isNodeServer: true,
   middlewareMatchers,
   rewrites: customRoutes.rewrites,
-  clientRouterFilters,
 });
 // webpack の DefinePlugin と同じく undefined は undefined に（Bun.build は文字列だけ受け付ける）
 const define = Object.fromEntries(Object.entries(nextDefine).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]));
@@ -310,20 +291,13 @@ const SWC_LAYERS = {
   ssr: { isServer: true, bundleLayer: "ssr", development: dev },
   browser: { isServer: false, bundleLayer: "app-pages-browser", development: true },
   route: { isServer: false, bundleLayer: "app-pages-browser", development: dev },
-  // Pages Router（webpack-config.ts の swcDefaultLoader と、API Route の apiRoutesLayerLoaders）
-  pages: { isServer: true, bundleLayer: undefined, development: dev, esm: false },
-  "pages-api": { isServer: true, bundleLayer: "api-node", development: dev, esm: false, serverComponents: false },
-  "pages-browser": { isServer: false, bundleLayer: undefined, development: dev, esm: false },
 } as const;
 const swcOptions = (filename: string, layer: keyof typeof SWC_LAYERS = "rsc") =>
   getLoaderSWCOptions({
     filename,
-    serverComponents: true,
-    esm: true,
     ...SWC_LAYERS[layer],
     appDir,
-    pagesDir,
-    isPageFile: !!pagesDir && filename.startsWith(pagesDir + "/"),
+    isPageFile: false,
     isCacheComponents: config.cacheComponents,
     hasReactRefresh: false,
     configDir: projectDir,
@@ -337,7 +311,9 @@ const swcOptions = (filename: string, layer: keyof typeof SWC_LAYERS = "rsc") =>
     // SWC のプラグインのキャッシュ（jsc.experimental.cacheRoot）。変換結果のキーに入るので、プロセスごとに変えない
     swcCacheDir: join(cacheDir, "swc-plugins"),
     relativeFilePathFromRoot: relative(projectDir, filename),
+    serverComponents: true,
     serverReferenceHashSalt: encryptionKey,
+    esm: true,
     cacheHandlers: config.cacheHandlers,
     useCacheEnabled: config.experimental.useCache,
     taintEnabled: config.experimental.taint,
@@ -443,10 +419,8 @@ const swcTransformSync = (filename: string, source: string): string => withFonts
 // SSR 層・ブラウザ層のアプリのソース（Client Component）の変換（typeof window の置き換えなども Next.js と同じになる）
 const isAppSource = (path: string) => path.startsWith(projectDir + "/") && !path.includes("/node_modules/");
 // node_modules は "use server" / "use cache" のあるものだけ（Client Component から import した Server Action を Server Reference にする）
-const swcTransformFor = (layer: "ssr" | "browser" | "route" | "pages" | "pages-browser") => async (filename: string, source: string) =>
-  isAppSource(filename) || SERVER_DIRECTIVE.test(source)
-    ? withFonts(swcCompile(filename, source, layer === "pages" && filename.startsWith(`${pagesDir}/api/`) ? "pages-api" : layer))
-    : undefined;
+const swcTransformFor = (layer: "ssr" | "browser" | "route") => async (filename: string, source: string) =>
+  isAppSource(filename) || SERVER_DIRECTIVE.test(source) ? withFonts(swcCompile(filename, source, layer)) : undefined;
 const entries = [...routes.values()].map((r) => r.entry).concat(middlewareEntry ?? [], instrumentationEntry ?? []);
 
 // rsc 層: Next.js 本体だけをバンドルし、アプリはネイティブで読み込む（mock.module が効く）。
@@ -590,17 +564,6 @@ while (nodeModuleImports.length) {
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
 const ssrEntries = [...clientIds, SSR_RUNTIME];
 const ssr = await shareLayer("ssr", ssrEntries, (outdir) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style }));
-// Pages Router のサーバー（ページ、API Route、_app、_document）。React はアプリのもの（next build も node_modules の react をそのまま使う）
-const appReact = ((): Record<string, string> => {
-  if (!pageRoutes.size) return {};
-  const reactDom = dirname(Bun.resolveSync("react-dom/package.json", projectDir));
-  const specs = ["react", "react/jsx-runtime", "react/jsx-dev-runtime", "react-dom", "react-dom/server", "react-dom/server.browser", "react-dom/server.edge", "react-dom/client"];
-  return { ...Object.fromEntries(specs.map((spec) => [spec, Bun.resolveSync(spec, projectDir)])), scheduler: Bun.resolveSync("scheduler", reactDom) };
-})();
-const pagesEntries = [...pageRoutes.values()];
-const pagesServer = pagesEntries.length
-  ? await shareLayer("pages", pagesEntries, (outdir) => buildLayer("pages", pagesEntries, { outdir, define, generatedDir, transform: swcTransformFor("pages"), style, aliases: appReact }))
-  : new Map<string, string>();
 
 // ネイティブで読み込むアプリ（と、その依存）の rsc 層の解決と変換
 // - react などは Next.js 内蔵の React に（build.module は CJS の require も含めて置き換える）
@@ -737,8 +700,8 @@ const clientReferenceManifest = {
 write(join(distDir, "BUILD_ID"), "proofyard");
 // ルートの一覧と next.config の redirects / rewrites / headers（next build と同じ生成処理。build/index.ts）
 const { routesManifest } = generateRoutesManifest({
-  appType: appDir ? (pageRoutes.size ? "hybrid" : "app") : "pages",
-  pageKeys: { pages: [...pageRoutes.keys()], app: appPaths },
+  appType: "app",
+  pageKeys: { pages: [], app: appPaths },
   config,
   redirects: customRoutes.redirects,
   headers: customRoutes.headers,
@@ -748,20 +711,6 @@ const { routesManifest } = generateRoutesManifest({
   isAppPPREnabled: !!config.cacheComponents,
   deploymentId: config.deploymentId,
 });
-// Pages Router のデータ（/_next/data/<buildId>/<page>.json）のルートは、getServerSideProps / getStaticProps のあるページ（build/index.ts）。
-// next build はページを読み込んで調べるが、ここでは SWC がブラウザ向けの変換で付ける印（__N_SSP / __N_SSG）で調べる
-const pageFiles = new Map(Object.entries((discovery.mappedPages ?? {}) as Record<string, string>).map(([page, file]) => [page, file.replace(/^private-next-pages\//, `${pagesDir}/`)]));
-const dataPages = new Map<string, "ssp" | "ssg">();
-for (const [page, file] of pageFiles) {
-  if (!file.startsWith("/") || page.startsWith("/api/") || page === "/_app" || page === "/_document") continue;
-  const code = swcCompile(file, readFileSync(file, "utf8"), "pages-browser");
-  if (/\b__N_SSP\b/.test(code)) dataPages.set(page, "ssp");
-  else if (/\b__N_SSG\b/.test(code)) dataPages.set(page, "ssg");
-}
-if (dataPages.size) {
-  const { buildDataRoute } = require("next/dist/server/lib/router-utils/build-data-route");
-  routesManifest.dataRoutes = require("next/dist/shared/lib/router/utils/sortable-routes").sortPages([...dataPages.keys()]).map((page: string) => buildDataRoute(page, "proofyard"));
-}
 write(join(distDir, "routes-manifest.json"), routesManifest);
 // ページのモジュール（next start は server/app/<page>.js を require する）は rsc 層のビルド結果
 write(join(distDir, "server/app-paths-manifest.json"), Object.fromEntries([...routes.values()].map(({ page }) => [page, `app${page}.js`])));
@@ -770,11 +719,7 @@ for (const { page, entry } of routes.values()) {
   const mod = `require(${JSON.stringify(rsc.get(entry))})`;
   write(join(distDir, `server/app${page}.js`), `const mod = ${mod};\nmodule.exports = mod.__proofyardEntryBase ? { ...mod.__proofyardEntryBase, ...mod } : mod;\n`);
 }
-// Pages Router のページ（next start は server/pages/<page>.js を require する）は pages 層のビルド結果
-const { normalizePagePath } = require("next/dist/shared/lib/page-path/normalize-page-path");
-const pagesManifest = Object.fromEntries([...pageRoutes.keys()].map((page) => [page, `pages${normalizePagePath(page)}.js`]));
-for (const [page, entry] of pageRoutes) write(join(distDir, "server", pagesManifest[page]!), `module.exports = require(${JSON.stringify(pagesServer.get(entry))});\n`);
-write(join(distDir, "server/pages-manifest.json"), pagesManifest);
+write(join(distDir, "server/pages-manifest.json"), {});
 mkdirSync(join(distDir, "static"), { recursive: true });
 write(join(distDir, "server/middleware-manifest.json"), { version: 3, middleware: {}, functions: {}, sortedMiddleware: [] });
 // Node.js の Proxy は server/middleware.js（next-server.ts の loadNodeMiddleware）。matcher は functions-config-manifest に
@@ -789,19 +734,13 @@ if (instrumentationEntry) write(join(distDir, "server/instrumentation.js"), `mod
 const prerenderManifest = { version: 4, routes: {} as Record<string, any>, dynamicRoutes: {} as Record<string, any>, notFoundRoutes: [] as string[], preview };
 write(join(distDir, "prerender-manifest.json"), prerenderManifest);
 write(join(distDir, "server/preview-props.json"), preview);
-// Pages Router のページの script（_document が書く）。中身はないファイル名で、renderRoute がページのモジュールに対応させる
-const pageChunk = (page: string) => `static/chunks/pages${normalizePagePath(page)}.js`;
-const buildManifest = {
+write(join(distDir, "build-manifest.json"), {
   polyfillFiles: [],
   rootMainFiles: ["static/chunks/main-app.js"],
   devFiles: [],
-  lowPriorityFiles: pageRoutes.size ? ["static/proofyard/_buildManifest.js", "static/proofyard/_ssgManifest.js"] : [],
-  pages: {
-    "/_app": pageRoutes.size ? ["static/chunks/main.js", pageChunk("/_app")] : [],
-    ...Object.fromEntries([...pageRoutes.keys()].filter((page) => page !== "/_app" && page !== "/_document" && !page.startsWith("/api/")).map((page) => [page, [pageChunk(page)]])),
-  } as Record<string, string[]>,
-};
-write(join(distDir, "build-manifest.json"), buildManifest);
+  lowPriorityFiles: [],
+  pages: { "/_app": [] },
+});
 write(join(distDir, "server/next-font-manifest.json"), nextFontManifest);
 const serverActionsManifest = {
   node: Object.fromEntries(
@@ -849,10 +788,8 @@ export type RequestRouteOptions = {
 const warmed = new Map<string, Promise<void>>();
 async function warmBuildOutput(url: string) {
   const pathname = decodeURIComponent(new URL(url, "http://localhost").pathname);
-  // Pages Router のページ（dataRoute が /_next/data/）は、next start と同じく最初のリクエストで描画してキャッシュする（テストの後に捨てる）
   const prerendered =
-    (pathname in prerenderManifest.routes && !prerenderManifest.routes[pathname]!.dataRoute?.startsWith("/_next/data/")) ||
-    Object.values(prerenderManifest.dynamicRoutes).some(({ routeRegex, dataRoute }) => !dataRoute?.startsWith("/_next/data/") && new RegExp(routeRegex).test(pathname));
+    pathname in prerenderManifest.routes || Object.values(prerenderManifest.dynamicRoutes).some(({ routeRegex }) => new RegExp(routeRegex).test(pathname));
   if (!prerendered) return;
   if (!warmed.has(pathname))
     warmed.set(pathname, (async () => {
@@ -955,7 +892,7 @@ const { ENCODED_TAGS } = require("next/dist/server/stream-utils/encoded-tags");
 // Next.js の StaticPathsResult（build/static-paths/types.ts。next build の isPageStatic と同じ buildAppStaticPaths の結果）。
 // next build が prerender する URL（generateStaticParams）を、next dev と同じ Next.js の loadStaticPaths で求める。
 // loadStaticPaths は globalThis.__incrementalCache を作り直すので、ルーターのものに戻す（next build の prerender のプロセスはルーターを使わない）
-async function staticPathsResult(path: string, isAppPath = true): Promise<any> {
+async function staticPathsResult(path: string): Promise<any> {
   if (!BUILD_OUTPUT) await getRouter();
   const { loadStaticPaths } = require("next/dist/server/dev/static-paths-worker");
   const g = globalThis as any;
@@ -967,8 +904,8 @@ async function staticPathsResult(path: string, isAppPath = true): Promise<any> {
       pathname: path,
       config: { configFileName: config.configFileName, cacheComponents: !!config.cacheComponents, partialPrefetching: !!config.partialPrefetching },
       httpAgentOptions: config.httpAgentOptions,
-      page: isAppPath ? routes.get(path)!.page : path,
-      isAppPath,
+      page: routes.get(path)!.page,
+      isAppPath: true,
       requestHeaders: {},
       cacheHandler: config.cacheHandler,
       cacheHandlers: config.cacheHandlers,
@@ -1057,15 +994,14 @@ function resetCache() {
   tagsManifest.clear();
   const memory = require("next/dist/server/lib/incremental-cache/memory-cache.external").getMemoryCache(config.cacheMaxMemorySize);
   // unstable_cache と fetch のキャッシュ（FETCH。ファイルは distDir/cache/fetch-cache）
-  // Pages Router の getStaticProps の結果（PAGES）も
-  for (const [key, entry] of [...memory]) if (entry?.value?.kind === "FETCH" || entry?.value?.kind === "PAGES") memory.remove(key);
+  for (const [key, entry] of [...memory]) if (entry?.value?.kind === "FETCH") memory.remove(key);
   rmSync(join(distDir, "cache/fetch-cache"), { recursive: true, force: true });
-  // テストの中で作った build の結果（warmBuildOutput と、Pages Router の getStaticProps）を捨てる
+  // テストの中で作った build の結果（warmBuildOutput）を捨てる
   if (warmed.size) {
     warmed.clear();
     for (const [key, entry] of [...memory]) if (entry?.value?.kind === "APP_PAGE") memory.remove(key);
+    rmSync(join(distDir, "server/route-cache"), { recursive: true, force: true });
   }
-  rmSync(join(distDir, "server/route-cache"), { recursive: true, force: true });
 }
 // 無効化されたタグ（revalidateTag / updateTag / revalidatePath が記録したもの）
 const invalidatedTags = (): string[] => [...tagsManifest.keys()];
@@ -1103,14 +1039,11 @@ let testsStarted = 0;
 mock.module = (spec: string, factory: () => object | Promise<object>) => {
   // build.module の別名（react、next/* など）は、その名前のまま。本物はファイルではないので、先に写しておく
   const virtual = spec in ALIASES.rsc || nextFacades.has(spec) || spec === "next";
-  // 呼んだファイル（ネイティブの関数の中から呼ばれたら、その先。expect(() => mock.module(...)).toThrow() など）
-  const caller = new Error().stack!.split("\n").slice(2).map((line) => /\(?(\/[^()]+?):\d+:\d+\)?$/.exec(line)?.[1]).find(Boolean);
+  const caller = /\(?(\/[^()]+?):\d+:\d+\)?$/.exec(new Error().stack!.split("\n")[2] ?? "")?.[1];
   let key = spec;
   try {
     if (!virtual && caller) key = Bun.resolveSync(spec, dirname(caller));
   } catch {} // 存在しないモジュールの差し替え
-  if (!virtual && pagesModules().has(key))
-    throw new Error(`[proofyard] Unsupported: mock.module("${spec}") cannot replace ${key}, which the Pages Router pages bundle (pages/ is bundled with the app's React and does not see mock.module)`);
   const scope = runningTests > 0 ? testMocks : fileMocks;
   if (scope === fileMocks && !fileRestoreRegistered) {
     // ファイルの読み込み中に登録した afterAll は、そのファイル（describe の中ならその describe）の後に動く。
@@ -1131,17 +1064,6 @@ mock.module = (spec: string, factory: () => object | Promise<object>) => {
     return result instanceof Promise ? result.then(record) : record(result);
   });
 };
-// Pages Router の層（バンドル）に入ったモジュール。Bun.build はモジュールごとに、カレントディレクトリからのパスのコメントを出す
-let pagesBundled: Set<string> | undefined;
-function pagesModules() {
-  if (pagesBundled) return pagesBundled;
-  pagesBundled = new Set();
-  if (!pagesServer.size) return pagesBundled;
-  const dir = join(runDir ?? work, "pages");
-  for (const file of readdirSync(dir, { recursive: true, encoding: "utf8" }))
-    if (file.endsWith(".js")) for (const [, path] of readFileSync(join(dir, file), "utf8").matchAll(/^\/\/ (\S.*)$/gm)) pagesBundled.add(resolve(path!));
-  return pagesBundled;
-}
 function restoreMocks(scope: Map<string, Restore>) {
   const list = [...scope.values()];
   scope.clear();
@@ -1226,7 +1148,6 @@ const clientDefine = Object.fromEntries(
       isNodeServer: false,
       middlewareMatchers,
       rewrites: customRoutes.rewrites,
-      clientRouterFilters,
     }) as Record<string, unknown>,
   ).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]),
 );
@@ -1286,81 +1207,39 @@ write(
     `require(${JSON.stringify(join(nextDist, "client/app-next.js"))});`,
   ].join("\n"),
 );
-// バンドル全体を 1 つの関数（createRoute）で包む（上）
-const routeFactory = (entry: string, layer: "browser" | "pages-browser", options: Omit<LayerOptions, "outdir" | "splitting">) =>
-  shareLayer(basename(entry, ".js"), [entry], (outdir) =>
-    buildLayer(layer, [entry], { ...options, outdir, splitting: false }).then((outputs) => {
-      const out = outputs.get(entry)!;
-      const code = readFileSync(out, "utf8").trimEnd();
-      const name = `require_${basename(entry, ".js").replaceAll("-", "_")}`;
-      const tail = `export default ${name}();`;
-      if (!code.endsWith(tail)) throw new Error(`[proofyard] the route bundle does not end with ${tail}`);
-      const factory = out.replace(/\.js$/, ".factory.js");
-      write(factory, `export default function createRoute() {\n${code.slice(0, -tail.length)}\nreturn ${name}();\n}\n`);
-      return new Map([[entry, factory]]);
-    }),
-  ).then((outputs) => outputs.get(entry)!);
-// クライアントの define（両方のルーターで共通）
-const routeDefine = {
-  ...clientDefine,
-  // クライアントの通信（RSC やページのデータの取得、Server Actions）はメモリ内の Next.js の handler へ（src/testing/render-route.ts）
-  fetch: "globalThis.__proofyardRouteFetch",
-  // ハイドレーションの完了を window.__NEXT_HYDRATED_CB で知らせる（Next.js 自身のテストと同じ）
-  "process.env.__NEXT_TEST_MODE": "true",
-};
 // next build の prerender のプロセス（buildOutput）はブラウザ層を使わないので作らない
-const routeBuild = BUILD_OUTPUT || !appDir ? undefined : routeFactory(ROUTE_ENTRY, "browser", {
+const routeBuild = BUILD_OUTPUT ? undefined : shareLayer("route", [ROUTE_ENTRY], (outdir) => buildLayer("browser", [ROUTE_ENTRY], {
+  outdir,
   style,
   transform: swcTransformFor("route"),
   redirect: browserRedirect,
+  splitting: false,
   aliases: {
     "react-dom/test-utils": undefined,
     "next/dist/client/app-call-server": undefined,
     "react-server-dom-webpack/client": "next/dist/compiled/react-server-dom-webpack/client",
     "react-dom/client": join(import.meta.dir, "../client/route-react-dom-client.ts"),
-    "proofyard-react-dom-client": "next/dist/compiled/react-dom/client",
     "private-next-instrumentation-client": INSTRUMENTATION_CLIENT,
   },
   define: {
-    ...routeDefine,
+    ...clientDefine,
     __webpack_require__: "globalThis.__proofyardRouteRequire",
     __webpack_chunk_load__: "globalThis.__proofyardRouteChunkLoad",
     "globalThis.__next_require__": "globalThis.__proofyardRouteRequire",
+    // クライアントの通信（RSC の取得、Server Actions）はメモリ内の Next.js の handler へ（src/testing/render-route.ts）
+    fetch: "globalThis.__proofyardRouteFetch",
+    // ハイドレーションの完了を window.__NEXT_HYDRATED_CB で知らせる（Next.js 自身のテストと同じ）
+    "process.env.__NEXT_TEST_MODE": "true",
   },
-});
-// Pages Router のクライアント（next/dist/client/next.js）とページのモジュール。
-// next build ではページごとのチャンク（static/chunks/pages/<page>.js）が __NEXT_P.push でページを登録する。ここではチャンクの URL ごとに
-// 同じ登録をする関数を用意し、HTML の script と、ルーターが遷移のときに足す script（src/testing/render-route.ts）から呼ぶ
-const PAGES_ROUTE_ENTRY = join(work, "pages-route-entry.js");
-const pagesClientPages = [...pageFiles].filter(([page]) => page !== "/_document" && !page.startsWith("/api/"));
-write(
-  PAGES_ROUTE_ENTRY,
-  [
-    "const pages = {",
-    ...pagesClientPages.map(([page, file]) => `  ${JSON.stringify(page)}: () => require(${JSON.stringify(Bun.resolveSync(file, projectDir))}),`),
-    "};",
-    `const chunks = ${JSON.stringify(Object.fromEntries(pagesClientPages.map(([page]) => [`${config.assetPrefix}/_next/${pageChunk(page)}`, page])))};`,
-    "globalThis.__proofyardPageChunk = (path) => {",
-    "  const page = chunks[path];",
-    "  if (page) (self.__NEXT_P = self.__NEXT_P || []).push([page, pages[page]]);",
-    "};",
-    // _buildManifest.js と _ssgManifest.js（build-manifest-plugin.ts と build/index.ts の writeClientSsgManifest）
-    `self.__BUILD_MANIFEST = ${require("next/dist/build/webpack/plugins/build-manifest-plugin").generateClientManifest(buildManifest, customRoutes.rewrites, clientRouterFilters)};`,
-    `self.__SSG_MANIFEST = new Set(${JSON.stringify([...dataPages].filter(([, kind]) => kind === "ssg").map(([page]) => page))});`,
-    `require(${JSON.stringify(join(nextDist, "client/next.js"))});`,
-  ].join("\n"),
-);
-const pagesRouteBuild = BUILD_OUTPUT || !pageRoutes.size ? undefined : routeFactory(PAGES_ROUTE_ENTRY, "pages-browser", {
-  style,
-  transform: swcTransformFor("pages-browser"),
-  redirect: browserRedirect,
-  aliases: { ...appReact, "react-dom/client": join(import.meta.dir, "../client/route-react-dom-client.ts"), "proofyard-react-dom-client": appReact["react-dom/client"], "private-next-instrumentation-client": INSTRUMENTATION_CLIENT },
-  define: {
-    ...routeDefine,
-    // webpack のランタイムの公開パス（client/webpack.ts の __next_set_public_path__ が書く）
-    __webpack_public_path__: "globalThis.__proofyardPublicPath",
-  },
-});
+}).then((outputs) => {
+  const out = outputs.get(ROUTE_ENTRY)!;
+  const code = readFileSync(out, "utf8").trimEnd();
+  const tail = "export default require_route_entry();";
+  if (!code.endsWith(tail)) throw new Error(`[proofyard] the route bundle does not end with ${tail}`);
+  const factory = out.replace(/\.js$/, ".factory.js");
+  write(factory, `export default function createRoute() {\n${code.slice(0, -tail.length)}\nreturn require_route_entry();\n}\n`);
+  return new Map([[ROUTE_ENTRY, factory]]);
+})).then((outputs) => outputs.get(ROUTE_ENTRY)!);
 let browser: Promise<typeof import("../client/runtime")> | undefined;
 const loadBrowser = () =>
   (browser ??= (async () => {
@@ -1398,7 +1277,7 @@ if (BUILD_OUTPUT) {
   process.exit(0);
 }
 // テストが始まる前にビルドを終える（最初の render() のテストがビルドの時間でタイムアウトしないように）
-await Promise.all([buildBrowser(), routeBuild, pagesRouteBuild]);
+await Promise.all([buildBrowser(), routeBuild]);
 console.log(`[proofyard] browser layer: ${(performance.now() - t).toFixed(0)}ms`);
 
 // next build と同じく、Next.js の exportApp（静的なページの prerender。build/index.ts の static-generation）を
@@ -1452,27 +1331,8 @@ async function collectBuildOutput(): Promise<BuildOutput> {
     const hints = exported?.byPath.get(path)?.metadata?.prefetchHints;
     if (hints && !(page in prefetchHints)) prefetchHints[page] = hints;
   }
-  const manifest: Omit<BuildOutput, "prefetchHints" | "emptyStaticShells"> = config.cacheComponents ? prerenderManifestRoutes(exported, pages.map(([path], i) => [path, results[i]])) : { routes: {}, dynamicRoutes: {}, notFoundRoutes: [] };
+  const manifest = config.cacheComponents ? prerenderManifestRoutes(exported, pages.map(([path], i) => [path, results[i]])) : { routes: {}, dynamicRoutes: {}, notFoundRoutes: [] };
   const emptyStaticShells = [...routeOf.keys()].filter((path) => exported?.byPath.get(path)?.hasEmptyStaticShell);
-  // Pages Router の getStaticPaths のあるページ（build/index.ts と同じ prerender-manifest の項目のうち next start が読むもの）。
-  // next start は fallback と、getStaticPaths が返した URL かどうかで、知らない URL を 404 にするか、リクエストのときに描画するかを決める。
-  // ページは prerender しない（requestRoute は毎回描画する）ので、revalidate は false
-  const { fallbackModeToFallbackField } = require("next/dist/lib/fallback");
-  const { normalizeRouteRegex } = require("next/dist/lib/load-custom-routes");
-  const { getNamedRouteRegex } = require("next/dist/shared/lib/router/utils/route-regex");
-  const dataRoute = (path: string) => `/_next/data/proofyard${normalizePagePath(path)}.json`;
-  for (const [page, kind] of dataPages) {
-    if (kind !== "ssg" || !isDynamicRoute(page)) continue;
-    const paths = await staticPathsResult(page, false);
-    for (const { pathname } of paths.prerenderedRoutes ?? [])
-      manifest.routes[pathname] = { initialRevalidateSeconds: false, srcRoute: page, dataRoute: dataRoute(pathname) };
-    manifest.dynamicRoutes[page] = {
-      routeRegex: normalizeRouteRegex(getNamedRouteRegex(page, { prefixRouteKeys: false }).re.source),
-      dataRoute: dataRoute(page),
-      fallback: fallbackModeToFallbackField(paths.fallbackMode, page),
-      dataRouteRegex: normalizeRouteRegex(getNamedRouteRegex(dataRoute(page).replace(/\.json$/, ""), { prefixRouteKeys: false, includeSuffix: true, excludeOptionalTrailingSlash: true }).re.source).replace(/\$$/, "\\.json$"),
-    };
-  }
   return { prefetchHints, emptyStaticShells, ...manifest };
 }
 type BuildOutput = {
@@ -1585,7 +1445,7 @@ write(join(distDir, `server/${PREFETCH_HINTS}`), prefetchHints);
 Object.assign(prerenderManifest, prerendered);
 write(join(distDir, "prerender-manifest.json"), prerenderManifest);
 console.log(`[proofyard] next build (prerender): ${Object.keys(prefetchHints).length} pages ${(performance.now() - t).toFixed(0)}ms`);
-(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, actionCalls: () => [...routeActionCalls], flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild!, pagesRouteBundle: () => pagesRouteBuild!, prefetchHints, prerenderManifest, assetPrefix: config.assetPrefix } satisfies NextHarness;
+(globalThis as any)[Symbol.for("proofyard.next")] = { requestRoute, prerenderRoute, invalidatedTags, actionCalls: () => [...routeActionCalls], flushAfter, loadBrowser, ssrRuntime, ssrModuleMap, routeBundle: () => routeBuild!, prefetchHints, prerenderManifest, assetPrefix: config.assetPrefix } satisfies NextHarness;
 export type NextHarness = {
   requestRoute: typeof requestRoute;
   prerenderRoute: typeof prerenderRoute;
@@ -1596,9 +1456,8 @@ export type NextHarness = {
   loadBrowser: typeof loadBrowser;
   ssrRuntime: typeof ssrRuntime;
   ssrModuleMap: typeof ssrModuleMap;
-  // renderRoute の Client Mode のバンドル（ファイルのパス。App Router と Pages Router）
+  // renderRoute の Client Mode のバンドル（ファイルのパス）
   routeBundle: () => Promise<string>;
-  pagesRouteBundle: () => Promise<string>;
   // next build の prefetch-hints.json と同じもの（tests/compatibility で比べる）
   prefetchHints: Record<string, unknown>;
   // next build の prerender-manifest.json と同じもの（next start が読む項目だけ）

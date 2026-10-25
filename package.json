@@ -1,7 +1,7 @@
 {
   "name": "proofyard",
   "version": "0.1.0",
-  "description": "Test Next.js applications (App Router, React Server Components, Pages Router) with Bun, without launching a browser or Next.js server.",
+  "description": "Test React Server Components and Next.js App Router applications with Bun, without launching a browser or Next.js server.",
   "license": "MIT",
   "type": "module",
   "repository": "github:proofyard/proofyard",
@@ -18,7 +18,7 @@
     "bun": ">=1.4.0 <1.5.0"
   },
   "scripts": {
-    "test": "bun run test:unit && bun run test:poc1 && bun run test:poc2 && bun run test:poc3 && bun run test:poc4 && bun run test:poc5 && bun run test:poc6 && bun run test:src-app && bun run test:ppr && bun run test:config-app && bun run test:pages-app",
+    "test": "bun run test:unit && bun run test:poc1 && bun run test:poc2 && bun run test:poc3 && bun run test:poc4 && bun run test:poc5 && bun run test:poc6 && bun run test:src-app && bun run test:ppr && bun run test:config-app",
     "test:unit": "PROOFYARD_NEXT_APP=tests/fixtures/next-app bun test --timeout 20000 --preload ./src/next/preload.ts tests/unit",
     "test:poc1": "bun test --conditions react-server tests/poc/poc1-rsc.test.tsx",
     "test:poc2": "bun test --conditions react-server --preload ./tests/poc/poc2/plugin.ts tests/poc/poc2",
@@ -33,14 +33,12 @@
     "test:src-app": "PROOFYARD_NEXT_APP=tests/src-app/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/src-app",
     "test:ppr": "PROOFYARD_NEXT_APP=tests/ppr/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/ppr",
     "test:config-app": "PROOFYARD_NEXT_APP=tests/config-app/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/config-app",
-    "test:pages-app": "PROOFYARD_NEXT_APP=tests/pages-app/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/pages-app",
-    "compat": "bun run compat:next-app && bun run compat:src-app && bun run compat:ppr && bun run compat:errors && bun run compat:config-app && bun run compat:pages-app",
+    "compat": "bun run compat:next-app && bun run compat:src-app && bun run compat:ppr && bun run compat:errors && bun run compat:config-app",
     "compat:next-app": "PROOFYARD_NEXT_APP=tests/fixtures/next-app bun test --timeout 20000 --preload ./src/next/preload.ts tests/compatibility/next-app.test.ts",
     "compat:src-app": "PROOFYARD_NEXT_APP=tests/src-app/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/compatibility/src-app.test.ts",
     "compat:ppr": "PROOFYARD_NEXT_APP=tests/ppr/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/compatibility/ppr.test.ts",
     "compat:errors": "PROOFYARD_NEXT_APP=tests/poc/poc5/fixture-app bun test --timeout 20000 --preload ./src/next/preload.ts tests/compatibility/errors.test.ts",
-    "compat:config-app": "PROOFYARD_NEXT_APP=tests/config-app/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/compatibility/config-app.test.ts",
-    "compat:pages-app": "PROOFYARD_NEXT_APP=tests/pages-app/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/compatibility/pages-app.test.ts"
+    "compat:config-app": "PROOFYARD_NEXT_APP=tests/config-app/fixture bun test --timeout 20000 --preload ./src/next/preload.ts tests/compatibility/config-app.test.ts"
   },
   "peerDependencies": {
     "next": "16.4.2"

@@ -91,38 +91,7 @@ export function installDom(html = "<!doctype html><html><head></head><body></bod
   installLocation();
   resolveUrlAttributes();
   installReportError();
-  installNavigationTiming();
-  installIsEqualNode();
   return installed;
-}
-
-// turbo-dom 0.5.6 には Node.isEqualNode がない（Next.js の Pages Router の next/head が、<head> の要素を比べて入れ替えるのに使う）
-// https://dom.spec.whatwg.org/#concept-node-equals
-function installIsEqualNode() {
-  if (typeof Node.prototype.isEqualNode === "function") return;
-  const equal = (a: Node, b: Node): boolean => {
-    if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName) return false;
-    if (a.nodeType === 1) {
-      const [x, y] = [a as Element, b as Element];
-      if (x.namespaceURI !== y.namespaceURI || x.attributes.length !== y.attributes.length) return false;
-      for (const { name, value } of Array.from(x.attributes)) if (y.getAttribute(name) !== value) return false;
-    } else if (a.nodeType === 3 || a.nodeType === 8) {
-      if ((a as CharacterData).data !== (b as CharacterData).data) return false;
-    }
-    if (a.childNodes.length !== b.childNodes.length) return false;
-    return Array.from(a.childNodes).every((child, i) => equal(child, b.childNodes[i]!));
-  };
-  Node.prototype.isEqualNode = function (this: Node, other: Node | null) {
-    return other !== null && equal(this, other);
-  };
-}
-
-// ブラウザの performance.measure は、始まりに PerformanceTiming の名前（navigationStart）も使える（Next.js の Pages Router が使う）。
-// ページの読み込みの始まりは、Bun の時間の原点にする
-function installNavigationTiming() {
-  const measure = performance.measure.bind(performance);
-  performance.measure = ((name: string, start?: string | PerformanceMeasureOptions, end?: string) =>
-    start === "navigationStart" ? measure(name, { start: 0, end }) : measure(name, start, end)) as Performance["measure"];
 }
 
 // ブラウザの reportError: window に error イベントを送り、取り消されなければコンソールに出す
