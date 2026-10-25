@@ -1,6 +1,6 @@
 # Proofyard
 
-Next.js App Router と React Server Components のアプリを、ブラウザも Next.js のサーバーも起動せずに `bun test` でテストする（まだ公開していない）。
+Next.js App Router と React Server Components のアプリを、ブラウザも Next.js のサーバーも起動せずに `bun test` でテストする。
 
 - Next.js 本体の実装（ルーター、レンダリング、Flight、Server Actions、キャッシュ）をそのまま使い、React の内部を作り直さない
 - DOM は turbo-dom。クエリと操作は Testing Library / user-event
@@ -9,6 +9,12 @@ Next.js App Router と React Server Components のアプリを、ブラウザも
 対応: Bun 1.4、Next.js 16.4.2（webpack と同じ層の分け方）、React は Next.js 内蔵のもの。ほかの版では起動時にエラーにする（Next.js の内部のモジュールを直接使うため）。
 
 ## 使い方
+
+```sh
+bun add -d proofyard
+```
+
+アプリには `next`（16.4.2）・`react`・`react-dom` を入れておく。Testing Library と turbo-dom は proofyard の依存として入る。
 
 `bunfig.toml`:
 
@@ -60,6 +66,10 @@ DOM、React のルート、リクエストのコンテキスト、アプリの�
 - `cacheComponents` のアプリの Link の静的な先読み（`/_tree` などのセグメントの先読み）は、本物は build のときに作ったデータを返す。Proofyard はテストの中でそのページを最初にリクエストしたときに build と同じもの（静的な部分だけの prerender）を作り、そのテストの間はそこから返す（テストの後に捨てる）。そのため、静的な部分（`"use cache"` など）はテストごとに一度だけ動く
 - アプリのコードは Bun で動く（例: `Response.json()` の `content-type` に `charset=utf-8` が付く）
 - 未対応のもの（Pages Router、Edge Runtime、`node_modules` の CommonJS の `"use server"` など）と、詳しい仕組みは [docs/handoff.md](docs/handoff.md)
+
+## ライセンス
+
+MIT
 
 ## 開発
 

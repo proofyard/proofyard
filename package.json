@@ -1,13 +1,21 @@
 {
   "name": "proofyard",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Test React Server Components and Next.js App Router applications with Bun, without launching a browser or Next.js server.",
   "license": "MIT",
   "type": "module",
   "repository": "github:proofyard/proofyard",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "exports": {
     ".": "./src/index.ts",
     "./preload": "./src/next/preload.ts"
+  },
+  "engines": {
+    "bun": ">=1.4.0 <1.5.0"
   },
   "scripts": {
     "test": "bun run test:unit && bun run test:poc1 && bun run test:poc2 && bun run test:poc3 && bun run test:poc4 && bun run test:poc5 && bun run test:poc6 && bun run test:src-app && bun run test:ppr && bun run test:config-app",
@@ -35,33 +43,33 @@
   "peerDependencies": {
     "next": "16.4.2"
   },
+  "dependencies": {
+    "@miaskiewicz/turbo-dom": "0.5.6",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.8"
+  },
   "devDependencies": {
     "@happy-dom/global-registrator": "20",
-    "@miaskiewicz/turbo-dom": "0.5.6",
     "@next/routing": "16.4.2",
     "@playwright/test": "1.64.1",
     "@reduxjs/toolkit": "^2.13.0",
     "@tanstack/react-query": "^5.104.5",
-    "@testing-library/dom": "10",
-    "@testing-library/react": "16",
-    "@testing-library/user-event": "14",
     "@types/bun": "^1.4.3",
     "@types/node": "24",
     "@types/react": "19",
     "@vitest/browser-playwright": "5",
     "jotai": "^3.0.1",
+    "next": "16.4.2",
     "playwright": "1.64.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "react-redux": "^9.3.0",
+    "react-server-dom-turbopack": "19.3.1",
     "sass": "1.106.1",
     "vite": "8",
     "vitest": "5",
     "vitest-plugin-rsc": "0.4.0-alpha.0",
     "zustand": "^5.0.15"
-  },
-  "dependencies": {
-    "next": "16.4.2",
-    "react": "19.3.1",
-    "react-dom": "19.3.1",
-    "react-server-dom-turbopack": "19.3.1"
   }
 }
