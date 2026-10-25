@@ -13,6 +13,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 - **名前は Proofyard**。「bun」「flight」「next」は名前に使わない（オーナーの希望、Next.js は商標）
 - npm と GitHub の名前は**オーナーが自分のアカウントで確保する**。AI からは公開・Organization 作成をしない（確保済みかはオーナーに確認する）
 - バージョンは厳密に固定: Bun 1.4.2、React 19.3.1、react-server-dom-turbopack 19.3.1、Next.js 16.4.2
+- パッケージ（`bun pm pack` で 0.1.0）: 公開するのは `src`・`README.md`・`LICENSE`（`files`）。`src` が実行時に読む Testing Library と turbo-dom は `dependencies`（版は固定）、`next` は `peerDependencies`（React は Next.js 内蔵のものを使うので、アプリの `react` / `react-dom` は Proofyard からは読まない）。`tests/unit/consumer.test.ts` は同じ tarball を展開し、`dependencies` とアプリの `next` / `react` / `react-dom` だけを用意して動かす（依存の書き漏れで失敗する）
 
 ## PoC の結果
 

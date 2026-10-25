@@ -1,6 +1,7 @@
-// README の使い方: 別のアプリから proofyard を依存として使う（bunfig.toml の preload、アプリは next / react / react-dom だけ入れる）
+// README の使い方: 別のアプリから proofyard を依存として使う（bunfig.toml の preload、アプリは next / react / react-dom だけ入れる）。
+// proofyard は npm に公開するのと同じ tarball（bun pm pack。package.json の files）から入れ、依存は package.json の dependencies だけ用意する
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -10,9 +11,15 @@ test("依存として入れたアプリで動く", async () => {
   const app = mkdtempSync(join(tmpdir(), "proofyard-consumer-"));
   try {
     mkdirSync(join(app, "app"));
-    mkdirSync(join(app, "node_modules"));
-    symlinkSync(root, join(app, "node_modules/proofyard"));
-    for (const name of ["next", "react", "react-dom"]) symlinkSync(join(root, "node_modules", name), join(app, "node_modules", name));
+    const pkg = join(app, "node_modules/proofyard");
+    mkdirSync(pkg, { recursive: true });
+    expect(Bun.spawnSync(["bun", "pm", "pack", "--quiet", "--destination", app], { cwd: root }).exitCode).toBe(0);
+    expect(Bun.spawnSync(["tar", "-xzf", join(app, `proofyard-${require(join(root, "package.json")).version}.tgz`), "-C", pkg, "--strip-components=1"]).exitCode).toBe(0);
+    const { dependencies } = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8"));
+    for (const name of ["next", "react", "react-dom", ...Object.keys(dependencies)]) {
+      mkdirSync(join(app, "node_modules", name, ".."), { recursive: true });
+      symlinkSync(join(root, "node_modules", name), join(app, "node_modules", name));
+    }
     writeFileSync(join(app, "bunfig.toml"), `[test]\npreload = ["proofyard/preload"]\n`);
     writeFileSync(join(app, "app/layout.tsx"), `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`);
     writeFileSync(join(app, "app/page.tsx"), `import { Counter } from "./counter";\nexport default function P() { return <main><h1>Consumer</h1><Counter /></main>; }\n`);
