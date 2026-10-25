@@ -2,8 +2,6 @@
 //   rsc: react-server 層（nodejs）。"use client" は Client Reference に置き換える
 //   ssr: SSR 層（nodejs）。Client Component の実装を SSR 用の React で読む
 //   browser: ブラウザ層。Client Component の実装をブラウザ用の React（next/dist/compiled/react）で読む（Client Mode）
-//   pages / pages-browser: Pages Router のサーバー（nodejs）とブラウザ。React はアプリの react（Next.js 内蔵のものではない）。
-//     サーバーはネイティブで読むと react が rsc 層のものになる（preload.ts の build.module）ので、Next.js の pages の runtime ごとバンドルする
 // 共通:
 // - react 系は Next.js の runtime バンドル内の React（vendored/rsc, vendored/ssr）へ（create-compiler-aliases.ts）
 // - *.shared-runtime は app-page 用の vendored/contexts へ（webpack-config.ts の NormalModuleReplacementPlugin。サーバーの層だけ）
@@ -41,8 +39,6 @@ export const ALIASES = {
     "@opentelemetry/api": "next/dist/compiled/@opentelemetry/api",
   },
   browser: {},
-  pages: { "@opentelemetry/api": "next/dist/compiled/@opentelemetry/api" },
-  "pages-browser": {},
 } as const;
 // 層のバンドルに含めるエイリアス（create-compiler-aliases.ts）
 // - next/navigation などは層ごとに別実装（createAppRouterApiAliases）
@@ -97,9 +93,6 @@ export const BUNDLED_ALIASES = {
     "private-next-rsc-action-client-wrapper": "next/dist/build/webpack/loaders/next-flight-loader/action-client-wrapper",
     "next/dist/client/app-call-server": join(import.meta.dir, "../client/app-call-server.ts"),
   },
-  // React はアプリのもの（preload.ts が aliases で渡す）
-  pages: {},
-  "pages-browser": {},
 } as const;
 
 const root = process.cwd();
@@ -169,7 +162,7 @@ export type LayerOptions = {
   splitting?: boolean;
 };
 
-export type Layer = "rsc" | "ssr" | "browser" | "pages" | "pages-browser";
+export type Layer = "rsc" | "ssr" | "browser";
 
 export async function buildLayer(layer: Layer, entries: string[], { outdir, define, generatedDir, transform, nativeDir, redirect, aliases: override, style, splitting = true }: LayerOptions) {
   const aliases: Record<string, string> = ALIASES[layer];
@@ -177,13 +170,12 @@ export async function buildLayer(layer: Layer, entries: string[], { outdir, defi
     Object.entries({ ...BUNDLED_ALIASES[layer], ...override }).filter((e): e is [string, string] => e[1] !== undefined),
   );
   const entryPaths = entries.map((e) => (e.startsWith("/") ? e : abs(e)));
-  const browser = layer === "browser" || layer === "pages-browser";
   const result = await Bun.build({
     entrypoints: entryPaths,
     outdir,
-    target: browser ? "browser" : "bun",
+    target: layer === "browser" ? "browser" : "bun",
     format: "esm",
-    conditions: layer === "rsc" ? ["react-server"] : browser ? ["browser"] : [],
+    conditions: layer === "rsc" ? ["react-server"] : layer === "browser" ? ["browser"] : [],
     splitting,
     naming: "[dir]/[name]-[hash].[ext]",
     root: "/",
@@ -196,9 +188,7 @@ export async function buildLayer(layer: Layer, entries: string[], { outdir, defi
         setup(build) {
           build.onResolve({ filter: /.*/ }, (args) => {
             if (args.path in aliases) return { path: abs(aliases[args.path]!), external: true };
-            const shared = !browser && args.path.match(/\.\/(?:.+\/)?([^/]+)\.shared-runtime$/);
-            // Pages Router のサーバーは pages の runtime の contexts（バンドルの中の runtime）
-            if (shared && layer === "pages") return { path: abs(`next/dist/server/route-modules/pages/vendored/contexts/${shared[1]}`) };
+            const shared = layer !== "browser" && args.path.match(/\.\/(?:.+\/)?([^/]+)\.shared-runtime$/);
             if (shared) return { path: abs(`${VENDORED}/contexts/${shared[1]}`), external: true };
             if (args.path in bundledAliases) return { path: abs(bundledAliases[args.path]!) };
             if (args.path.startsWith("@swc/helpers/_/")) return { path: Bun.resolveSync(`.${args.path.slice(12)}`, swcHelpers()) };
@@ -211,8 +201,7 @@ export async function buildLayer(layer: Layer, entries: string[], { outdir, defi
               // 解決できない任意依存（開発専用など）は外部にし、実行時に到達したときだけ失敗させる
               return { path: args.path, external: true };
             }
-            if (/\.external(\.js)?$/.test(resolved)) return { path: resolved, external: true };
-            if (/module\.compiled(\.js)?$/.test(resolved) && !(layer === "pages" && resolved.includes("/route-modules/pages/"))) return { path: resolved, external: true };
+            if (/\.external(\.js)?$/.test(resolved) || /module\.compiled(\.js)?$/.test(resolved)) return { path: resolved, external: true };
             if (nativeDir !== undefined && resolved.startsWith(nativeDir + "/") && !resolved.includes("/node_modules/"))
               return { path: resolved, external: true };
             const redirected = redirect?.(resolved);

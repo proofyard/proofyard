@@ -18,8 +18,7 @@ Scheduler.unstable_scheduleCallback = (...args: unknown[]) => {
   for (const task of tasks) if (task.callback === null) tasks.delete(task);
   return tasks.size > 0;
 };
-// 本物の react-dom/client（App Router は Next.js 内蔵のもの、Pages Router はアプリのもの。src/next/preload.ts がバンドルごとに決める）
-const ReactDOMClient: typeof import("next/dist/compiled/react-dom/client") = require("proofyard-react-dom-client");
+const ReactDOMClient: typeof import("next/dist/compiled/react-dom/client") = require("next/dist/compiled/react-dom/client");
 
 type Root = { unmount(): void };
 const roots: Set<Root> = ((globalThis as any)[Symbol.for("proofyard.routeRoots")] ??= new Set());
