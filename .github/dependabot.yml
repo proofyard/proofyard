@@ -1,0 +1,35 @@
+version: 2
+
+# Weekly, one pull request per ecosystem. A release must be a week old first,
+# so a compromised one is likelier to be pulled before it reaches us.
+updates:
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    # Proofyard uses Next.js's internals and supports one version only
+    # (src/next/preload.ts checks it): moving these is a code change, not a bump.
+    ignore:
+      - dependency-name: next
+      - dependency-name: '@next/*'
+      - dependency-name: react
+      - dependency-name: react-dom
+      - dependency-name: react-server-dom-turbopack
+    groups:
+      bun:
+        patterns: ['*']
+    labels: [dependencies]
+
+  # Also the SHAs the workflows pin.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ['*']
+    labels: [dependencies]
