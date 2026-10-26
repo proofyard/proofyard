@@ -50,7 +50,7 @@
     "@testing-library/user-event": "14.6.8"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "20",
+    "@happy-dom/global-registrator": "21.0.4",
     "@next/routing": "16.4.2",
     "@playwright/test": "1.64.1",
     "@reduxjs/toolkit": "^2.13.0",
