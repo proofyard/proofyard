@@ -10,7 +10,7 @@ Next.js App Router と React Server Components のアプリを、ブラウザも
 - DOM は turbo-dom。クエリと操作は Testing Library / user-event
 - 対応していない機能は、普通の JavaScript として動かして通すのではなく、エラーにする（Fail Closed）
 
-対応: Bun 1.4、Next.js 16.4.2（webpack と同じ層の分け方）、React は Next.js 内蔵のもの。ほかの版では起動時にエラーにする（Next.js の内部のモジュールを直接使うため）。
+対応: Bun 1.4、Next.js 16.4.x（16.4.2 以降のパッチ版。webpack と同じ層の分け方）、React は Next.js 内蔵のもの。ほかの版では起動時にエラーにする（Next.js の内部のモジュールを直接使うため。16.5 などの新しいマイナー版には proofyard の新しい版で対応する）。
 
 ## 使い方
 
@@ -18,7 +18,7 @@ Next.js App Router と React Server Components のアプリを、ブラウザも
 bun add -d proofyard
 ```
 
-アプリには `next`（16.4.2）・`react`・`react-dom` を入れておく。Testing Library と turbo-dom は proofyard の依存として入る。
+アプリには `next`（16.4.2 以降の 16.4.x）・`react`・`react-dom` を入れておく。Testing Library と turbo-dom は proofyard の依存として入る。
 
 `bunfig.toml`:
 

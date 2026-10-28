@@ -12,7 +12,7 @@ Next.js App Router の React Server Components を、ブラウザも Next.js サ
 
 - **名前は Proofyard**。「bun」「flight」「next」は名前に使わない（オーナーの希望、Next.js は商標）
 - npm と GitHub の名前は**オーナーが自分のアカウントで確保する**。AI からは公開・Organization 作成をしない（確保済みかはオーナーに確認する）
-- バージョンは厳密に固定: Bun 1.4.2、React 19.3.1、react-server-dom-turbopack 19.3.1、Next.js 16.4.2
+- バージョンは厳密に固定（devDependencies と lockfile）: Bun 1.4.2、React 19.3.1、react-server-dom-turbopack 19.3.1、Next.js 16.4.x の最新のパッチ版。利用者に求める Next.js は 16.4.2 以降の 16.4.x
 - パッケージ（`bun pm pack` で 0.1.0）: 公開するのは `src`・`README.md`・`LICENSE`（`files`）。`src` が実行時に読む Testing Library と turbo-dom は `dependencies`（版は固定）、`next` は `peerDependencies`（React は Next.js 内蔵のものを使うので、アプリの `react` / `react-dom` は Proofyard からは読まない）。`tests/unit/consumer.test.ts` は同じ tarball を展開し、`dependencies` とアプリの `next` / `react` / `react-dom` だけを用意して動かす（依存の書き漏れで失敗する）
 
 ## PoC の結果
@@ -122,7 +122,7 @@ Next.js の動作を推測で再現せず、Next.js 本体の部品をそのま�
 
 ## 未対応（Fail Closed にしているもの・まだのもの）
 
-- 確かめていない版（仕様 24.2）: プリロードの最初で Next.js（16.4.2 だけ）と Bun（1.4.x）の版を確かめ、違えばエラー。React は Next.js 内蔵のものを使うので Next.js の版で決まる。`package.json` の `peerDependencies` も `next: 16.4.2`
+- 確かめていない版（仕様 24.2）: プリロードの最初で Next.js と Bun（1.4.x）の版を確かめ、範囲の外ならエラー。Next.js の範囲は `package.json` の `peerDependencies`（`>=16.4.2 <16.5.0`。パッチ版は内部のモジュールがほぼ変わらない。マイナー版はコードの変更として対応する）を `Bun.semver` で見る。React は Next.js 内蔵のものを使うので Next.js の版で決まる。CI は lockfile の版（範囲の最新のパッチ版。dependabot が上げる）と範囲の最小版（`test (lowest Next.js)`）の両方でテストする
 - `node_modules` 内の `"use cache"` / `"use server"`: 対応。Next.js の webpack と同じく、アプリのソースと同じ SWC（`getLoaderSWCOptions` はパスで `node_modules` かを見る）で変換する。rsc 層はアプリから辿った `node_modules` のファイルを読み込むときに変換し（Server Actions の manifest にも入れる）、SSR 層・ブラウザ層は指示子のあるファイルだけ変換する（Client Component から import すると Server Reference）。`tests/fixtures/next-app` の `fake-actions`（フォームと Client Component から。本物の next start と同じ HTML・Flight・Server Action の応答）と `tests/ppr` の `fake-cached`（静的シェル、キャッシュの再利用）
 - `node_modules` 内の CommonJS の `"use client"`: 対応。Next.js の `next-flight-loader` と同じく React の `createClientModuleProxy` を rsc 層のモジュールにする（Bun の実行時プラグインでは CommonJS の `module.exports` が失われるので、ESM で返す。名前付きの export は CommonJS の export 名を正規表現で拾い、default の import は webpack と同じく `__esModule` を見て `proxy.default`（名前が `""` の参照））。本物の next start と同じ HTML・Flight（`/third-party/cjs`）。`renderRSC` でも default の参照の名前は `""`
 - 独自の `cacheHandlers`: エラーにしている

@@ -9,15 +9,21 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
-    # Proofyard uses Next.js's internals and supports one version only
-    # (src/next/preload.ts checks it): moving these is a code change, not a bump.
+    # Proofyard uses Next.js's internals and supports 16.4 patches only
+    # (peerDependencies, checked by src/next/preload.ts): a new minor is a code
+    # change, not a bump. React comes from Next.js.
     ignore:
       - dependency-name: next
+        update-types: [version-update:semver-major, version-update:semver-minor]
       - dependency-name: '@next/*'
+        update-types: [version-update:semver-major, version-update:semver-minor]
       - dependency-name: react
       - dependency-name: react-dom
       - dependency-name: react-server-dom-turbopack
     groups:
+      # Its own pull request, so CI on a new Next.js patch doesn't hold back the rest.
+      next:
+        patterns: [next, '@next/*']
       bun:
         patterns: ['*']
     labels: [dependencies]

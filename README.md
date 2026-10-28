@@ -30,10 +30,10 @@ Client Components, without the server, Flight or routing.
 ## Requirements
 
 - Bun 1.4
-- Next.js 16.4.2 and the React it bundles
+- Next.js 16.4.x (16.4.2 or later) and the React it bundles
 
 Other versions fail at startup, because Proofyard uses Next.js internals
-directly.
+directly. Each new minor (16.5 and so on) needs a Proofyard release.
 
 > Status: early development. Expect breaking changes before 1.0.
 
@@ -43,7 +43,7 @@ directly.
 bun add -d proofyard
 ```
 
-Your app needs `next` (16.4.2), `react` and `react-dom`. Testing Library and
+Your app needs `next` (16.4.2 or a later 16.4 patch), `react` and `react-dom`. Testing Library and
 turbo-dom come with Proofyard.
 
 `bunfig.toml`:
