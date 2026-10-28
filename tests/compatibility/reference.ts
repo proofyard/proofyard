@@ -96,7 +96,7 @@ function safeReaddir(dir: string) {
 
 // 比べるための HTML: 実行ごと・ビルドごとに変わるもの（script、ビルド ID、チャンクのファイル名、RSC のペイロード）を除き、
 // 後から流れてきた Suspense の中身をブラウザ（React の $RC）と同じく fallback と入れ替える。
-// next start は PPR のルートを静的シェルの続き（resume）で返すが、requestRoute は毎回ページ全体をリクエスト時に描画する（docs/handoff.md）
+// next start は PPR のルートを静的シェルの続き（resume）で返すが、requestRoute は毎回ページ全体をリクエスト時に描画する
 export function comparableHtml(html: string) {
   html = html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, "")

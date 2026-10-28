@@ -28,7 +28,7 @@ Please open an issue first for anything beyond a small fix, so we can agree on t
 - Unsupported features must fail with a clear error (fail closed), never silently pass as plain JavaScript.
 - Behavior that differs from real Next.js needs a compatibility test against `next build` / `next start`, or a note in the README.
 
-How it works is described in [docs/handoff.md](docs/handoff.md) and [docs/spec.md](docs/spec.md) (Japanese).
+How it works is described in [docs/spec.md](docs/spec.md) (Japanese).
 
 ## Commits
 

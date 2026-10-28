@@ -43,3 +43,19 @@ test("error.tsx のない例外は global-error.tsx", async () => {
 test("Route Handler の request.url は basePath を除いたパス", async () => {
   expect(await (await requestRoute("/base/api/ping/")).json()).toEqual({ path: "/api/ping/" });
 });
+
+test("optimizePackageImports: バレルから使う export のファイルだけを読む（export * の先も）", async () => {
+  const app = await renderRoute("/base/barrel/");
+  await app.findByRole("heading", { name: "From a wildcard export" });
+  expect(app.getByText("Used from the barrel")).toBeTruthy();
+  expect((globalThis as { barrelUnusedLoaded?: boolean }).barrelUnusedLoaded).toBeUndefined();
+});
+
+test("reactCompiler: ブラウザで動く Client Component はコンパイルされる（メモ化した子は描画し直されない）", async () => {
+  const app = await renderRoute("/base/compiler/");
+  const g = globalThis as { childRenders?: number };
+  g.childRenders = 0;
+  await app.user.click(app.getByRole("button", { name: "Count 0" }));
+  await app.findByRole("button", { name: "Count 1" });
+  expect(g.childRenders).toBe(0);
+});

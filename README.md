@@ -114,8 +114,7 @@ same process (`test.concurrent`) can't be isolated, so they fail. Use
 - The Pages Router (`pages/`) is not supported and fails at startup. Test it
   with Vitest and React Testing Library.
 - Other unsupported features (Edge Runtime, CommonJS `"use server"` in
-  `node_modules` and more) and how it all works are in
-  [docs/handoff.md](docs/handoff.md) (Japanese).
+  `node_modules` and more) fail loudly instead of running differently.
 
 ## Development
 

@@ -1,4 +1,4 @@
-// 仕様 24.1: tests/config-app/fixture（basePath・trailingSlash・forbidden() / unauthorized()・global-error.tsx）を本物の Next.js と比べる（bun run compat:config-app）
+// 仕様 24.1: tests/config-app/fixture（basePath・trailingSlash・forbidden() / unauthorized()・global-error.tsx・optimizePackageImports・reactCompiler）を本物の Next.js と比べる（bun run compat:config-app）
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
 import { requestRoute } from "proofyard";
@@ -24,6 +24,8 @@ const cases: { path: string; cookies?: Record<string, string> }[] = [
   { path: "/base/boom/" },
   { path: "/base/api/ping/" },
   { path: "/base/api/ping" },
+  { path: "/base/barrel/" },
+  { path: "/base/compiler/" },
 ];
 for (const { path, cookies } of cases)
   test(`requestRoute ${path}${cookies ? ` ${JSON.stringify(cookies)}` : ""} は next start と同じ`, async () => {

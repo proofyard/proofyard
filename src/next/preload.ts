@@ -12,7 +12,7 @@ if (!Bun.version.startsWith("1.4.")) throw new Error(`[proofyard] Unsupported: B
 require("next/dist/server/node-environment-baseline"); // globalThis.AsyncLocalStorage
 // Next.js の runtime バンドル（vendored React を含む）。層をまたいで共有する
 require("next/dist/server/route-modules/app-page/module.compiled");
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFile, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, posix, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -22,16 +22,19 @@ import { FONT_IMPORT, STYLE_FILE, createStyleLoader, unquote } from "./css";
 
 // 対象アプリ（next.config と app/ のあるディレクトリ）。既定は bun test を実行したディレクトリ
 // ponytail: 環境変数で受け取る。設定ファイル（proofyard.config 等）は必要になったら
-const projectDir = resolve(process.env.PROOFYARD_NEXT_APP ?? process.cwd());
-const work = join(tmpdir(), `proofyard-next-${process.pid}`);
+// 実パスにする。Bun（Bun.build の出力・モジュールのパス）はシンボリックリンクを解決したパスを使うので、前方一致の比較が外れる
+// （macOS の既定の TMPDIR /var/folders/... は /private/var/... へのシンボリックリンク）
+const projectDir = realpathSync(resolve(process.env.PROOFYARD_NEXT_APP ?? process.cwd()));
+const tmp = realpathSync(tmpdir());
+const work = join(tmp, `proofyard-next-${process.pid}`);
 // 前の実行（終わったプロセス）の生成物を消す
-for (const name of readdirSync(tmpdir())) {
+for (const name of readdirSync(tmp)) {
   const pid = Number(name.match(/^proofyard-(?:next|run)-(\d+)$/)?.[1]);
   if (!pid) continue;
   try {
     process.kill(pid, 0); // まだ動いているプロセスのもの
   } catch {
-    rmSync(join(tmpdir(), name), { recursive: true, force: true });
+    rmSync(join(tmp, name), { recursive: true, force: true });
   }
 }
 const generatedDir = join(work, "entries");
@@ -70,7 +73,7 @@ const config = await loadConfig(PHASE_PRODUCTION_BUILD, projectDir, { silent: tr
 const BUILD_OUTPUT = process.env.PROOFYARD_BUILD_OUTPUT;
 // bun test --parallel のワーカーどうしは、同じ実行（親のプロセス）の中で 1 回だけ作って共有する（next build も 1 回）。
 // 最初のワーカーが作り、他のワーカーはその結果（失敗も）を待つ
-const runDir = process.env.BUN_TEST_WORKER_ID && !BUILD_OUTPUT ? join(tmpdir(), `proofyard-run-${process.ppid}`) : undefined;
+const runDir = process.env.BUN_TEST_WORKER_ID && !BUILD_OUTPUT ? join(tmp, `proofyard-run-${process.ppid}`) : undefined;
 const leader = (() => {
   if (!runDir) return true;
   try {
@@ -259,7 +262,7 @@ const nextDefine: Record<string, unknown> = getDefineEnv({
 const define = Object.fromEntries(Object.entries(nextDefine).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]));
 // rsc 層のアプリのソースは next-swc-loader と同じ SWC 変換（"use cache" / "use server" はここで変換される）
 // 実行をまたいで使うもの（SWC の変換結果など）。プロセスどうしでも共有する
-const cacheDir = resolve(process.env.PROOFYARD_CACHE_DIR ?? join(tmpdir(), "proofyard-cache"));
+const cacheDir = resolve(process.env.PROOFYARD_CACHE_DIR ?? join(tmp, "proofyard-cache"));
 // next build と同じく、鍵は環境変数（NEXT_SERVER_ACTIONS_ENCRYPTION_KEY）か、保存したもの（next build は distDir/cache/.rscinfo）を使い回す。
 // Server Action の id もこの鍵で決まるので、SWC の変換結果を使い回せる
 const encryptionKey = (() => {
@@ -415,13 +418,77 @@ const withFonts = (code: string) =>
     if (!file) throw new Error(`[proofyard] next/font was not prepared for ${specifier}`);
     return JSON.stringify(file);
   });
+// webpack のローダー（Next.js のもの）を、使う分だけの webpack のローダーの context で呼ぶ
+const { trace } = require("next/dist/trace");
+const runLoader = (loader: Function, resourcePath: string, options: object, source: string) =>
+  new Promise<string>((resolve, reject) => {
+    const callback = (error: Error | null, code: string) => (error ? reject(error) : resolve(code));
+    loader.call(
+      {
+        resourcePath,
+        fs: { readFile },
+        sourceMap: false,
+        target: "web",
+        currentTraceSpan: trace("proofyard"),
+        async: () => callback,
+        callback,
+        cacheable() {},
+        clearDependencies() {},
+        addDependency() {},
+        emitWarning: (warning: Error) => console.warn(warning),
+        getOptions: () => options,
+        getResolve: () => async (from: string, request: string) => Bun.resolveSync(request, from),
+      },
+      source,
+    );
+  });
+// optimizePackageImports（@mui/material・lucide-react など。Next.js の既定の一覧もある）: SWC は import { A } from "pkg" を
+// "__barrel_optimize__?names=A!=!pkg" に書き換え、webpack では next-barrel-loader が A を export するファイルだけを読むモジュールにする。
+// 同じローダーで作ったモジュールをファイルに書き、指定子をそのパスに置き換える
+// （ローダーは非同期で、ネイティブ読み込みの変換は同期なので、アプリのソースから先に作っておく）
+const BARREL_IMPORT = /"__barrel_optimize__\?names=([^"&!]*)[^"!]*!=!([^"]+)"/g;
+const barrelDir = join(work, "barrels");
+const barrels = new Map<string, string>(); // 解決元のディレクトリ + 指定子 → 生成したファイル
+const { default: nextBarrelLoader } = require("next/dist/build/webpack/loaders/next-barrel-loader");
+async function prepareBarrels(code: string, dir: string): Promise<void> {
+  for (const [spec, names, request] of code.matchAll(BARREL_IMPORT)) {
+    const key = `${dir}\0${spec}`;
+    if (barrels.has(key)) continue;
+    const file = join(barrelDir, `${barrels.size}.mjs`);
+    barrels.set(key, file);
+    const resourcePath = Bun.resolveSync(request!, dir);
+    const output = await runLoader(nextBarrelLoader, resourcePath, { names: names!.split(","), swcCacheDir: join(cacheDir, "swc-plugins") }, "");
+    // 中の指定子（バレルのファイルからの相対パス、export * の先の __barrel_optimize__）も、生成したファイルから読めるようにする
+    await prepareBarrels(output, dirname(resourcePath));
+    write(file, withBarrels(output, dirname(resourcePath)).replace(/ from "((?!\/)[^"]+)"/g, (_, request) => ` from ${JSON.stringify(Bun.resolveSync(request, dirname(resourcePath)))}`));
+  }
+}
+const withBarrels = (code: string, dir: string) =>
+  code.replace(BARREL_IMPORT, (spec) => {
+    const file = barrels.get(`${dir}\0${spec}`);
+    if (!file) throw new Error(`[proofyard] Unsupported: optimizePackageImports for ${spec} imported from ${dir} (only the app's source files are prepared)`);
+    return JSON.stringify(file);
+  });
+const barrelPackages: string[] = config.experimental.optimizePackageImports ?? [];
+for (const file of appSources(projectDir)) {
+  const source = readFileSync(file, "utf8");
+  if (barrelPackages.some((name) => source.includes(name))) await prepareBarrels(swcCompile(file, source), dirname(file));
+}
+const withImports = (filename: string, code: string) => withBarrels(withFonts(code), dirname(filename));
 // ネイティブ読み込み時の SWC 変換（同期。非同期の onLoad を経たモジュールは require できない。route.ts は require で読まれる）
-const swcTransformSync = (filename: string, source: string): string => withFonts(swcCompile(filename, source));
+const swcTransformSync = (filename: string, source: string): string => withImports(filename, swcCompile(filename, source));
 // SSR 層・ブラウザ層のアプリのソース（Client Component）の変換（typeof window の置き換えなども Next.js と同じになる）
 const isAppSource = (path: string) => path.startsWith(projectDir + "/") && !path.includes("/node_modules/");
+// React Compiler（reactCompiler）: Next.js はクライアントのコンパイル（ブラウザ層）のアプリのソースだけを、SWC の前に Babel で変換する
+// （サーバーの rsc 層・SSR 層には使わない。getReactCompilerLoader は isServer なら undefined）
+const reactCompilerLoader = require("next/dist/build/get-babel-loader-config").getReactCompilerLoader(config.reactCompiler, projectDir, false, undefined, dev);
+const reactCompile = async (filename: string, source: string) =>
+  reactCompilerLoader && isAppSource(filename) ? runLoader(require(reactCompilerLoader.loader).default, filename, reactCompilerLoader.options, source) : source;
 // node_modules は "use server" / "use cache" のあるものだけ（Client Component から import した Server Action を Server Reference にする）
 const swcTransformFor = (layer: "ssr" | "browser" | "route") => async (filename: string, source: string) =>
-  isAppSource(filename) || SERVER_DIRECTIVE.test(source) ? withFonts(swcCompile(filename, source, layer)) : undefined;
+  isAppSource(filename) || SERVER_DIRECTIVE.test(source)
+    ? withImports(filename, swcCompile(filename, layer === "ssr" ? source : await reactCompile(filename, source), layer))
+    : undefined;
 const entries = [...routes.values()].map((r) => r.entry).concat(middlewareEntry ?? [], instrumentationEntry ?? []);
 
 // rsc 層: Next.js 本体だけをバンドルし、アプリはネイティブで読み込む（mock.module が効く）。
@@ -491,7 +558,8 @@ for (const path of appSources(projectDir)) {
     clientReferenceStub(path, source);
     continue;
   }
-  nodeModuleImports.push([path, source]);
+  // optimizePackageImports の import は、書き換えた後の（必要なファイルだけを読む）モジュールから辿る
+  nodeModuleImports.push([path, barrelPackages.some((name) => source.includes(name)) ? swcTransformSync(path, source) : source]);
 }
 // node_modules の "use client" はネイティブで読むとサーバーで実行されてしまう。アプリの import から node_modules を辿って
 // 見つけたものを Client Reference の代わりのモジュールにする（Next.js は rsc 層で node_modules もバンドルして同じことをする）
@@ -528,7 +596,7 @@ while (nodeModuleImports.length) {
     } catch {
       continue;
     }
-    if (!resolved.includes("/node_modules/") || !/\.[cm]?js$/.test(resolved)) continue;
+    if (!(resolved.includes("/node_modules/") || resolved.startsWith(barrelDir + "/")) || !/\.[cm]?js$/.test(resolved)) continue;
     const target = reactServerResolve(spec, dirname(path), resolved);
     if (target !== resolved && !nativeReplacements.has(resolved)) {
       const { exports } = new Bun.Transpiler({ loader: "js" }).scan(readFileSync(target, "utf8"));
@@ -595,8 +663,11 @@ Bun.plugin({
       });
     build.onLoad({ filter: STYLE_FILE }, (args) => style(args.path));
     // ?proofyard-restore=N は mock.module を戻すときの読み込み直し（下）
-    if (nativeReplacements.size)
-      build.onLoad({ filter: new RegExp(`^(?:${[...nativeReplacements.keys()].map(escape).join("|")})(?:\\?proofyard-restore=\\d+)?$`) }, (args) => ({
+    // 1 本の正規表現にまとめると大きすぎて作れない（"use client" の多いライブラリでは数万件）。分けて登録する
+    // （onLoad で undefined を返しても元の読み込みに戻らないので、対象のパスだけに当たる filter にする）
+    const replaced = [...nativeReplacements.keys()].map(escape);
+    for (let i = 0; i < replaced.length; i += 500)
+      build.onLoad({ filter: new RegExp(`^(?:${replaced.slice(i, i + 500).join("|")})(?:\\?proofyard-restore=\\d+)?$`) }, (args) => ({
         contents: nativeReplacements.get(withoutRestore(args.path))!,
         loader: "js",
       }));

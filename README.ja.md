@@ -70,7 +70,7 @@ DOM、React のルート、リクエストのコンテキスト、アプリの�
 - `cacheComponents` のアプリの Link の静的な先読み（`/_tree` などのセグメントの先読み）は、本物は build のときに作ったデータを返す。Proofyard はテストの中でそのページを最初にリクエストしたときに build と同じもの（静的な部分だけの prerender）を作り、そのテストの間はそこから返す（テストの後に捨てる）。そのため、静的な部分（`"use cache"` など）はテストごとに一度だけ動く
 - アプリのコードは Bun で動く（例: `Response.json()` の `content-type` に `charset=utf-8` が付く）
 - Pages Router（`pages/`）は対象外で、あると起動のときにエラーにする。Pages Router のテストは vitest など（React Testing Library）で
-- 未対応のもの（Edge Runtime、`node_modules` の CommonJS の `"use server"` など）と、詳しい仕組みは [docs/handoff.md](docs/handoff.md)
+- ほかの未対応のもの（Edge Runtime、`node_modules` の CommonJS の `"use server"` など）も、違う動きをせずにエラーにする
 
 ## ライセンス
 
@@ -82,7 +82,7 @@ MIT
 bun run test       # 全部のテスト
 bun run compat     # 本物の next build / next start と比べる（HTML、RSC の Flight、Server Actions、エラー。遅い）
 bun run bench:api  # 1 テストあたりの時間と内訳（Flight、DOM の初期化、Server Action、後片付け）
-bun run bench:compare  # ほかのテストの方法（RTL、vitest-plugin-rsc、Playwright など）と比べる。結果は docs/handoff.md
+bun run bench:compare  # ほかのテストの方法（RTL、vitest-plugin-rsc、Playwright など）と比べる
 ```
 
 仕様は [docs/spec.md](docs/spec.md)。

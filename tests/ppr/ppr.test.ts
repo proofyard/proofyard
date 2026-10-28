@@ -1,4 +1,4 @@
-// Partial Prerendering（仕様 12 章）。静的シェルは本物の next build の .html と同じ（docs/handoff.md）
+// Partial Prerendering（仕様 12 章）。静的シェルは本物の next build の .html と同じ
 import { expect, test } from "bun:test";
 import { createTestContext, prerenderRoute, renderRoute, requestRoute } from "proofyard";
 import { stats } from "./fixture/app/dashboard/stats";
@@ -31,7 +31,7 @@ test("動的な部分がなければシェルがページ全体", async () => {
 });
 
 test("Suspense の外の cookies() は next build と同じエラー", async () => {
-  // expect(promise).rejects は使わない。Bun は待つ間に入れ子でイベントループを回し、Next.js のタスクの順番の前提が崩れる（docs/handoff.md）
+  // expect(promise).rejects は使わない。Bun は待つ間に入れ子でイベントループを回し、Next.js のタスクの順番の前提が崩れる
   const error = await prerenderRoute("/blocking").catch((e) => e);
   expect(String(error)).toContain('Route "/blocking": Next.js encountered uncached or runtime data during prerendering');
 });
