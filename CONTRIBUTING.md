@@ -32,4 +32,18 @@ How it works is described in [docs/handoff.md](docs/handoff.md) and [docs/spec.m
 
 ## Commits
 
-Write commit messages in English, in the imperative mood ("Support Sass", "Fix ..."). Keep each commit focused on one change.
+Use [Conventional Commits](https://www.conventionalcommits.org/). Releases are cut from them by
+[release-please](https://github.com/googleapis/release-please), so the type decides the next version:
+
+```
+feat: support Sass            # new feature -> minor bump
+fix: reuse the SWC cache      # bug fix -> patch bump
+docs: / test: / ci: / chore: / refactor: / perf:   # no release on their own
+```
+
+Add `!` (`feat!:`) or a `BREAKING CHANGE:` footer for breaking changes (minor bump before 1.0, major after). Keep each commit focused on one change.
+
+## Releases
+
+release-please keeps a release PR open with the next version and CHANGELOG. Merging it tags the
+release, runs CI and stages the package on npm; a maintainer then approves it on npm (2FA).
