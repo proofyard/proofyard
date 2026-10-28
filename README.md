@@ -125,7 +125,7 @@ bun run bench:api      # time per test and its breakdown
 bun run bench:compare  # compare with RTL, vitest-plugin-rsc, Playwright and more
 ```
 
-The spec is in [docs/spec.md](docs/spec.md) (Japanese).
+The spec is in [docs/spec.md](docs/spec.md) ([日本語](docs/spec.ja.md)).
 
 ## License
 

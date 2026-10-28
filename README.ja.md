@@ -85,4 +85,4 @@ bun run bench:api  # 1 テストあたりの時間と内訳（Flight、DOM の�
 bun run bench:compare  # ほかのテストの方法（RTL、vitest-plugin-rsc、Playwright など）と比べる
 ```
 
-仕様は [docs/spec.md](docs/spec.md)。
+仕様は [docs/spec.ja.md](docs/spec.ja.md)（[English](docs/spec.md)）。

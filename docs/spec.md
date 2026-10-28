@@ -1,139 +1,142 @@
 # Proofyard
-## Bun Native RSC Testing Framework 全体設計・技術仕様書 v1.0
 
-**ステータス：設計段階／技術検証未実施**  
-**対象：React 19以降、Next.js App Router、Bun**  
-**開発言語：TypeScript**  
-**DOM実装：turbo-dom**  
-**想定ライセンス：MIT**
+<p><a href="spec.ja.md">日本語</a></p>
+
+## Bun Native RSC Testing Framework: Overall Design and Technical Specification v1.0
+
+**Status: Design phase / technical validation not yet done**  
+**Targets: React 19 and later, Next.js App Router, Bun**  
+**Language: TypeScript**  
+**DOM implementation: turbo-dom**  
+**Planned license: MIT**
 
 ---
 
-# 1. プロジェクト概要
+# 1. Project Overview
 
-## 1.1 目的
+## 1.1 Purpose
 
-Next.jsのReact Server Components（RSC）を、**実ブラウザやNext.jsサーバーを起動せず、Bun上で高速かつ正確にテストできるフレームワーク**を開発する。
+Build a framework that **tests Next.js React Server Components (RSC) on Bun quickly and accurately, without starting a real browser or a Next.js server**.
 
-現在、Next.jsの非同期Server Componentsは一般的なユニットテスト環境では扱いにくく、E2Eテストに依存しやすい。
+Today, async Server Components in Next.js are hard to handle in typical unit test environments, so teams tend to rely on E2E tests.
 
-PlaywrightなどによるE2Eテストは、ブラウザの起動、Next.jsサーバーの起動、HTTP通信、ページ遷移などのオーバーヘッドが大きい。
+E2E tests with tools like Playwright carry a lot of overhead: starting a browser, starting a Next.js server, HTTP traffic, page navigation, and so on.
 
-本プロジェクトでは、これらの不要な処理を排除し、通常のBunユニットテストに近い開発体験を実現する。
+This project removes that unneeded work and aims for a developer experience close to regular Bun unit tests.
 
-ただし、高速化のためにReactやNext.jsの重要な動作を省略してはならない。
+Speed must not come from skipping important React or Next.js behavior.
 
-特に、以下を重視する。
+In particular, we focus on the following:
 
-- React Flightのシリアライズ制約
-- Server ComponentとClient Componentの実行境界
-- SuspenseとStreaming
+- React Flight serialization constraints
+- The execution boundary between Server Components and Client Components
+- Suspense and Streaming
 - Server Actions
 - Context Provider
 - Next.js App Router
 - Cache Components
 - Hydration
 - Client Router
-- エラー伝播
+- Error propagation
 
-最終的な目標は、**Next.js App Router向けのBunネイティブ・インプロセス統合テストフレームワーク**である。
+The end goal is **a Bun-native, in-process integration testing framework for Next.js App Router**.
 
-## 1.2 コアコンセプト
+## 1.2 Core Concept
 
 > Test React Server Components and Next.js App Router applications with Bun, without launching a browser or Next.js server.
 
-設計の基本原則は次のとおり。
+The core design principles are:
 
-1. Bunをテストランナーとして使用する。
-2. React公式のレンダリング機構を再利用する。
-3. React Flightのシリアライズを省略しない。
-4. 実ブラウザを使用しない。
-5. Next.jsサーバーを起動しない。
-6. WebpackやTurbopackによるアプリケーション全体のバンドルを原則不要にする。
-7. DOMにはturbo-domを採用する。
-8. Next.js固有機能はAdapterとして分離する。
-9. テスト間の状態を厳密に分離する。
-10. 未対応の機能を不正確なモックで再現せず、明示的にエラーとする。
+1. Use Bun as the test runner.
+2. Reuse React's official rendering machinery.
+3. Do not skip React Flight serialization.
+4. Do not use a real browser.
+5. Do not start a Next.js server.
+6. As a rule, do not require bundling the whole application with Webpack or Turbopack.
+7. Use turbo-dom for the DOM.
+8. Keep Next.js-specific features in a separate Adapter.
+9. Strictly isolate state between tests.
+10. Do not fake unsupported features with inaccurate mocks. Raise an explicit error instead.
 
-## 1.3 非目標
+## 1.3 Non-Goals
 
-以下は本プロジェクトの直接的な開発対象としない。
+The following are not direct development targets of this project:
 
-- 独自テストランナーの開発
-- 独自React Reconcilerの実装
-- 独自DOMエンジンの開発
-- ブラウザのレイアウトエンジンの再現
-- CSSレイアウトのピクセル単位検証
+- Building our own test runner
+- Implementing our own React Reconciler
+- Building our own DOM engine
+- Reproducing a browser layout engine
+- Pixel-level verification of CSS layout
 - Visual Regression Testing
-- 実ネットワーク環境の再現
-- 実ブラウザ固有の挙動の完全再現
-- Next.jsの本番ビルドの完全代替
-- Edge Runtimeの完全再現
+- Reproducing real network conditions
+- Fully reproducing real-browser-specific behavior
+- Fully replacing a Next.js production build
+- Fully reproducing the Edge Runtime
 
-また、本フレームワークはPlaywrightなどのE2Eテストを完全に不要にすることを目的としない。
+This framework also does not aim to make E2E tests with Playwright or similar tools completely unnecessary.
 
-E2Eでしか検証できない領域は残る。
+Some areas can only be verified with E2E tests.
 
 ---
 
-# 2. 技術スタック
+# 2. Technology Stack
 
-## 2.1 採用技術
+## 2.1 Chosen Technologies
 
-| 分類 | 技術 | 用途 |
+| Category | Technology | Purpose |
 |---|---|---|
-| Runtime | Bun | JavaScript実行 |
-| Test Runner | `bun:test` | テスト実行 |
-| Language | TypeScript | フレームワーク実装 |
-| React | React 19+ | コンポーネント実行 |
-| RSC | React公式RSC Renderer | Server Componentsのレンダリング |
-| Serialization | React Flight | RSC Payloadの生成・復元 |
-| Client Renderer | `react-dom/client` | Client Componentの実行 |
-| SSR | `react-dom/server` | HTML生成 |
-| Testing | React Testing Library | DOMアサーション |
-| DOM | turbo-dom | DOMエミュレーション |
-| Next.js | App Router Adapter | Next.js統合 |
+| Runtime | Bun | JavaScript execution |
+| Test Runner | `bun:test` | Test execution |
+| Language | TypeScript | Framework implementation |
+| React | React 19+ | Component execution |
+| RSC | Official React RSC Renderer | Rendering Server Components |
+| Serialization | React Flight | Generating and restoring the RSC Payload |
+| Client Renderer | `react-dom/client` | Running Client Components |
+| SSR | `react-dom/server` | HTML generation |
+| Testing | React Testing Library | DOM assertions |
+| DOM | turbo-dom | DOM emulation |
+| Next.js | App Router Adapter | Next.js integration |
 
-ReactのRSC実装には、次のパッケージを候補とする。
+For React's RSC implementation, the candidate packages are:
 
 - `react-server-dom-webpack`
 - `react-server-dom-turbopack`
 
-これらを利用するだけでWebpackやTurbopackのビルドが起動するわけではない。
+Using these packages does not by itself start a Webpack or Turbopack build.
 
-ただし、Client Referenceの生成やモジュールマッピングは別途必要である。
+Client Reference generation and module mapping are still needed separately.
 
-ReactとRSC関連パッケージには内部的なバージョン依存があるため、互換性のある組み合わせを厳密に管理すること。
+React and the RSC packages have internal version dependencies, so manage compatible combinations strictly.
 
-## 2.2 turbo-domの採用
+## 2.2 Choosing turbo-dom
 
-DOMエミュレーションには以下を使用する。
+We use the following for DOM emulation:
 
 https://github.com/miaskiewicz/turbo-dom
 
-採用理由：
+Reasons:
 
-- Rust製HTMLパーサーを使用
-- JavaScriptとRust間の呼び出しを削減する設計
-- DOM操作をJavaScript側で実行
-- 遅延DOMノード生成
-- HTML解析結果の再利用
-- DOM検索結果のキャッシュ
-- React Testing Libraryとの統合を想定
+- Uses an HTML parser written in Rust
+- Designed to reduce calls between JavaScript and Rust
+- Runs DOM operations on the JavaScript side
+- Lazy DOM node creation
+- Reuses HTML parse results
+- Caches DOM query results
+- Designed with React Testing Library integration in mind
 
-DOM全体をRustで実装する方針は採用しない。
+We do not take the approach of implementing the whole DOM in Rust.
 
-ReactによるDOM操作は細かい呼び出しが大量に発生するため、すべてをFFI経由でRustに渡すと、かえって性能が低下する可能性がある。
+React's DOM operations produce a large number of small calls. Passing all of them to Rust over FFI could actually hurt performance.
 
-ただし、turbo-domがBunとReact 19で正常に動作すること、およびhappy-domより高速であることは、実機で検証する必要がある。
+We still need to check in practice that turbo-dom works correctly with Bun and React 19, and that it is faster than happy-dom.
 
-**turbo-domは採用技術として固定するが、互換性上の制約が発覚した場合に備えて、内部のDOM Adapter境界は維持する。**
+**turbo-dom is fixed as the chosen technology, but we keep the internal DOM Adapter boundary in case compatibility constraints come up.**
 
 ---
 
-# 3. 全体アーキテクチャ
+# 3. Overall Architecture
 
-システムを以下の6つのRuntimeとTesting APIに分割する。
+The system is split into the following six Runtimes and the Testing API.
 
 ```text
                          bun test
@@ -193,17 +196,17 @@ ReactによるDOM操作は細かい呼び出しが大量に発生するため、
        └──────────────┘         └──────────────┘
 ```
 
-各Runtimeは責務を分離し、Next.js固有処理がReactコアの処理に直接入り込まないようにする。
+Each Runtime has its own responsibilities, so Next.js-specific logic does not leak directly into React core processing.
 
 ---
 
-# 4. 実行モード
+# 4. Execution Modes
 
-テスト内容に応じて、3種類のレンダリングモードを提供する。
+We provide three rendering modes for different kinds of tests.
 
 ## 4.1 RSC Mode
 
-最も軽量なモード。
+The lightest mode.
 
 ```tsx
 const result = await renderRSC(<Page />);
@@ -211,7 +214,7 @@ const result = await renderRSC(<Page />);
 expect(result.getByText("Alice")).toBeDefined();
 ```
 
-実行フロー：
+Execution flow:
 
 ```text
 Server Components
@@ -222,35 +225,35 @@ Flight Serialization
        ↓
 Flight Deserialization
        ↓
-Reactツリーの構造検証
+React tree structure checks
 ```
 
-対象：
+Covers:
 
-- 同期Server Components
-- 非同期Server Components
-- ネストしたServer Components
+- Sync Server Components
+- Async Server Components
+- Nested Server Components
 - Props
 - Suspense
-- Flightシリアライズ
+- Flight serialization
 - Client References
 - Server Function References
-- エラー伝播
+- Error propagation
 
-特徴：
+Characteristics:
 
-- DOMを生成しない
-- Client Componentsを実行しない
-- React DOM Serverを起動しない
-- 実ブラウザを必要としない
+- Does not create a DOM
+- Does not run Client Components
+- Does not start React DOM Server
+- Does not need a real browser
 
-Client ComponentはClient Referenceとして扱う。
+Client Components are treated as Client References.
 
-このモードのクエリはReact構造に対する検査であり、DOM Testing Libraryのクエリとは意味論が異なる。
+Queries in this mode inspect the React structure. Their semantics differ from DOM Testing Library queries.
 
 ## 4.2 SSR Mode
 
-Client Componentsの初期レンダリングまで実行する。
+Runs up to the initial render of Client Components.
 
 ```tsx
 const result = await render(<Page />, {
@@ -260,7 +263,7 @@ const result = await render(<Page />, {
 expect(result.getByText("Alice")).toBeDefined();
 ```
 
-実行フロー：
+Execution flow:
 
 ```text
 RSC Renderer
@@ -276,26 +279,26 @@ HTML
 Assertions
 ```
 
-対応：
+Supports:
 
 - Server Components
-- Client Componentsの初期HTML
+- Initial HTML of Client Components
 - Context Provider
-- `useState` の初期状態
+- Initial state of `useState`
 - Nested Layouts
 - Streaming SSR
 - Suspense Fallback
-- HTML構造の検証
+- HTML structure checks
 
-`useEffect` は実行しない。
+`useEffect` does not run.
 
-HTMLをDOMとして検査する場合にはturbo-domを使用する。
+When inspecting the HTML as a DOM, use turbo-dom.
 
-単純なHTML文字列検証ではDOM初期化を省略できる。
+Simple HTML string checks can skip DOM initialization.
 
 ## 4.3 Client Mode
 
-ReactのClient Runtimeまで実行する。
+Runs through React's Client Runtime.
 
 ```tsx
 const result = await render(<Page />, {
@@ -305,7 +308,7 @@ const result = await render(<Page />, {
 await result.findByText("Ready");
 ```
 
-実行フロー：
+Execution flow:
 
 ```text
 RSC Renderer
@@ -323,7 +326,7 @@ React Testing Library
 Assertions
 ```
 
-対応：
+Supports:
 
 - `useEffect`
 - `useLayoutEffect`
@@ -334,13 +337,13 @@ Assertions
 - `useOptimistic`
 - `useActionState`
 - `useFormStatus`
-- DOMイベント
+- DOM events
 - Context Provider
 - Client Suspense
 - Portals
-- 状態更新
+- State updates
 
-Client Modeでは、さらに以下の描画方式を区別する。
+Client Mode further distinguishes between the following render strategies.
 
 ```typescript
 type ClientRenderStrategy =
@@ -348,36 +351,36 @@ type ClientRenderStrategy =
   | "hydrate";
 ```
 
-`mount` は`createRoot()`を使用する。
+`mount` uses `createRoot()`.
 
-`hydrate` はSSR HTMLを生成した後、`hydrateRoot()`を使用する。
+`hydrate` generates SSR HTML first, then uses `hydrateRoot()`.
 
-Hydration Mismatchを検証する場合は後者が必要となる。
+Verifying Hydration Mismatch requires the latter.
 
 ---
 
 # 5. Module Runtime
 
-## 5.1 責務
+## 5.1 Responsibilities
 
-Module Runtimeは以下を担当する。
+The Module Runtime handles the following:
 
-- TypeScript/TSXの読み込み
-- Server/Clientモジュール境界の識別
-- `"use client"` の処理
-- `"use server"` の処理
-- `"use cache"` の処理
-- モジュールグラフの構築
-- Client Referenceの登録
-- Server Function Referenceの登録
-- モジュールモック
-- パスエイリアス解決
+- Loading TypeScript/TSX
+- Identifying the Server/Client module boundary
+- Handling `"use client"`
+- Handling `"use server"`
+- Handling `"use cache"`
+- Building the module graph
+- Registering Client References
+- Registering Server Function References
+- Module mocks
+- Path alias resolution
 
-## 5.2 Server/Clientモジュールグラフ
+## 5.2 Server/Client Module Graphs
 
-Server ComponentとClient Componentでは異なるモジュール解決条件を使用する。
+Server Components and Client Components use different module resolution conditions.
 
-そのため、単一のモジュールグラフとして処理してはならない。
+So they must not be processed as a single module graph.
 
 ```text
 Application Source
@@ -396,36 +399,36 @@ Application Source
                └── Browser Dependencies
 ```
 
-サーバー側でClient Componentをimportした場合、Client Componentを直接実行せずClient Referenceを返す。
+When the server side imports a Client Component, return a Client Reference instead of running the Client Component directly.
 
-クライアント側では、Client Referenceを実際のモジュール実装に解決する。
+On the client side, resolve the Client Reference to the actual module implementation.
 
-`react-server` 条件の適用、Bunのモジュールキャッシュ、同じモジュールの異なる実行条件での読み込みは重要な検証項目である。
+Applying the `react-server` condition, Bun's module cache, and loading the same module under different execution conditions are key items to verify.
 
-必要であれば、プロセス、Worker、モジュールローダーなどによる実行環境の分離を検討する。
+If needed, consider isolating execution environments with processes, Workers, module loaders, or similar.
 
-**BunのプラグインAPIだけで必要なモジュール変換と解決が可能かは未検証であり、最優先の技術検証対象とする。**
+**Whether Bun's plugin API alone can do the needed module transforms and resolution is not yet verified. This is the top-priority technical validation item.**
 
 ## 5.3 Client Reference
 
-Server ComponentからClient Componentを参照する場合、Flightが認識できるClient Referenceを生成する。
+When a Server Component references a Client Component, generate a Client Reference that Flight can recognize.
 
-必要な情報：
+Required information:
 
 - Module ID
 - Export Name
 - Client Module Mapping
 - Reference Metadata
 
-Referenceの形式はReact公式実装との互換性を優先する。
+For the Reference format, compatibility with React's official implementation comes first.
 
-独自プロトコルは定義しない。
+Do not define a custom protocol.
 
 ## 5.4 Server Functions
 
-以下の両方に対応する。
+Support both of the following.
 
-**モジュールレベル**
+**Module level**
 
 ```tsx
 "use server";
@@ -435,7 +438,7 @@ export async function createUser(data: FormData) {
 }
 ```
 
-**関数レベル**
+**Function level**
 
 ```tsx
 export default function Page() {
@@ -448,35 +451,35 @@ export default function Page() {
 }
 ```
 
-関数レベルの`"use server"`はクロージャ変換が必要になる。
+Function-level `"use server"` requires a closure transform.
 
-単なるディレクティブ検出だけでは不十分である。
+Detecting the directive alone is not enough.
 
-Next.jsコンパイラとの互換性を検証すること。
+Verify compatibility with the Next.js compiler.
 
 ---
 
 # 6. Rendering Runtime
 
-## 6.1 React公式レンダラーを使用
+## 6.1 Use React's Official Renderer
 
-Reactコンポーネントを独自の再帰処理で評価してはならない。
+Do not evaluate React components with custom recursive logic.
 
-例えば、
+For example,
 
 ```tsx
 const element = await Page();
 ```
 
-という方法は正式なRSCレンダリングの代替にならない。
+this approach is not a substitute for proper RSC rendering.
 
-Suspense、Server/Client境界、React内部の非同期処理、Flightなどを正確に再現できないためである。
+It cannot accurately reproduce Suspense, the Server/Client boundary, React's internal async handling, Flight, and so on.
 
-React公式のRSC Rendererを使用する。
+Use React's official RSC Renderer.
 
-## 6.2 Flightは必須
+## 6.2 Flight Is Required
 
-すべてのRSCテストはFlightのシリアライズを経由する。
+Every RSC test goes through Flight serialization.
 
 ```text
 RSC Render
@@ -490,24 +493,24 @@ Flight Decode
 Assertions
 ```
 
-これによって以下を検証する。
+This verifies the following:
 
-- Client ComponentへのProps
-- シリアライズ可能な値
-- シリアライズ不可能な値
+- Props passed to Client Components
+- Serializable values
+- Non-serializable values
 - Client References
 - Server Function References
-- 非同期値
-- エラー情報
-- Suspense境界
+- Async values
+- Error information
+- Suspense boundaries
 
-FlightはJSONではないため、`JSON.stringify()`で代替しない。
+Flight is not JSON, so do not substitute `JSON.stringify()`.
 
-また、Flightのシリアライズエラーがストリーム上で通知される場合もあるため、完了・失敗の判定にはレンダラーのエラー通知も使用する。
+Flight serialization errors may also be reported on the stream, so use the renderer's error notifications as well to decide completion or failure.
 
 ## 6.3 Streaming
 
-非同期処理の完了結果だけでなく、途中状態を検証できるようにする。
+Make it possible to verify intermediate states, not just the final result of async work.
 
 ```tsx
 const result = await renderRoute("/users", {
@@ -526,18 +529,18 @@ expect(result.getByText("Alice"))
   .toBeDefined();
 ```
 
-ただし、RSCストリームの進行とDOMの表示状態は同一ではない。
+However, RSC stream progress and what the DOM displays are not the same thing.
 
-内部的に以下を区別する。
+Internally, we distinguish the following:
 
 - RSC Streaming
 - SSR Streaming
 - Client Commit
 - Suspense Resolution
 
-## 6.4 非同期制御
+## 6.4 Async Control
 
-テストで非同期処理を意図的に停止・再開できる仕組みを提供する。
+Provide a way for tests to deliberately pause and resume async work.
 
 ```tsx
 const task = deferred<User>();
@@ -559,15 +562,15 @@ task.resolve({
 await result.findByText("Alice");
 ```
 
-これは提案APIである。
+This is a proposed API.
 
-非同期処理をすべて即時解決してしまう実装は避ける。
+Avoid implementations that resolve all async work immediately.
 
 ---
 
-# 7. Server ComponentとClient Componentの混在
+# 7. Mixing Server Components and Client Components
 
-次のような構造に対応する。
+Support structures like the following.
 
 ```text
 Server Component
@@ -579,7 +582,7 @@ Server Component
                     └── Client Component
 ```
 
-具体例：
+Example:
 
 ```tsx
 export default function Page() {
@@ -611,40 +614,40 @@ export default async function ServerContent() {
 }
 ```
 
-この場合、ServerContentはClientProviderによって直接実行されるわけではない。
+Here, ServerContent is not run directly by ClientProvider.
 
-ServerContentはサーバー側で評価され、レンダリング結果がClientProviderのchildrenとして渡される。
+ServerContent is evaluated on the server, and its rendered result is passed as ClientProvider's children.
 
-この実行境界を維持すること。
+Preserve this execution boundary.
 
-また、Client Providerで囲まれたServer Componentが、Client Contextを直接参照できるようにしてはならない。
+Also, a Server Component wrapped in a Client Provider must not be able to read Client Context directly.
 
 ---
 
 # 8. Server Actions Runtime
 
-## 8.1 対応範囲
+## 8.1 Scope
 
-以下に対応する。
+The following are supported.
 
 - `"use server"`
 - Server Function Reference
 - Server Action ID
-- ClientからのAction呼び出し
-- 引数のシリアライズ
-- 戻り値のシリアライズ
+- Calling Actions from the client
+- Argument serialization
+- Return value serialization
 - FormData
-- `.bind()` による引数束縛
-- クロージャ
+- Argument binding with `.bind()`
+- Closures
 - `useActionState`
 - `useFormStatus`
 - `useOptimistic`
 - Redirect
-- キャッシュ無効化
-- RSC再レンダリング
-- Client UI更新
+- Cache invalidation
+- RSC re-rendering
+- Client UI updates
 
-## 8.2 実行フロー
+## 8.2 Execution Flow
 
 ```text
 Client Component
@@ -676,15 +679,15 @@ Server Action Proxy
                     └── Update Client UI
 ```
 
-HTTPサーバーは起動せず、メモリ内でActionを実行する。
+No HTTP server is started. Actions run in memory.
 
-ただし、引数・戻り値のシリアライズは省略しない。
+However, argument and return value serialization is not skipped.
 
-HTTPのOrigin検証、CSRF保護、実際のネットワーク通信などは別のテスト対象とする。
+HTTP Origin checks, CSRF protection, real network communication, and similar concerns are tested separately.
 
 ## 8.3 Action Request Context
 
-通常のRSCレンダリングとServer Actionでは実行コンテキストを分離する。
+Normal RSC rendering and Server Actions use separate execution contexts.
 
 ```typescript
 type ExecutionContext =
@@ -694,14 +697,14 @@ type ExecutionContext =
   | "prerender";
 ```
 
-実際の内部設計では、単一enumだけでなく独立したコンテキスト情報を保持する。
+The actual internal design holds independent context information, not just a single enum.
 
-Server Actionから利用できるNext.js APIは、その実行コンテキストに従って制御する。
+The Next.js APIs available to a Server Action are controlled according to its execution context.
 
-## 8.4 テスト例
+## 8.4 Test Example
 
 ```tsx
-test("ユーザーを作成できる", async () => {
+test("can create a user", async () => {
   const app = await renderRoute("/users/new", {
     mode: "client",
   });
@@ -723,7 +726,7 @@ test("ユーザーを作成できる", async () => {
 });
 ```
 
-APIは提案段階である。
+This API is a proposal.
 
 ---
 
@@ -731,9 +734,9 @@ APIは提案段階である。
 
 ## 9.1 Route Resolution
 
-Next.js App Routerのディレクトリ構造を解決する。
+Resolves the Next.js App Router directory structure.
 
-対応対象：
+Supported:
 
 - `page.tsx`
 - `layout.tsx`
@@ -750,7 +753,7 @@ Next.js App Routerのディレクトリ構造を解決する。
 - Parallel Routes
 - Intercepting Routes
 
-例えば、
+For example, given
 
 ```text
 app/
@@ -763,27 +766,27 @@ app/
             └── page.tsx
 ```
 
-に対し、
+the call
 
 ```tsx
 await renderRoute("/dashboard/users/123");
 ```
 
-で必要なPage、Layout、Providerを組み立てる。
+assembles the required Page, Layouts, and Providers.
 
-## 9.2 LayoutとTemplate
+## 9.2 Layout and Template
 
-LayoutとTemplateは異なるライフサイクルを持つ。
+Layouts and Templates have different lifecycles.
 
-Layoutはナビゲーション間で再利用される場合がある。
+A Layout may be reused across navigations.
 
-Templateは対象セグメントの遷移に伴って再生成され、Client StateやEffectの再初期化に影響する。
+A Template is recreated when its segment is navigated to. This affects re-initialization of Client State and Effects.
 
-単純にReact要素を組み立てるだけではなく、Navigation Stateを含めて管理する。
+This goes beyond assembling React elements. Navigation State is managed as well.
 
 ## 9.3 Client Router
 
-以下をサポートする。
+The following are supported.
 
 - `router.push()`
 - `router.replace()`
@@ -798,9 +801,9 @@ Templateは対象セグメントの遷移に伴って再生成され、Client St
 - `useSelectedLayoutSegment()`
 - `useSelectedLayoutSegments()`
 
-Client Routerは、単なるURLの変更として実装しない。
+The Client Router is not implemented as a simple URL change.
 
-以下の状態を管理する。
+It manages the following state.
 
 - Router State
 - Segment Tree
@@ -810,40 +813,40 @@ Client Routerは、単なるURLの変更として実装しない。
 - Pending Navigation
 - Prefetch State
 
-重要なテスト対象：
+Key test targets:
 
-- Layoutの再利用
-- Provider状態の維持
-- Client Stateの維持
-- `router.refresh()` 後のRSC更新
-- Suspenseを伴う遷移
+- Layout reuse
+- Preserving Provider state
+- Preserving Client State
+- RSC updates after `router.refresh()`
+- Transitions involving Suspense
 - Parallel Routes
 - Intercepting Routes
 
 ## 9.4 Parallel Routes
 
-複数スロットの表示状態を管理する。
+Manages the display state of multiple slots.
 
-ソフトナビゲーションと直接アクセスで異なるレンダリング結果になる場合を検証する。
+Verifies cases where soft navigation and direct access produce different rendering results.
 
 ## 9.5 Intercepting Routes
 
-同じURLでも遷移元によって異なるUIを表示できることを検証する。
+Verifies that the same URL can show a different UI depending on where the navigation came from.
 
-例：
+Example:
 
-- `/feed`から`/photo/123`へ遷移するとモーダル
-- `/photo/123`への直接アクセスでは通常ページ
+- Navigating from `/feed` to `/photo/123` shows a modal
+- Direct access to `/photo/123` shows the normal page
 
-Navigation Stateを保持する必要がある。
+Navigation State must be preserved.
 
 ---
 
 # 10. Next.js Request Runtime
 
-## 10.1 対応API
+## 10.1 Supported APIs
 
-以下を対象とする。
+The following are covered.
 
 ```typescript
 cookies()
@@ -857,11 +860,11 @@ forbidden()
 unauthorized()
 ```
 
-その他、Next.jsバージョンに応じたリクエスト関連APIに対応する。
+Other request-related APIs are supported depending on the Next.js version.
 
 ## 10.2 Request Context
 
-リクエスト単位で以下を保持する。
+The following is held per request.
 
 ```typescript
 interface TestRequestContext {
@@ -874,29 +877,29 @@ interface TestRequestContext {
 }
 ```
 
-これは概念的なインターフェースであり、実際にはNext.jsの非同期Request APIや内部コンテキストとの互換性を考慮する。
+This is a conceptual interface. The real implementation takes compatibility with the Next.js async Request APIs and internal contexts into account.
 
-Request Contextはテスト間で共有しない。
+The Request Context is not shared between tests.
 
 ## 10.3 Proxy
 
-Next.js 16以降の`proxy.ts`を対象とする。
+Covers `proxy.ts` in Next.js 16 and later.
 
-対象：
+Covered:
 
 - Matcher
 - Redirect
 - Rewrite
 - Request Headers
 - Response Cookies
-- 認証処理
-- Route Resolutionとの連携
+- Authentication
+- Integration with Route Resolution
 
-Proxyを通すテストと、Pageのみをテストするモードは区別する。
+Tests that go through the Proxy are distinct from the mode that tests only the Page.
 
 ## 10.4 Route Handlers
 
-`app/api/**/route.ts`をサポートする。
+Supports `app/api/**/route.ts`.
 
 ```tsx
 const response = await requestRoute("/api/users", {
@@ -909,7 +912,7 @@ const response = await requestRoute("/api/users", {
 expect(response.status).toBe(201);
 ```
 
-対応：
+Supported:
 
 - GET
 - POST
@@ -925,34 +928,34 @@ expect(response.status).toBe(201);
 - Headers
 - Dynamic Params
 
-可能な限りWeb標準のRequest/Responseを使用する。
+Web standard Request/Response are used wherever possible.
 
 ---
 
 # 11. Cache Runtime
 
-## 11.1 対応するキャッシュ
+## 11.1 Supported Caches
 
-以下を区別する。
+The following are kept distinct.
 
-1. Reactの`cache()`
+1. React's `cache()`
 2. Next.js Cache Components
 3. Next.js Client Router Cache
-4. フレームワーク内部の高速化キャッシュ
+4. Internal framework caches for speed
 
-この4種類を混同してはならない。
+These four kinds must not be confused.
 
 ## 11.2 React.cache()
 
-Reactの`cache()`はリクエスト単位のメモ化として扱う。
+React's `cache()` is treated as per-request memoization.
 
-同一リクエスト内では結果を再利用する。
+Results are reused within the same request.
 
-独立したリクエスト間では、適切にキャッシュを分離する。
+Caches are properly isolated between independent requests.
 
 ## 11.3 Cache Components
 
-対応対象：
+Supported:
 
 ```typescript
 "use cache"
@@ -967,15 +970,15 @@ revalidateTag()
 updateTag()
 ```
 
-Cache ComponentsはNext.jsのコンパイラ変換に依存する。
+Cache Components depend on Next.js compiler transforms.
 
-Bunの標準TSXローダーで`"use cache"`をそのまま実行しても、本番のキャッシュ処理は再現されない。
+Running `"use cache"` as-is with Bun's standard TSX loader does not reproduce production caching behavior.
 
-そのため、Next.jsコンパイラとの互換性が必要である。
+Compatibility with the Next.js compiler is therefore required.
 
-コンパイル処理を正しく再現できない場合、Cache Components対応を有効と宣言しないこと。
+If the compilation cannot be reproduced correctly, do not declare Cache Components support as enabled.
 
-## 11.4 キャッシュスコープ
+## 11.4 Cache Scopes
 
 ```text
 Shared Immutable Cache
@@ -999,19 +1002,19 @@ Client Session
     └── Router Cache
 ```
 
-基本原則：
+Basic principles:
 
-- 不変な変換結果は再利用してよい。
-- アプリケーションキャッシュはテスト間で分離する。
-- 同一テスト内ではCache Componentsの共有を許可する。
-- React.cacheはリクエストスコープを維持する。
-- DOM変更をテスト間で共有しない。
-- Router CacheはClient Sessionごとに管理する。
+- Immutable transform results may be reused.
+- Application caches are isolated between tests.
+- Cache Components may be shared within the same test.
+- React.cache keeps request scope.
+- DOM changes are not shared between tests.
+- The Router Cache is managed per Client Session.
 
-## 11.5 キャッシュ検証API
+## 11.5 Cache Verification API
 
 ```tsx
-test("キャッシュを再利用する", async () => {
+test("reuses the cache", async () => {
   const ctx = createTestContext({
     cache: "isolated",
   });
@@ -1023,7 +1026,7 @@ test("キャッシュを再利用する", async () => {
 });
 ```
 
-キャッシュの無効化についても検証APIを提供する。
+A verification API is also provided for cache invalidation.
 
 ```tsx
 expect(
@@ -1031,15 +1034,15 @@ expect(
 ).toContain("users");
 ```
 
-これらは提案APIである。
+These are proposed APIs.
 
 ---
 
 # 12. Partial Prerendering
 
-Cache ComponentsとPPRの統合を対象とする。
+Covers the integration of Cache Components and PPR.
 
-重要なのは、通常のRSCレンダリングとPrerenderを区別することである。
+The key point is to distinguish normal RSC rendering from Prerender.
 
 ```text
 Prerender Phase
@@ -1055,17 +1058,17 @@ Prerender Phase
              Dynamic Content
 ```
 
-対応対象：
+Supported:
 
-- 静的シェル生成
+- Static shell generation
 - Request-time Rendering
-- Suspense境界
+- Suspense boundaries
 - Dynamic APIs
 - `connection()`
-- Prerender時の制約
-- Cache Componentsとの連携
+- Constraints during Prerender
+- Integration with Cache Components
 
-提案API：
+Proposed API:
 
 ```tsx
 const result = await prerenderRoute("/dashboard");
@@ -1076,13 +1079,13 @@ expect(result.dynamicBoundaries)
   .toHaveLength(1);
 ```
 
-Next.jsの本番挙動と比較して検証すること。
+Verify by comparing against Next.js production behavior.
 
 ---
 
 # 13. React Concurrent Rendering
 
-## 13.1 対応対象
+## 13.1 Supported
 
 - Suspense
 - `use()`
@@ -1090,43 +1093,43 @@ Next.jsの本番挙動と比較して検証すること。
 - `startTransition()`
 - `useDeferredValue()`
 - `useOptimistic()`
-- 非同期レンダリング
-- レンダリングの中断
-- レンダリングの再試行
-- Transition中のUI状態
-- Error Boundaryとの連携
+- Async rendering
+- Suspended rendering
+- Rendering retries
+- UI state during a Transition
+- Integration with Error Boundaries
 
-## 13.2 非同期テスト制御
+## 13.2 Controlling Async Work in Tests
 
-テスト側から非同期処理の解決タイミングを制御できることを重視する。
+A priority is letting tests control when async work resolves.
 
-例えば、Server Actionの完了前に楽観的UIが表示されることを確認する。
+For example, a test can check that optimistic UI appears before a Server Action completes.
 
 ```tsx
 const action = app.actions.defer("createPost");
 
 await app.user.click(
-  app.getByRole("button", { name: "投稿" }),
+  app.getByRole("button", { name: "Post" }),
 );
 
 expect(
-  app.getByText("送信中"),
+  app.getByText("Sending"),
 ).toBeDefined();
 
 action.reject(new Error("Failed"));
 
-await app.findByText("投稿に失敗しました");
+await app.findByText("Failed to post");
 ```
 
-このAPIは提案段階である。
+This API is a proposal.
 
-React Schedulerを独自に再実装するのではなく、Reactの既存の処理をテスト側から観測・制御する設計とする。
+The design does not reimplement the React Scheduler. Instead, tests observe and control React's existing processing.
 
 ---
 
 # 14. Hydration
 
-Hydrationの検証をClient Modeのオプションとして提供する。
+Hydration checks are offered as an option of Client Mode.
 
 ```tsx
 const result = await render(<Page />, {
@@ -1135,7 +1138,7 @@ const result = await render(<Page />, {
 });
 ```
 
-実行フロー：
+Execution flow:
 
 ```text
 RSC Render
@@ -1153,26 +1156,26 @@ hydrateRoot()
 Client Effects
 ```
 
-検証対象：
+Verified:
 
 - Hydration Mismatch
 - `onRecoverableError`
 - `useId()`
-- Providerの初期状態
-- SSRとClientの表示整合性
-- Effectの実行
+- Initial Provider state
+- Consistency between SSR and client output
+- Effect execution
 - StrictMode
-- Hydration前のイベント
+- Events before Hydration
 
-ただし、turbo-domによるHydrationが実ブラウザと完全に一致する保証はない。
+However, there is no guarantee that Hydration in turbo-dom matches a real browser exactly.
 
-そのため、テストの結果が保証する範囲を明示する。
+The scope of what a test result guarantees is therefore stated explicitly.
 
 ---
 
 # 15. Error Boundary
 
-Next.jsの以下をサポートする。
+The following Next.js features are supported.
 
 - `error.tsx`
 - `global-error.tsx`
@@ -1182,27 +1185,27 @@ Next.jsの以下をサポートする。
 - `forbidden()`
 - `unauthorized()`
 
-また、ReactのError BoundaryとSuspense境界の相互作用を検証する。
+The interaction between React Error Boundaries and Suspense boundaries is also verified.
 
-重要なケース：
+Key cases:
 
-- Server Component内の例外
-- Client Component内の例外
-- Server Action内の例外
-- Suspense中の例外
-- Error Boundaryによる回復
-- `reset()` の動作
-- Nested LayoutsとError Boundaryの関係
+- Exceptions in Server Components
+- Exceptions in Client Components
+- Exceptions in Server Actions
+- Exceptions during Suspense
+- Recovery through Error Boundaries
+- Behavior of `reset()`
+- How Nested Layouts relate to Error Boundaries
 
-エラー画面を直接差し込むのではなく、実際のReactレンダリング経路で例外が伝播することを検証する。
+Error screens are not injected directly. Tests verify that exceptions propagate through the real React rendering path.
 
 ---
 
-# 16. Metadataと特殊機能
+# 16. Metadata and Special Features
 
 ## 16.1 Metadata API
 
-対応対象：
+Supported:
 
 - `metadata`
 - `generateMetadata()`
@@ -1211,7 +1214,7 @@ Next.jsの以下をサポートする。
 - `sitemap.ts`
 - `robots.ts`
 
-提案API：
+Proposed API:
 
 ```tsx
 const result = await renderRoute("/products/123");
@@ -1220,13 +1223,13 @@ expect(result.metadata.title)
   .toBe("Product 123");
 ```
 
-Metadataの非同期処理やStreamingにも対応する。
+Async Metadata and Streaming are also supported.
 
 ## 16.2 after()
 
-Next.jsの`after()`をサポートする。
+Supports Next.js `after()`.
 
-レンダリング完了後の処理を別ライフサイクルとして管理する。
+Work that runs after rendering completes is managed as a separate lifecycle.
 
 ```tsx
 const result = await renderRoute("/dashboard");
@@ -1236,9 +1239,9 @@ await result.lifecycle.flushAfter();
 expect(logPageView).toHaveBeenCalled();
 ```
 
-## 16.3 その他
+## 16.3 Other
 
-以下も互換性テスト対象に含める。
+The following are also included in compatibility testing.
 
 - `next/dynamic`
 - `next/image`
@@ -1251,19 +1254,19 @@ expect(logPageView).toHaveBeenCalled();
 - Redux
 - TanStack Query
 - Jotai
-- 環境変数
+- Environment variables
 - Node.js Runtime
-- Edge Runtimeの非互換検出
+- Detecting Edge Runtime incompatibilities
 
-これらすべてを独自実装する必要はない。
+Not all of these need a custom implementation.
 
-既存ライブラリが動作するための実行環境を提供し、必要な互換性テストを実施する。
+Proofyard provides a runtime environment in which existing libraries work, and runs the necessary compatibility tests.
 
 ---
 
 # 17. Execution Context
 
-Next.jsの実行フェーズを明確に分離する。
+Keep the Next.js execution phases clearly separate.
 
 ```typescript
 type ExecutionPhase =
@@ -1278,9 +1281,9 @@ type ExecutionPhase =
   | "after-response";
 ```
 
-ただし、実際には複数フェーズが並行・ネストする可能性がある。
+In practice, though, several phases can run in parallel or nest.
 
-そのため、単純な状態機械だけではなく、独立したコンテキストを持つ。
+So instead of relying only on a simple state machine, keep independent contexts.
 
 ```typescript
 interface RuntimeContext {
@@ -1291,7 +1294,7 @@ interface RuntimeContext {
 }
 ```
 
-Client Sessionについては別のコンテキストで管理する。
+Manage the Client Session in a separate context.
 
 ```typescript
 interface ClientSessionContext {
@@ -1301,17 +1304,17 @@ interface ClientSessionContext {
 }
 ```
 
-コンテキスト管理には、Bun上で利用可能なAsyncLocalStorageなどを検討する。
+For context management, consider AsyncLocalStorage or similar tools available on Bun.
 
-非同期処理の中でリクエストコンテキストが混線しないようにすること。
+Request contexts must not get mixed up across async operations.
 
 ---
 
 # 18. Testing API
 
-## 18.1 公開API
+## 18.1 Public API
 
-基本APIは以下に絞る。
+Limit the core API to the following.
 
 ```typescript
 renderRSC()
@@ -1322,9 +1325,9 @@ prerenderRoute()
 createTestContext()
 ```
 
-React Testing LibraryのAPIを可能な限り再利用する。
+Reuse the React Testing Library API as much as possible.
 
-## 18.2 単体RSCテスト
+## 18.2 Unit RSC Tests
 
 ```tsx
 import { test, expect } from "bun:test";
@@ -1332,7 +1335,7 @@ import { renderRSC } from "proofyard";
 
 import Page from "./page";
 
-test("ユーザーを表示する", async () => {
+test("shows the user", async () => {
   const result = await renderRSC(<Page />);
 
   expect(result.getByText("Alice"))
@@ -1340,12 +1343,12 @@ test("ユーザーを表示する", async () => {
 });
 ```
 
-## 18.3 Route統合テスト
+## 18.3 Route Integration Tests
 
 ```tsx
 import { renderRoute } from "proofyard";
 
-test("ダッシュボードを表示する", async () => {
+test("shows the dashboard", async () => {
   const result = await renderRoute("/dashboard", {
     mode: "client",
   });
@@ -1399,33 +1402,33 @@ expect(app.router.pathname)
   .toBe("/dashboard/users");
 ```
 
-## 18.7 モック
+## 18.7 Mocks
 
-Bun標準のモックAPIを使用する。
+Use Bun's built-in mock API.
 
 ```tsx
 import { mock } from "bun:test";
 ```
 
-独自モックシステムは原則実装しない。
+As a rule, do not build a custom mock system.
 
-ただし、RSCのモジュール変換前にモックを適用する仕組みが必要である。
+However, we need a way to apply mocks before RSC module transformation.
 
-Bunのモジュールキャッシュとモックの適用順序には注意する。
+Pay attention to Bun's module cache and the order in which mocks are applied.
 
 ---
 
-# 19. テスト間の分離
+# 19. Isolation Between Tests
 
-テスト高速化のために状態を再利用する場合でも、アプリケーションの状態汚染を起こしてはならない。
+Even when state is reused to speed up tests, application state must never leak between tests.
 
-共有してよいもの：
+Safe to share:
 
-- 不変のモジュール変換結果
-- 不変のHTML解析結果
-- 安全な静的メタデータ
+- Immutable module transform results
+- Immutable HTML parse results
+- Safe static metadata
 
-分離するもの：
+Must be isolated:
 
 - DOM Document
 - React Root
@@ -1433,42 +1436,42 @@ Bunのモジュールキャッシュとモックの適用順序には注意す�
 - Effect State
 - Request Context
 - React.cache()
-- Cache Componentsのテスト用状態
+- Test state for Cache Components
 - Router Cache
 - Mock State
 - Server Action Context
 
-Client Modeでは、各テスト終了時にReact RootのunmountとEffectのクリーンアップを実施する。
+In Client Mode, unmount the React Root and clean up Effects at the end of each test.
 
-共有状態を再利用する場合には、正しくリセットできることを保証する。
+When reusing shared state, guarantee that it can be reset correctly.
 
 ---
 
-# 20. パフォーマンス設計
+# 20. Performance Design
 
-## 20.1 基本原則
+## 20.1 Core Principle
 
-**正確性を犠牲にせず、不要な実行処理だけを削減する。**
+**Cut only unnecessary work, without sacrificing correctness.**
 
-最適化対象：
+Optimization targets:
 
-- テスト起動
-- モジュール読み込み
-- モジュール変換
-- Flight生成
-- Flight復元
-- DOM初期化
-- Reactレンダリング
-- テスト間のクリーンアップ
-- メモリ消費
+- Test startup
+- Module loading
+- Module transformation
+- Flight generation
+- Flight decoding
+- DOM initialization
+- React rendering
+- Cleanup between tests
+- Memory usage
 
-## 20.2 遅延初期化
+## 20.2 Lazy Initialization
 
-RSC ModeではDOM関連ライブラリをロードしない。
+RSC Mode does not load DOM libraries.
 
-SSR ModeではClient Runtimeを起動しない。
+SSR Mode does not start the Client Runtime.
 
-Client Modeでのみturbo-domとReact DOM Clientを初期化する。
+Only Client Mode initializes turbo-dom and React DOM Client.
 
 ```text
 RSC Mode
@@ -1481,19 +1484,19 @@ Client Mode
   └── Flight + React DOM + turbo-dom
 ```
 
-## 20.3 キャッシュ
+## 20.3 Caching
 
-モジュール変換結果を再利用する。
+Reuse module transform results.
 
-turbo-domの不変HTML解析結果を再利用する。
+Reuse turbo-dom's immutable HTML parse results.
 
-ただし、Next.jsのアプリケーションキャッシュとは分離する。
+Keep these separate from the Next.js application cache.
 
-## 20.4 並列実行
+## 20.4 Parallel Execution
 
-Bunの並列テスト機能を活用する。
+Use Bun's parallel test features.
 
-ただし、次の状態は並列テスト間で共有してはならない。
+However, the following state must not be shared between parallel tests.
 
 - Global DOM
 - Request Context
@@ -1501,42 +1504,42 @@ Bunの並列テスト機能を活用する。
 - React Root
 - Application Cache
 
-Workerやプロセス単位での分離も検討する。
+Also consider isolation per worker or per process.
 
-DOMのグローバル登録が必要な場合、複数テストの同時実行で衝突しないようにする。
+If the DOM must be registered globally, make sure tests running at the same time do not collide.
 
-## 20.5 ベンチマーク
+## 20.5 Benchmarks
 
-比較対象：
+Compare against:
 
-- Bunの通常ユニットテスト
+- Plain Bun unit tests
 - React Testing Library + happy-dom
 - React Testing Library + turbo-dom
 - vitest-plugin-rsc
 - Playwright E2E
 
-測定項目：
+Metrics:
 
 - Cold Start
 - Warm Start
-- 1テストあたりの実行時間
-- 100テスト実行時間
-- 1,000テスト実行時間
-- メモリ使用量
-- DOM初期化時間
-- Flight処理時間
-- Server Action実行時間
-- テスト間クリーンアップ時間
+- Time per test
+- Time for 100 tests
+- Time for 1,000 tests
+- Memory usage
+- DOM initialization time
+- Flight processing time
+- Server Action execution time
+- Cleanup time between tests
 
-速度について事前の倍率は保証しない。
+We do not promise any speedup factor in advance.
 
-実測値をもとに改善する。
+Improve based on measured results.
 
 ---
 
-# 21. ディレクトリ構成
+# 21. Directory Structure
 
-初期段階では単一パッケージとして実装し、内部モジュールを分離する。
+Start as a single package with separate internal modules.
 
 ```text
 proofyard/
@@ -1613,7 +1616,7 @@ proofyard/
 └── README.md
 ```
 
-将来的には以下のパッケージへ分割できる設計とする。
+Design it so it can later be split into the following packages.
 
 ```text
 @proofyard/core
@@ -1621,63 +1624,63 @@ proofyard/
 @proofyard/dom
 ```
 
-ただし、初期開発でのパッケージ分割は必須としない。
+Splitting into packages is not required during early development.
 
 ---
 
-# 22. 技術検証
+# 22. Technical Validation
 
-実装前に以下の技術検証を行う。
+Run the following technical validations before implementation.
 
-## PoC 1：Bun + RSC Renderer
+## PoC 1: Bun + RSC Renderer
 
-目的：
+Goal:
 
-Bun上でReact公式RSC Rendererを実行できることを確認する。
+Confirm that React's official RSC renderer runs on Bun.
 
-対象：
+Scope:
 
-- 非同期Server Components
+- Async Server Components
 - Flight Serialization
 - Flight Deserialization
 - Suspense
-- シリアライズエラー
+- Serialization errors
 
-成功条件：
+Success criteria:
 
-- Bunのみで動作
-- ブラウザ不要
-- Next.jsサーバー不要
-- React公式のレンダリング経路を使用
+- Runs on Bun alone
+- No browser needed
+- No Next.js server needed
+- Uses React's official rendering path
 
-## PoC 2：Server/Client境界
+## PoC 2: Server/Client Boundary
 
-目的：
+Goal:
 
-`"use client"` のモジュールをClient Referenceとして扱う。
+Treat `"use client"` modules as Client References.
 
-対象：
+Scope:
 
 ```text
 SC → CC → SC → CC
 ```
 
-成功条件：
+Success criteria:
 
-- Server GraphでClient Componentの実装を直接実行しない
-- FlightでClient Referenceをシリアライズできる
-- Client Runtimeで参照を解決できる
-- Propsのシリアライズエラーを検出できる
+- The Server Graph never runs Client Component implementations directly
+- Flight can serialize Client References
+- The Client Runtime can resolve the references
+- Props serialization errors are detected
 
-**このPoCはプロジェクトの成立を左右する最重要項目である。**
+**This PoC is the most important item. The project's viability depends on it.**
 
-## PoC 3：turbo-dom
+## PoC 3: turbo-dom
 
-目的：
+Goal:
 
-Bun + React 19 + turbo-domの互換性を確認する。
+Confirm that Bun + React 19 + turbo-dom work together.
 
-対象：
+Scope:
 
 - `createRoot()`
 - `hydrateRoot()`
@@ -1691,19 +1694,19 @@ Bun + React 19 + turbo-domの互換性を確認する。
 - React Testing Library
 - user-event
 
-成功条件：
+Success criteria:
 
-- Bun Testで正常に動作
-- テスト間の状態分離が可能
-- happy-domとの性能比較を実施
+- Works correctly in Bun Test
+- State can be isolated between tests
+- Performance is compared with happy-dom
 
-## PoC 4：Server Actions
+## PoC 4: Server Actions
 
-目的：
+Goal:
 
-Client ComponentからServer Actionを実行できることを確認する。
+Confirm that a Client Component can run a Server Action.
 
-対象：
+Scope:
 
 - `"use server"`
 - Server Function Reference
@@ -1712,20 +1715,20 @@ Client ComponentからServer Actionを実行できることを確認する。
 - Action Result
 - RSC Refresh
 
-成功条件：
+Success criteria:
 
-- HTTP通信不要
-- 引数・戻り値のシリアライズを検証
-- Server Action実行
-- Client UI更新
+- No HTTP communication needed
+- Serialization of arguments and return values is verified
+- The Server Action runs
+- The Client UI updates
 
-## PoC 5：Next.js App Router
+## PoC 5: Next.js App Router
 
-目的：
+Goal:
 
-既存Next.jsアプリのPageとLayoutを変更せずテストできることを確認する。
+Confirm that Pages and Layouts of an existing Next.js app can be tested without changes.
 
-対象：
+Scope:
 
 - Nested Layouts
 - Dynamic Routes
@@ -1734,63 +1737,63 @@ Client ComponentからServer Actionを実行できることを確認する。
 - Redirect
 - Error Boundary
 
-成功条件：
+Success criteria:
 
-- 実際のNext.jsアプリケーションを利用
-- Next.jsサーバー不要
-- Route Resolutionが正しい
+- Uses a real Next.js application
+- No Next.js server needed
+- Route Resolution is correct
 
-## PoC 6：Cache Components
+## PoC 6: Cache Components
 
-目的：
+Goal:
 
-Next.jsの`"use cache"`を本番と同じ意味論で実行できるか確認する。
+Check whether Next.js `"use cache"` can run with the same semantics as in production.
 
-対象：
+Scope:
 
-- コンパイラ変換
-- キャッシュキー
+- Compiler transformation
+- Cache keys
 - `cacheLife`
 - `cacheTag`
-- 再検証
-- テスト間の分離
+- Revalidation
+- Isolation between tests
 
-成功条件：
+Success criteria:
 
-- Next.js本体との比較テストに成功
-- キャッシュ汚染が起こらない
-- 未対応ケースを明示的に検出できる
+- Comparison tests against Next.js itself pass
+- No cache pollution occurs
+- Unsupported cases are detected explicitly
 
 ---
 
-# 23. 開発ロードマップ
+# 23. Development Roadmap
 
-## Phase 0：技術検証
+## Phase 0: Technical Validation
 
-最初に実施する。
+Do this first.
 
 - Bun + React RSC
 - Flight
 - Server/Client Module Graph
 - turbo-dom
 - React DOM Client
-- Next.js Compiler互換性
+- Next.js Compiler compatibility
 
-実現可能性を確認したうえで本格実装する。
+Start the full implementation only after confirming feasibility.
 
-## Phase 1：Core RSC Testing
+## Phase 1: Core RSC Testing
 
 - `renderRSC()`
-- 非同期Server Components
+- Async Server Components
 - Flight
-- Server/Client境界
+- Server/Client boundary
 - Suspense
-- シリアライズエラー
-- テスト結果の検査API
+- Serialization errors
+- Inspection API for test results
 
-この段階でRSC単体テストを実用化する。
+This phase makes RSC unit testing practical.
 
-## Phase 2：Client Integration
+## Phase 2: Client Integration
 
 - turbo-dom
 - React Testing Library
@@ -1801,9 +1804,9 @@ Next.jsの`"use cache"`を本番と同じ意味論で実行できるか確認す
 - Forms
 - SSR Mode
 - Client Mode
-- Hydration基盤
+- Hydration foundation
 
-## Phase 3：Server Actions
+## Phase 3: Server Actions
 
 - `"use server"`
 - Action Registry
@@ -1812,9 +1815,9 @@ Next.jsの`"use cache"`を本番と同じ意味論で実行できるか確認す
 - `useActionState`
 - `useFormStatus`
 - `useOptimistic`
-- Action実行後のUI更新
+- UI updates after an Action runs
 
-## Phase 4：Next.js Integration
+## Phase 4: Next.js Integration
 
 - App Router
 - Nested Layouts
@@ -1827,7 +1830,7 @@ Next.jsの`"use cache"`を本番と同じ意味論で実行できるか確認す
 - Route Handlers
 - Proxy
 
-## Phase 5：Client Navigation
+## Phase 5: Client Navigation
 
 - Client Router
 - Router Cache
@@ -1838,7 +1841,7 @@ Next.jsの`"use cache"`を本番と同じ意味論で実行できるか確認す
 - `router.refresh()`
 - Streaming Navigation
 
-## Phase 6：Cache Components / PPR
+## Phase 6: Cache Components / PPR
 
 - `"use cache"`
 - Cache Components
@@ -1850,34 +1853,34 @@ Next.jsの`"use cache"`を本番と同じ意味論で実行できるか確認す
 - Static Shell
 - Dynamic Boundaries
 
-## Phase 7：高度な互換性
+## Phase 7: Advanced Compatibility
 
 - Metadata
 - `after()`
 - StrictMode
 - Hydration Mismatch
-- Edge Runtimeの差異
+- Edge Runtime differences
 - Dynamic Imports
 - React Concurrent Rendering
 
-## Phase 8：性能最適化
+## Phase 8: Performance Optimization
 
-- モジュール変換キャッシュ
-- DOM初期化最適化
-- 並列テスト
-- メモリ最適化
-- ベンチマーク
+- Module transform cache
+- DOM initialization optimization
+- Parallel tests
+- Memory optimization
+- Benchmarks
 - Watch Mode
 
 ---
 
-# 24. 品質保証
+# 24. Quality Assurance
 
-## 24.1 Next.jsとの比較テスト
+## 24.1 Comparison Tests Against Next.js
 
-互換性の検証には、実際のNext.jsを使用する。
+Use real Next.js to verify compatibility.
 
-同じテストフィクスチャを以下の2環境で実行する。
+Run the same test fixtures in these two environments.
 
 ```text
 Test Fixture
@@ -1895,35 +1898,35 @@ Test Fixture
              └── Client
 ```
 
-比較対象：
+What to compare:
 
-- レンダリング結果
-- Flightの意味論
+- Rendering output
+- Flight semantics
 - HTML
-- エラー
+- Errors
 - Redirect
 - Suspense
 - Server Actions
 - Cache Components
 - Router State
 
-Flightのバイト列そのものは内部形式や生成順序に依存する可能性があるため、常に完全一致を要求するのではなく、必要な意味論を比較する。
+The raw Flight bytes may depend on internal formats and generation order. So do not always require an exact match. Compare the semantics that matter.
 
-## 24.2 バージョン互換性
+## 24.2 Version Compatibility
 
-ReactとNext.jsのバージョン別テストを実施する。
+Run tests for each React and Next.js version.
 
-ただし、すべての組み合わせをサポートすると保守負担が大きくなる。
+However, supporting every combination creates a large maintenance burden.
 
-初期段階では対象バージョンを限定する。
+In the early stages, limit the target versions.
 
-ReactとRSC関連パッケージについては、互換性が確認された組み合わせのみサポートする。
+For React and RSC-related packages, support only combinations that have been confirmed compatible.
 
 ## 24.3 Fail Closed
 
-未対応機能を通常のJavaScriptとして実行して、テストを成功させてはならない。
+Never let a test pass by running an unsupported feature as plain JavaScript.
 
-例えば、`"use cache"`のコンパイルが未実装の場合は、明示的にエラーとする。
+For example, if compilation of `"use cache"` is not implemented, raise an explicit error.
 
 ```text
 Unsupported Next.js feature:
@@ -1932,69 +1935,69 @@ Cache Components compilation is not supported
 by the current runtime.
 ```
 
-これは本プロジェクトの重要な設計原則である。
+This is a key design principle of this project.
 
 ---
 
-# 25. 受け入れ基準
+# 25. Acceptance Criteria
 
-初期リリースの受け入れ基準を以下とする。
+The acceptance criteria for the initial release are as follows.
 
-### 必須
+### Required
 
-- `bun test`で実行できる。
-- 実ブラウザを起動しない。
-- Next.jsサーバーを起動しない。
-- 非同期Server Componentsをテストできる。
-- Flightのシリアライズを検証できる。
-- シリアライズエラーを検出できる。
-- SC → CC → SCの構造を扱える。
-- Suspenseを検証できる。
-- turbo-domでClient Componentsをレンダリングできる。
-- `useEffect`を検証できる。
-- Providerを扱える。
-- Server Actionsの基本的な実行経路をテストできる。
-- テスト間でDOMやRequest Contextが混線しない。
-- 未対応のNext.js機能を検出できる。
+- Runs with `bun test`.
+- Does not launch a real browser.
+- Does not start a Next.js server.
+- Can test async Server Components.
+- Can verify Flight serialization.
+- Can detect serialization errors.
+- Can handle SC → CC → SC structures.
+- Can verify Suspense.
+- Can render Client Components with turbo-dom.
+- Can verify `useEffect`.
+- Can handle Providers.
+- Can test the basic execution path of Server Actions.
+- DOM and Request Context do not leak between tests.
+- Can detect unsupported Next.js features.
 
-### 初期リリース後
+### After the Initial Release
 
-- App Routerの完全なLayout Resolution
+- Full App Router Layout Resolution
 - Client Router
 - Router Cache
 - Parallel Routes
 - Intercepting Routes
 - Cache Components
 - PPR
-- 高度なServer Actions
+- Advanced Server Actions
 - Metadata
 - Proxy
 - Route Handlers
-- Hydrationの高度な検証
+- Advanced Hydration verification
 
-ここでいう「初期リリース」は、最小限の実用的なRSCテスト環境を意味する。
+Here, "initial release" means a minimal, practical RSC test environment.
 
-Next.jsの全機能への対応は初期リリースの条件としない。
+Support for every Next.js feature is not a requirement for the initial release.
 
 ---
 
-# 26. 最重要技術リスク
+# 26. Top Technical Risks
 
-本プロジェクトの技術リスクは次の順に大きいと考える。
+We consider the technical risks of this project to be, from largest to smallest, as follows.
 
-### リスク1：BunとReact RSCのモジュール解決
+### Risk 1: Module Resolution for Bun and React RSC
 
-最も重要な問題。
+This is the most important problem.
 
-React Server Componentsでは、Server/Clientで異なるモジュール解決が必要となる。
+React Server Components need different module resolution for Server and Client.
 
-Bunの標準ローダーだけで正しく実現できるかは未検証。
+It has not been verified whether Bun's standard loader alone can do this correctly.
 
-Bunのローダーで不十分な場合、追加の変換レイヤーや分離された実行コンテキストが必要となる。
+If Bun's loader is not enough, an extra transform layer or isolated execution contexts will be needed.
 
-### リスク2：Next.jsコンパイラ依存
+### Risk 2: Dependence on the Next.js Compiler
 
-以下の機能はNext.jsのコンパイラと密接に結びついている。
+The following features are tightly coupled to the Next.js compiler.
 
 - `"use client"`
 - `"use server"`
@@ -2002,87 +2005,87 @@ Bunのローダーで不十分な場合、追加の変換レイヤーや分離�
 - Server Action Closure
 - Cache Components
 
-ReactのRSC Rendererだけで、Next.js本番の動作を完全には再現できない。
+React's RSC Renderer alone cannot fully reproduce how Next.js behaves in production.
 
-Next.jsのコンパイラを再利用する方法を調査する必要がある。
+We need to investigate ways to reuse the Next.js compiler.
 
-### リスク3：Client Routerの再現
+### Risk 3: Reproducing the Client Router
 
-`router.refresh()`やソフトナビゲーションでは、新しいRSC Payloadを既存のReactツリーにマージする。
+`router.refresh()` and soft navigation merge a new RSC Payload into the existing React tree.
 
-単純な再レンダリングではClient Stateの保持が正確に再現できない。
+A simple re-render cannot accurately reproduce how Client State is preserved.
 
-Next.jsのRouter実装をどこまで再利用できるかが重要である。
+How much of the Next.js Router implementation we can reuse is a key question.
 
-### リスク4：Cache Components
+### Risk 4: Cache Components
 
-Cache Componentsはコンパイラ、Request Context、Prerender、キャッシュストレージ、Revalidationなどに依存する。
+Cache Components depend on the compiler, Request Context, Prerender, cache storage, Revalidation, and more.
 
-独自実装では本番との意味論がずれやすい。
+A custom implementation can easily drift from production semantics.
 
-### リスク5：turbo-dom
+### Risk 5: turbo-dom
 
-turbo-domのBun互換性、React 19互換性、Hydration、フォームイベントの再現性は実機で検証する必要がある。
+turbo-dom's Bun compatibility, React 19 compatibility, Hydration, and how faithfully it reproduces form events must be verified in practice.
 
-採用方針は維持しつつ、問題を早期発見できるテストを用意する。
-
----
-
-# 27. 開発時の重要なルール
-
-別のAIが本プロジェクトを実装する際には、以下を守ること。
-
-**1. 実装済みと未実装を明確に区別する。**
-
-設計上対応予定となっている機能を、実装済みとして扱わない。
-
-**2. React内部処理を安易に再実装しない。**
-
-既存のReact RSC Renderer、React DOM、Flight実装を優先する。
-
-**3. Next.jsの動作を推測で再現しない。**
-
-可能な限りNext.jsの実装を参照し、比較テストを用意する。
-
-**4. 高速化のためにFlightを省略しない。**
-
-RSC特有のシリアライズエラーを検出する必要がある。
-
-**5. Server/Client境界を壊さない。**
-
-Client ComponentをServer Componentとして直接実行してはならない。
-
-**6. キャッシュのスコープを守る。**
-
-テスト高速化用キャッシュとアプリケーションキャッシュを分離する。
-
-**7. turbo-domを標準DOM実装とする。**
-
-ただし、DOM Adapter境界を維持し、互換性問題に備える。
-
-**8. 不必要なブラウザ・サーバー・バンドラーを起動しない。**
-
-ただし、必要な変換処理まで無条件に排除しない。
-
-**9. 正確性を性能より優先する。**
-
-高速でも不正確なテストは価値がない。
-
-**10. 技術検証から実装を開始する。**
-
-特に、Bun + React RSC Renderer + Flight + Client Referenceの成立を確認するまでは、大規模な実装を進めない。
+We keep the decision to adopt it, and add tests that catch problems early.
 
 ---
 
-# 28. 最終目標
+# 27. Key Development Rules
 
-最終的には、次のようなテストを実行できることを目指す。
+Any other AI that implements this project must follow these rules.
+
+**1. Clearly separate what is implemented from what is not.**
+
+Do not treat features that the design plans to support as already implemented.
+
+**2. Do not casually reimplement React internals.**
+
+Prefer the existing React RSC Renderer, React DOM, and Flight implementations.
+
+**3. Do not reproduce Next.js behavior by guessing.**
+
+Refer to the Next.js implementation whenever possible, and add comparison tests.
+
+**4. Do not skip Flight to gain speed.**
+
+We need to detect serialization errors specific to RSC.
+
+**5. Do not break the Server/Client boundary.**
+
+Never run a Client Component directly as a Server Component.
+
+**6. Respect cache scopes.**
+
+Keep caches for test speed separate from application caches.
+
+**7. Use turbo-dom as the standard DOM implementation.**
+
+However, keep the DOM Adapter boundary in place to prepare for compatibility issues.
+
+**8. Do not launch unnecessary browsers, servers, or bundlers.**
+
+However, do not blindly remove transform steps that are actually needed.
+
+**9. Put correctness ahead of performance.**
+
+A fast but inaccurate test has no value.
+
+**10. Start implementation with technical validation.**
+
+In particular, do not move forward with large-scale implementation until you confirm that Bun + React RSC Renderer + Flight + Client Reference works.
+
+---
+
+# 28. Final Goal
+
+The final goal is to be able to run tests like the following.
 
 ```tsx
 import { test, expect } from "bun:test";
 import { renderRoute } from "proofyard";
 
-test("ユーザー作成から一覧更新まで", async () => {
+test("from creating a user to updating the list", async () => {
   const app = await renderRoute("/users", {
     mode: "client",
     cookies: {
@@ -2092,20 +2095,20 @@ test("ユーザー作成から一覧更新まで", async () => {
 
   await app.user.click(
     app.getByRole("button", {
-      name: "新規作成",
+      name: "Create new",
     }),
   );
 
   await app.user.type(
     app.getByRole("textbox", {
-      name: "名前",
+      name: "Name",
     }),
     "Alice",
   );
 
   await app.user.click(
     app.getByRole("button", {
-      name: "保存",
+      name: "Save",
     }),
   );
 
@@ -2121,7 +2124,7 @@ test("ユーザー作成から一覧更新まで", async () => {
 });
 ```
 
-このテストでは、以下がすべて実行される想定である。
+This test is expected to run all of the following.
 
 ```text
 Bun Test
@@ -2166,24 +2169,24 @@ Client UI Update
 Assertions
 ```
 
-これらを**Next.jsサーバーも実ブラウザも起動せず、Bunプロセス内で完結させる**。
+All of this **runs inside the Bun process, without starting a Next.js server or a real browser**.
 
-なお、コード中のAPIは最終的な開発体験を示す仕様案であり、動作検証済みの実装ではない。
+Note that the APIs in this code are a proposed spec showing the intended developer experience. They are not a verified, working implementation.
 
 ---
 
-# 29. 最終方針
+# 29. Final Policy
 
-本プロジェクトでは、次の3点を最優先とする。
+This project gives top priority to the following three points.
 
-**正確性：** React RSCとNext.jsの実際の動作に可能な限り一致させる。
+**Correctness:** Match the actual behavior of React RSC and Next.js as closely as possible.
 
-**速度：** ブラウザ・サーバー・不要なバンドル処理を排除し、Bunで高速に実行する。
+**Speed:** Remove browsers, servers, and unnecessary bundling, and run fast on Bun.
 
-**保守性：** React・Next.jsの内部実装への依存を限定し、Adapterと互換性テストによってバージョン変更に追従する。
+**Maintainability:** Limit dependence on React and Next.js internals, and keep up with version changes through Adapters and compatibility tests.
 
-最初に取り組むべき技術課題は、**Bun上でServer/Clientモジュールグラフを分離し、React公式のRSC RendererとFlightを正しく動作させること**である。
+The first technical problem to tackle is **separating the Server/Client module graphs on Bun and getting React's official RSC Renderer and Flight to work correctly**.
 
-これが成立した後、turbo-domによるClient Runtime、Server Actions、Next.js App Router、Cache Componentsへと段階的に拡張する。
+Once that works, extend step by step to the turbo-dom Client Runtime, Server Actions, the Next.js App Router, and Cache Components.
 
-**本仕様書は最終到達目標を定義したものであり、すべての機能の実現可能性が検証されているわけではない。実装AIは、まずPoCと互換性テストによって各技術的前提を確認すること。**
+**This spec defines the final target. The feasibility of every feature has not been verified. The implementing AI must first confirm each technical assumption with a PoC and compatibility tests.**
