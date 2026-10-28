@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/brand/mark.svg" alt="Proofyard" width="96">
+</p>
+
 <h1 align="center">Proofyard</h1>
 
 <p align="center">Test Next.js App Router apps with <code>bun test</code>. No browser, no Next.js server.</p>

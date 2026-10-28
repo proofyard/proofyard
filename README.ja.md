@@ -1,3 +1,5 @@
+<p align="center"><img src=".github/brand/mark.svg" alt="Proofyard" width="96"></p>
+
 # Proofyard
 
 [English](README.md)
