@@ -68,3 +68,10 @@ test("アプリの下の node_modules は、アプリのソースとして変換
   const app = await renderRoute("/base/cjs/");
   await app.findByRole("heading", { name: "From CJS" });
 });
+
+test("top-level await のある Client Component（推移的な依存を含む）を読み込める", async () => {
+  const app = await renderRoute("/base/tla/");
+  await app.findByRole("heading", { name: "From top-level await" });
+  await app.user.click(app.getByRole("button", { name: "Clicked 0" }));
+  await app.findByRole("button", { name: "Clicked 1" });
+});

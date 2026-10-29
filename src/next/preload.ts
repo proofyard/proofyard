@@ -773,7 +773,21 @@ const recordingAction = (id: string) => {
 // `next start` が読む .next（route-module.ts の loadManifests）
 const key = () => randomBytes(32).toString("hex");
 const preview = { previewModeId: key(), previewModeSigningKey: key(), previewModeEncryptionKey: key() };
-const clientEntry = (id: string) => ({ id, name: "*", chunks: [], async: false });
+// top-level await のある Client Component（推移的な依存を含む）。Next.js（webpack）は async module として manifest の async を true にし、
+// Flight クライアントは __webpack_require__ が返す Promise を待つ。SSR 層は読み込み済み（上）なので、同期で返したままでよい
+// ponytail: SSR 層の出力（Bun の出力は最上位の文が行頭から始まる）で、行頭の await を、チャンクの import をたどって探す。ブラウザ層だけの依存は見ない
+const TOP_LEVEL_AWAIT = /^(?:await\b|for await\b|(?:var|let|const) [^\n]*?= await\b)/m;
+const asyncOutputs = new Map<string, boolean>();
+const isAsyncOutput = (file: string): boolean => {
+  if (!asyncOutputs.has(file)) {
+    asyncOutputs.set(file, false); // 循環
+    const code = readFileSync(file, "utf8");
+    asyncOutputs.set(file, TOP_LEVEL_AWAIT.test(code) || [...code.matchAll(/(?:from|import)\s*"(\.\.?\/[^"]+)"/g)].some(([, spec]) => isAsyncOutput(join(dirname(file), spec!))));
+  }
+  return asyncOutputs.get(file)!;
+};
+const asyncClientIds = new Set([...clientIds].filter((id) => isAsyncOutput(ssr.get(id)!)));
+const clientEntry = (id: string) => ({ id, name: "*", chunks: [], async: asyncClientIds.has(id) });
 const clientReferenceManifest = {
   clientModules: Object.fromEntries([...clientIds].map((id) => [id, clientEntry(id)])),
   ssrModuleMapping: Object.fromEntries([...clientIds].map((id) => [id, { "*": clientEntry(id) }])),
@@ -1284,11 +1298,13 @@ write(
   [
     // webpack のランタイムの代わり（Flight クライアントが Client Reference のモジュールを読む）
     "const modules = {",
-    ...[...clientIds].map((id) => `  ${JSON.stringify(id)}: () => require(${JSON.stringify(id)}),`),
+    // async module（top-level await）は import() で読み、同じ Promise を返す（Flight クライアントが状態を書き込んで待つ）
+    ...[...clientIds].map((id) => `  ${JSON.stringify(id)}: () => ${asyncClientIds.has(id) ? "import" : "require"}(${JSON.stringify(id)}),`),
     "};",
+    "const loaded = {};",
     "globalThis.__proofyardRouteRequire = Object.assign((id) => {",
     "  if (!(id in modules)) throw new Error(`[proofyard] unknown client module ${id}`);",
-    "  return modules[id]();",
+    "  return id in loaded ? loaded[id] : (loaded[id] = modules[id]());",
     "}, { u: (chunkId) => chunkId });",
     "globalThis.__proofyardRouteChunkLoad = () => Promise.resolve();",
     `require(${JSON.stringify(join(nextDist, "client/app-next.js"))});`,
@@ -1340,8 +1356,9 @@ const loadBrowser = () =>
         if (!modules.has(id)) {
           const out = outputs.get(id);
           if (!out) throw new Error(`[proofyard] unknown client module ${id}`);
-          const m = require(out);
-          modules.set(id, esmClientIds.has(id) ? m : m.default);
+          // async module（top-level await）は Promise を返す（route-entry.js と同じ）
+          const exports = (m: any) => (esmClientIds.has(id) ? m : m.default);
+          modules.set(id, asyncClientIds.has(id) ? import(out).then(exports) : exports(require(out)));
         }
         return modules.get(id);
       },
