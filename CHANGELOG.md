@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3](https://github.com/proofyard/proofyard/compare/v0.1.2...v0.1.3) (2026-10-29)
+
+
+### Performance Improvements
+
+* avoid catastrophic backtracking in USE_CLIENT directive regex ([0de9d60](https://github.com/proofyard/proofyard/commit/0de9d6075b71302cf0611536a4a35ce1a42bb67e))
+* resolve react-server imports once per package and skip relative imports ([f796bd4](https://github.com/proofyard/proofyard/commit/f796bd46a37888c2bd050232be487c52d9b01945))
+
 ## [0.1.2](https://github.com/proofyard/proofyard/compare/v0.1.1...v0.1.2) (2026-10-29)
 
 
