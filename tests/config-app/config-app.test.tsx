@@ -2,6 +2,14 @@
 import { expect, test } from "bun:test";
 import { renderRoute, requestRoute } from "proofyard";
 
+// DOM を入れる前（最初の renderRoute の前）のリクエストの、レスポンスの後の処理（Proxy の after()）が、DOM を入れた後に動いても壊れない
+test("DOM を入れる前の Proxy の after() と、直後の renderRoute", async () => {
+  expect((await requestRoute("/base/tla-proxy/")).status).toBe(307);
+  const app = await renderRoute("/base/tla/");
+  await app.findByRole("heading", { name: "From top-level await" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+});
+
 test("basePath と trailingSlash: 末尾の / へのリダイレクトと、Link・usePathname", async () => {
   const res = await requestRoute("/base/about");
   expect(res.status).toBe(308);

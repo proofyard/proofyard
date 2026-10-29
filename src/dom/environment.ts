@@ -85,6 +85,14 @@ const KEEP_NATIVE = [
 export function installDom(html = "<!doctype html><html><head></head><body></body></html>") {
   if (installed) return installed;
   const native = Object.fromEntries(KEEP_NATIVE.map((name) => [name, (globalThis as any)[name]]));
+  // DOM を入れる前に作られた Bun 本来の EventTarget（Next.js の CloseController、AbortSignal など）に、入れた後の turbo-dom の Event が送られる
+  // （DOM を入れる前のリクエストの Proxy の after() は、レスポンスの後に new Event("close") を送る）。Bun 本来の Event に作り直して送る
+  // ponytail: 作り直した Event の preventDefault は元の Event に戻らない
+  const NativeEvent = globalThis.Event;
+  const nativeDispatch = globalThis.EventTarget.prototype.dispatchEvent;
+  globalThis.EventTarget.prototype.dispatchEvent = function (event: Event) {
+    return nativeDispatch.call(this, event instanceof NativeEvent ? event : new NativeEvent(event.type, event));
+  };
   installed = installGlobals(globalThis, { html });
   for (const name of KEEP_NATIVE) if (native[name] !== undefined) (globalThis as any)[name] = native[name];
   globalThis.FormData = ProofyardFormData as typeof FormData;
