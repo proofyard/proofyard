@@ -570,16 +570,6 @@ const sourceLoader = (path: string) => (path.match(/\.([jt]sx?)$/)?.[1] ?? "js")
 // Server Action の id → ファイル（next build は SWC の変換結果から集めて server-reference-manifest.json に書く）
 const actionFiles = new Map<string, string>();
 const nodeModuleImports: [string, string][] = []; // node_modules の import を辿るファイル
-// node_modules をたどる処理の内訳（ms）
-const spent: Record<string, number> = {};
-const timed = <T>(label: string, f: () => T): T => {
-  const start = performance.now();
-  try {
-    return f();
-  } finally {
-    spent[label] = (spent[label] ?? 0) + performance.now() - start;
-  }
-};
 for (const path of appSources(projectDir)) {
   const source = readFileSync(path, "utf8");
   if (/["']use server["']/.test(source))
@@ -591,9 +581,8 @@ for (const path of appSources(projectDir)) {
   // optimizePackageImports の import は、書き換えた後の（必要なファイルだけを読む）モジュールから辿る
   // （rsc 層で変換できないファイルは rsc 層では読まれないので辿らない）
   if (!barrelPackages.some((name) => source.includes(name))) nodeModuleImports.push([path, source]);
-  else if (timed("app swc", () => tryCompile(path, source, "rsc"))) nodeModuleImports.push([path, timed("app swc", () => swcTransformSync(path, source))]);
+  else if (tryCompile(path, source, "rsc")) nodeModuleImports.push([path, swcTransformSync(path, source)]);
 }
-lap("app sources");
 // node_modules の "use client" はネイティブで読むとサーバーで実行されてしまう。アプリの import から node_modules を辿って
 // 見つけたものを Client Reference の代わりのモジュールにする（Next.js は rsc 層で node_modules もバンドルして同じことをする）
 // ponytail: 静的な import / require だけを辿る（require(変数) などの動的なものは辿れない）
@@ -634,16 +623,16 @@ function reactServerResolve(spec: string, from: string, resolved: string): strin
 const visited = new Set<string>();
 while (nodeModuleImports.length) {
   const [path, source] = nodeModuleImports.pop()!;
-  for (const { path: spec } of timed("scan", () => new Bun.Transpiler({ loader: sourceLoader(path) }).scanImports(source))) {
+  for (const { path: spec } of new Bun.Transpiler({ loader: sourceLoader(path) }).scanImports(source)) {
     if (/^(?:node:|bun:)/.test(spec) || spec in ALIASES.rsc || nextFacades.has(spec) || spec === "next" || spec.startsWith("next/")) continue;
     let resolved: string;
     try {
-      resolved = timed("resolve", () => Bun.resolveSync(spec, dirname(path)));
+      resolved = Bun.resolveSync(spec, dirname(path));
     } catch {
       continue;
     }
     if (!(resolved.includes("/node_modules/") || resolved.startsWith(barrelDir + "/")) || !/\.[cm]?js$/.test(resolved)) continue;
-    const target = timed("react-server", () => reactServerResolve(spec, dirname(path), resolved));
+    const target = reactServerResolve(spec, dirname(path), resolved);
     if (target !== resolved && !nativeReplacements.has(resolved)) {
       const { exports } = new Bun.Transpiler({ loader: "js" }).scan(readFileSync(target, "utf8"));
       nativeReplacements.set(
@@ -656,9 +645,9 @@ while (nodeModuleImports.length) {
     }
     if (visited.has(resolved)) continue;
     visited.add(resolved);
-    const dep = timed("read", () => readFileSync(resolved, "utf8"));
+    const dep = readFileSync(resolved, "utf8");
     if (USE_CLIENT.test(dep)) {
-      nativeReplacements.set(resolved, timed("stub", () => clientReferenceStub(resolved, dep)));
+      nativeReplacements.set(resolved, clientReferenceStub(resolved, dep));
       continue;
     }
     if (SERVER_DIRECTIVE.test(dep)) {
@@ -668,7 +657,7 @@ while (nodeModuleImports.length) {
       if (!exports.length && !imports.length && /\b(?:module\.)?exports\b/.test(dep))
         nativeReplacements.set(resolved, failModule(`[proofyard] Unsupported: CommonJS "use server" / "use cache" modules in node_modules (${resolved})`, cjsExportNames(dep)));
       else {
-        const code = timed("swc", () => swcTransformSync(resolved, dep));
+        const code = swcTransformSync(resolved, dep);
         for (const m of code.matchAll(/registerServerReference\([^,]+,\s*"([0-9a-f]+)"/g)) actionFiles.set(m[1]!, resolved);
         nativeReplacements.set(resolved, code);
       }
@@ -676,7 +665,7 @@ while (nodeModuleImports.length) {
     nodeModuleImports.push([resolved, dep]);
   }
 }
-lap(`node_modules (${visited.size} files, ${reactServerSpawns} react-server resolves; ${Object.entries(spent).map(([k, v]) => `${k} ${v.toFixed(0)}ms`).join(", ")})`);
+lap(`node_modules (${visited.size} files, ${reactServerSpawns} react-server resolves)`);
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
 const ssrEntries = [...clientIds, SSR_RUNTIME];
 const ssr = await shareLayer("ssr", ssrEntries, (outdir) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style }));
