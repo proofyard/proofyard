@@ -242,6 +242,14 @@ for (const result of loaded) {
 console.log(`[proofyard] entries: ${routes.size} routes${middlewareEntry ? " + proxy" : ""}${instrumentationEntry ? " + instrumentation" : ""} ${(performance.now() - t).toFixed(0)}ms`);
 
 t = performance.now();
+// 内訳（設定・SWC・フォント・バレルの準備、rsc 層のビルド、node_modules をたどる、SSR 層のビルド、その他）
+const laps: string[] = [];
+let lapStart = t;
+const lap = (label: string) => {
+  const now = performance.now();
+  laps.push(`${label} ${(now - lapStart).toFixed(0)}ms`);
+  lapStart = now;
+};
 // next build と同じ define（nodejs のサーバー。bun test の NODE_ENV=test は production 扱い）
 const hasRewrites = Object.values(customRoutes.rewrites as Record<string, unknown[]>).some((r) => r.length > 0);
 const nextDefine: Record<string, unknown> = getDefineEnv({
@@ -484,6 +492,7 @@ for (const file of appSources(projectDir)) {
   if (barrelPackages.some((name) => source.includes(name)))
     for (const layer of ["rsc", "ssr", "browser"] as const) await prepareBarrels(tryCompile(file, source, layer), dirname(file));
 }
+lap("prepare");
 const withImports = (filename: string, code: string) => withBarrels(withFonts(code), dirname(filename));
 // ネイティブ読み込み時の SWC 変換（同期。非同期の onLoad を経たモジュールは require できない。route.ts は require で読まれる）
 const swcTransformSync = (filename: string, source: string): string => withImports(filename, swcCompile(filename, source));
@@ -554,6 +563,7 @@ const shareLayer = async (name: string, entries: string[], build: (outdir: strin
 };
 const rscEntries = [...entries, ...facadeEntries.values()];
 const rsc = await shareLayer("rsc", rscEntries, (outdir) => buildLayer("rsc", rscEntries, { outdir, define, generatedDir, nativeDir: projectDir, style }));
+lap("rsc build");
 
 // アプリの "use client" ファイルを Client Reference として登録する（Next.js 本体のものは rsc 層のビルドで登録済み）
 const sourceLoader = (path: string) => (path.match(/\.([jt]sx?)$/)?.[1] ?? "js") as "js" | "jsx" | "ts" | "tsx";
@@ -642,9 +652,11 @@ while (nodeModuleImports.length) {
     nodeModuleImports.push([resolved, dep]);
   }
 }
+lap("node_modules");
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
 const ssrEntries = [...clientIds, SSR_RUNTIME];
 const ssr = await shareLayer("ssr", ssrEntries, (outdir) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style }));
+lap("ssr build");
 
 // ネイティブで読み込むアプリ（と、その依存）の rsc 層の解決と変換
 // - react などは Next.js 内蔵の React に（build.module は CJS の require も含めて置き換える）
@@ -698,7 +710,8 @@ Bun.plugin({
 // 層のバンドル（Bun.build）にだけ入るファイル（Client Component など）も監視しない。アプリのソースとスタイルを、プラグインを通らない
 // パス（クエリ付き）でテキストとして読み込んで、Bun に監視させる（コードは実行しない。--watch かどうかは分からないので毎回）
 await Promise.all([...appSources(projectDir, /\.(?:[cm]?[jt]sx?|css|scss|sass)$/)].map((file) => import(`${file}?proofyard-watch`, { with: { type: "text" } })));
-console.log(`[proofyard] rsc+ssr layers: ${(performance.now() - t).toFixed(0)}ms, client references: ${clientIds.size}`);
+lap("other");
+console.log(`[proofyard] rsc+ssr layers: ${(performance.now() - t).toFixed(0)}ms (${laps.join(", ")}), client references: ${clientIds.size}`);
 t = performance.now();
 
 // SSR 層の Client Component（webpack の require と同じく CJS は module.exports、ESM は名前空間）
