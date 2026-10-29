@@ -101,7 +101,7 @@ const abs = (spec: string) => Bun.resolveSync(spec, root);
 const swcHelpers = () => dirname(Bun.resolveSync("@swc/helpers/package.json", dirname(abs("next/package.json"))));
 // node_modules 内の "use server" / "use cache"（Next.js と同じくアプリと同じ SWC で変換する。rsc 層はネイティブで読み込むときに変換する）
 export const SERVER_DIRECTIVE = /^\s*["']use (?:server|cache(?::\s*[\w-]+)?)["']/m;
-export const USE_CLIENT = /^\s*(?:(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:["']use strict["'];?\s*)?["']use client["']/;
+export const USE_CLIENT = /^\s*(?:(?:\/\/[^\n]*\n|\/\*(?:[^*]|\*(?!\/))*\*\/)\s*)*(?:["']use strict["'];?\s*)?["']use client["']/;
 
 // Client Reference の id（"use client" ファイルの絶対パス）。esmClientIds は ESM（名前空間で渡す）もの
 export const clientIds = new Set<string>();
