@@ -592,20 +592,33 @@ const failModule = (message: string, exports: string[] = []) =>
   `throw new Error(${JSON.stringify(message)});\nexport default undefined;\n${exports.filter((n) => n !== "default").map((n) => `export const ${n} = undefined;\n`).join("")}`;
 // exports に react-server の条件を持つパッケージは、Next.js の rsc 層（webpack の conditionNames）では別のファイルになる。
 // Bun の解決（--conditions react-server）で求め、元のファイルを読んだら react-server のファイルを読むようにする
-// ponytail: package.json に "react-server" と書かれたパッケージだけ、1 つずつ別プロセスで解決する。多ければまとめる
-const hasReactServerCondition = new Map<string, boolean>(); // package.json → "react-server" を含む
-function reactServerResolve(spec: string, from: string, resolved: string): string {
-  let dir = dirname(resolved);
-  while (!existsSync(join(dir, "package.json")) || !/"name"\s*:/.test(readFileSync(join(dir, "package.json"), "utf8"))) {
-    if (dir === dirname(dir)) return resolved;
-    dir = dirname(dir);
+// ponytail: package.json に "react-server" と書かれたパッケージへの、パッケージ名での import だけを別プロセスで解決する
+// （相対パスは exports を通らないので条件で変わらない）。同じパッケージからの同じ指定子は使い回す。多ければ 1 つのプロセスにまとめる
+const packageDirs = new Map<string, string | undefined>(); // ディレクトリ → それを含むパッケージ（name のある package.json）のディレクトリ
+function packageDir(dir: string): string | undefined {
+  if (!packageDirs.has(dir)) {
+    const pkg = join(dir, "package.json");
+    packageDirs.set(dir, existsSync(pkg) && /"name"\s*:/.test(readFileSync(pkg, "utf8")) ? dir : dir === dirname(dir) ? undefined : packageDir(dirname(dir)));
   }
-  const pkg = join(dir, "package.json");
-  if (!hasReactServerCondition.has(pkg)) hasReactServerCondition.set(pkg, readFileSync(pkg, "utf8").includes('"react-server"'));
-  if (!hasReactServerCondition.get(pkg)) return resolved;
-  const proc = Bun.spawnSync([process.execPath, "--conditions", "react-server", "-e", "console.log(Bun.resolveSync(process.argv[1], process.argv[2]))", spec, from]);
-  if (!proc.success) throw new Error(`[proofyard] failed to resolve ${spec} with the react-server condition from ${from}\n${proc.stderr}`);
-  return proc.stdout.toString().trim();
+  return packageDirs.get(dir);
+}
+const hasReactServerCondition = new Map<string, boolean>(); // パッケージのディレクトリ → package.json に "react-server" を含む
+const reactServerResolved = new Map<string, string>(); // 指定子 + import 元のパッケージ → 解決したファイル
+let reactServerSpawns = 0;
+function reactServerResolve(spec: string, from: string, resolved: string): string {
+  if (/^[./]/.test(spec)) return resolved;
+  const dir = packageDir(dirname(resolved));
+  if (!dir) return resolved;
+  if (!hasReactServerCondition.has(dir)) hasReactServerCondition.set(dir, readFileSync(join(dir, "package.json"), "utf8").includes('"react-server"'));
+  if (!hasReactServerCondition.get(dir)) return resolved;
+  const key = `${spec}\0${packageDir(from) ?? from}`;
+  if (!reactServerResolved.has(key)) {
+    reactServerSpawns++;
+    const proc = Bun.spawnSync([process.execPath, "--conditions", "react-server", "-e", "console.log(Bun.resolveSync(process.argv[1], process.argv[2]))", spec, from]);
+    if (!proc.success) throw new Error(`[proofyard] failed to resolve ${spec} with the react-server condition from ${from}\n${proc.stderr}`);
+    reactServerResolved.set(key, proc.stdout.toString().trim());
+  }
+  return reactServerResolved.get(key)!;
 }
 const visited = new Set<string>();
 while (nodeModuleImports.length) {
@@ -652,7 +665,7 @@ while (nodeModuleImports.length) {
     nodeModuleImports.push([resolved, dep]);
   }
 }
-lap("node_modules");
+lap(`node_modules (${visited.size} files, ${reactServerSpawns} react-server resolves)`);
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
 const ssrEntries = [...clientIds, SSR_RUNTIME];
 const ssr = await shareLayer("ssr", ssrEntries, (outdir) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style }));
