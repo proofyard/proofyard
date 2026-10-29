@@ -816,10 +816,13 @@ write(join(distDir, "routes-manifest.json"), routesManifest);
 // ページのモジュール（next start は server/app/<page>.js を require する）は rsc 層のビルド結果
 write(join(distDir, "server/app-paths-manifest.json"), Object.fromEntries([...routes.values()].map(({ page }) => [page, `app${page}.js`])));
 write(join(distDir, "app-path-routes-manifest.json"), Object.fromEntries([...routes].map(([pathname, { page }]) => [page, pathname])));
-for (const { page, entry } of routes.values()) {
-  const mod = `require(${JSON.stringify(rsc.get(entry))})`;
-  write(join(distDir, `server/app${page}.js`), `const mod = ${mod};\nmodule.exports = mod.__proofyardEntryBase ? { ...mod.__proofyardEntryBase, ...mod } : mod;\n`);
-}
+// top-level await のあるモジュールに依存するエントリ（async module）は require できない。Next.js は webpack の async module の
+// エントリ（module.exports が Promise）を待つので、import() の Promise にする（require に失敗した時点で評価は始まっていて、import() はその続きを待つ）
+const requireEntry = (entry: string, then = "") =>
+  `const load = (mod) => mod${then};\ntry {\n  module.exports = load(require(${JSON.stringify(rsc.get(entry))}));\n} catch (error) {\n` +
+  `  if (!String(error).includes("require() async module")) throw error;\n  module.exports = import(${JSON.stringify(rsc.get(entry))}).then(load);\n}\n`;
+for (const { page, entry } of routes.values())
+  write(join(distDir, `server/app${page}.js`), requireEntry(entry, " && (mod.__proofyardEntryBase ? { ...mod.__proofyardEntryBase, ...mod } : mod)"));
 write(join(distDir, "server/pages-manifest.json"), {});
 mkdirSync(join(distDir, "static"), { recursive: true });
 write(join(distDir, "server/middleware-manifest.json"), { version: 3, middleware: {}, functions: {}, sortedMiddleware: [] });
@@ -828,9 +831,9 @@ write(
   join(distDir, "server/functions-config-manifest.json"),
   { version: 1, functions: middlewareEntry ? { "/_middleware": { runtime: "nodejs", matchers: middlewareMatchers } } : {} },
 );
-if (middlewareEntry) write(join(distDir, "server/middleware.js"), `module.exports = require(${JSON.stringify(rsc.get(middlewareEntry))});\n`);
+if (middlewareEntry) write(join(distDir, "server/middleware.js"), requireEntry(middlewareEntry));
 // instrumentation は server/instrumentation.js（getInstrumentationModule）。register / onRequestError は Next.js 本体が呼ぶ
-if (instrumentationEntry) write(join(distDir, "server/instrumentation.js"), `module.exports = require(${JSON.stringify(rsc.get(instrumentationEntry))});\n`);
+if (instrumentationEntry) write(join(distDir, "server/instrumentation.js"), requireEntry(instrumentationEntry));
 // routes / dynamicRoutes / notFoundRoutes は、プリロードの最後で next build と同じものにする（collectBuildOutput）
 const prerenderManifest = { version: 4, routes: {} as Record<string, any>, dynamicRoutes: {} as Record<string, any>, notFoundRoutes: [] as string[], preview };
 write(join(distDir, "prerender-manifest.json"), prerenderManifest);

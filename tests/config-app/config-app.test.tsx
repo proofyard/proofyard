@@ -75,3 +75,12 @@ test("top-level await のある Client Component（推移的な依存を含む�
   await app.user.click(app.getByRole("button", { name: "Clicked 0" }));
   await app.findByRole("button", { name: "Clicked 1" });
 });
+
+test("top-level await のあるモジュールに依存する Proxy・Server Component・Route Handler", async () => {
+  const redirect = await requestRoute("/base/tla-proxy/");
+  expect(redirect.status).toBe(307);
+  expect(redirect.headers.get("location")).toContain("/base/tla/?from=From%20top-level%20await");
+  const app = await renderRoute("/base/tla-server/");
+  await app.findByRole("heading", { name: "Server: From top-level await" });
+  expect(await (await requestRoute("/base/api/tla/")).json()).toEqual({ tlaValue: "From top-level await" });
+});

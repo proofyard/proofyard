@@ -28,6 +28,9 @@ const cases: { path: string; cookies?: Record<string, string> }[] = [
   { path: "/base/compiler/" },
   { path: "/base/cjs/" },
   { path: "/base/tla/" },
+  { path: "/base/tla-proxy/" },
+  { path: "/base/tla-server/" },
+  { path: "/base/api/tla/" },
 ];
 for (const { path, cookies } of cases)
   test(`requestRoute ${path}${cookies ? ` ${JSON.stringify(cookies)}` : ""} は next start と同じ`, async () => {
