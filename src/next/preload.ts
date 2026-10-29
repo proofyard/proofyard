@@ -470,9 +470,19 @@ const withBarrels = (code: string, dir: string) =>
     return JSON.stringify(file);
   });
 const barrelPackages: string[] = config.experimental.optimizePackageImports ?? [];
+// rsc 層からだけでは足りない（"use client" のファイルは Client Reference になり import が消える）ので、SSR 層・ブラウザ層の出力からも集める。
+// その層で使えない API の import で失敗するファイル（Client Component からだけ読まれる、"use client" のないファイルなど）は、その層では読まれないので飛ばす
+const tryCompile = (file: string, source: string, layer: keyof typeof SWC_LAYERS) => {
+  try {
+    return swcCompile(file, source, layer);
+  } catch {
+    return "";
+  }
+};
 for (const file of appSources(projectDir)) {
   const source = readFileSync(file, "utf8");
-  if (barrelPackages.some((name) => source.includes(name))) await prepareBarrels(swcCompile(file, source), dirname(file));
+  if (barrelPackages.some((name) => source.includes(name)))
+    for (const layer of ["rsc", "ssr", "browser"] as const) await prepareBarrels(tryCompile(file, source, layer), dirname(file));
 }
 const withImports = (filename: string, code: string) => withBarrels(withFonts(code), dirname(filename));
 // ネイティブ読み込み時の SWC 変換（同期。非同期の onLoad を経たモジュールは require できない。route.ts は require で読まれる）
@@ -559,7 +569,9 @@ for (const path of appSources(projectDir)) {
     continue;
   }
   // optimizePackageImports の import は、書き換えた後の（必要なファイルだけを読む）モジュールから辿る
-  nodeModuleImports.push([path, barrelPackages.some((name) => source.includes(name)) ? swcTransformSync(path, source) : source]);
+  // （rsc 層で変換できないファイルは rsc 層では読まれないので辿らない）
+  if (!barrelPackages.some((name) => source.includes(name))) nodeModuleImports.push([path, source]);
+  else if (tryCompile(path, source, "rsc")) nodeModuleImports.push([path, swcTransformSync(path, source)]);
 }
 // node_modules の "use client" はネイティブで読むとサーバーで実行されてしまう。アプリの import から node_modules を辿って
 // 見つけたものを Client Reference の代わりのモジュールにする（Next.js は rsc 層で node_modules もバンドルして同じことをする）
@@ -663,19 +675,22 @@ Bun.plugin({
       });
     build.onLoad({ filter: STYLE_FILE }, (args) => style(args.path));
     // ?proofyard-restore=N は mock.module を戻すときの読み込み直し（下）
-    // 1 本の正規表現にまとめると大きすぎて作れない（"use client" の多いライブラリでは数万件）。分けて登録する
-    // （onLoad で undefined を返しても元の読み込みに戻らないので、対象のパスだけに当たる filter にする）
-    const replaced = [...nativeReplacements.keys()].map(escape);
-    for (let i = 0; i < replaced.length; i += 500)
-      build.onLoad({ filter: new RegExp(`^(?:${replaced.slice(i, i + 500).join("|")})(?:\\?proofyard-restore=\\d+)?$`) }, (args) => ({
-        contents: nativeReplacements.get(withoutRestore(args.path))!,
-        loader: "js",
-      }));
-    build.onLoad({ filter: new RegExp(`^${escape(projectDir)}/(?!.*/node_modules/).*\\.[jt]sx?(?:\\?proofyard-restore=\\d+)?$`) }, (args) => {
-      const path = withoutRestore(args.path);
+    // onLoad で undefined を返しても元の読み込みに戻らないので、対象のパスを列挙した filter にする。
+    // 1 本の正規表現にまとめると大きすぎて作れない（"use client" の多いライブラリでは数万件）ので分けて登録する
+    // （否定の先読み (?!...) は filter では効かず、アプリの下の node_modules にも当たる）
+    const onLoadPaths = (paths: string[], load: (path: string) => string) => {
+      const escaped = paths.map(escape);
+      for (let i = 0; i < escaped.length; i += 500)
+        build.onLoad({ filter: new RegExp(`^(?:${escaped.slice(i, i + 500).join("|")})(?:\\?proofyard-restore=\\d+)?$`) }, (args) => ({
+          contents: load(withoutRestore(args.path)),
+          loader: "js",
+        }));
+    };
+    onLoadPaths([...nativeReplacements.keys()], (path) => nativeReplacements.get(path)!);
+    // ponytail: 起動時にあるファイルだけ。起動後に増えたファイルはプラグインを通らない（bun test --watch は起動し直すので足りる）
+    onLoadPaths([...appSources(projectDir, /\.[jt]sx?$/)], (path) => {
       const source = readFileSync(path, "utf8");
-      if (USE_CLIENT.test(source)) return { contents: clientReferenceStub(path, source), loader: "js" };
-      return { contents: swcTransformSync(path, source), loader: "js" };
+      return USE_CLIENT.test(source) ? clientReferenceStub(path, source) : swcTransformSync(path, source);
     });
   },
 });

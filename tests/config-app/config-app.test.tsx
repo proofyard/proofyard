@@ -49,6 +49,10 @@ test("optimizePackageImports: バレルから使う export のファイルだけ
   await app.findByRole("heading", { name: "From a wildcard export" });
   expect(app.getByText("Used from the barrel")).toBeTruthy();
   expect((globalThis as { barrelUnusedLoaded?: boolean }).barrelUnusedLoaded).toBeUndefined();
+  // Client Component（"use client" のないファイルも含む）からのバレルの import
+  await app.findByRole("heading", { name: "Client: From a wildcard export" });
+  await app.user.click(app.getByRole("button", { name: "Open form" }));
+  expect(await app.findAllByText("Used from the barrel")).toHaveLength(2);
 });
 
 test("reactCompiler: ブラウザで動く Client Component はコンパイルされる（メモ化した子は描画し直されない）", async () => {
@@ -58,4 +62,9 @@ test("reactCompiler: ブラウザで動く Client Component はコンパイル�
   await app.user.click(app.getByRole("button", { name: "Count 0" }));
   await app.findByRole("button", { name: "Count 1" });
   expect(g.childRenders).toBe(0);
+});
+
+test("アプリの下の node_modules は、アプリのソースとして変換せずに読む", async () => {
+  const app = await renderRoute("/base/cjs/");
+  await app.findByRole("heading", { name: "From CJS" });
 });
