@@ -98,6 +98,7 @@ const buildOutput = BUILD_OUTPUT
     : (async () => {
         const output = join(runDir ?? work, "build-output.json");
         // テストのファイルの代わりにこのファイルを渡す（プリロードの最後で終わるので読み込まれない）
+        const spawned = performance.now();
         const proc = Bun.spawn([process.execPath, "test", "--preload", import.meta.path, import.meta.path], {
           cwd: process.cwd(),
           env: { ...process.env, PROOFYARD_BUILD_OUTPUT: output },
@@ -110,6 +111,9 @@ const buildOutput = BUILD_OUTPUT
           if (runDir) write(join(runDir, "build-output.error"), message);
           throw new Error(message);
         }
+        // 別プロセスの内訳（そのプロセスのログ）
+        for (const line of stdout.split("\n")) if (line.startsWith("[proofyard] ")) console.log(`[proofyard] (prerender process) ${line.slice(12)}`);
+        console.log(`[proofyard] (prerender process) total ${(performance.now() - spawned).toFixed(0)}ms`);
         return (await Bun.file(output).json()) as BuildOutput;
       })();
 // prerenderRoute が使う Next.js の静的シェルのデバッグ機能を有効にしてビルドする（getDefineEnv が define に入れる。
@@ -1405,13 +1409,18 @@ const ssrModuleMap = () => Object.fromEntries([...clientIds].map((id) => [id, { 
 // next build の prerender のプロセス（buildOutput）は、prerender して書き出したら終わる
 if (BUILD_OUTPUT) {
   // 書き終えてから名前を付ける（他のワーカーが書きかけを読まないように）
-  write(`${BUILD_OUTPUT}.${process.pid}`, await collectBuildOutput());
+  const exported = await collectBuildOutput();
+  console.log(`[proofyard] exportApp: ${(performance.now() - t).toFixed(0)}ms`);
+  write(`${BUILD_OUTPUT}.${process.pid}`, exported);
   renameSync(`${BUILD_OUTPUT}.${process.pid}`, BUILD_OUTPUT);
   process.exit(0);
 }
 // テストが始まる前にビルドを終える（最初の render() のテストがビルドの時間でタイムアウトしないように）
-await Promise.all([buildBrowser(), routeBuild]);
-console.log(`[proofyard] browser layer: ${(performance.now() - t).toFixed(0)}ms`);
+const since = (start: number) => `${(performance.now() - start).toFixed(0)}ms`;
+const ssrImported = since(t);
+const builds = performance.now();
+const [browserDone, routeDone] = await Promise.all([buildBrowser().then(() => since(builds)), routeBuild!.then(() => since(builds))]);
+console.log(`[proofyard] browser layer: ${since(t)} (ssr modules ${ssrImported}, then in parallel: browser build ${browserDone}, route build ${routeDone})`);
 
 // next build と同じく、Next.js の exportApp（静的なページの prerender。build/index.ts の static-generation）を
 // このプロセスで動かし（StaticWorker の代わりに export/worker を直接呼ぶ）、その結果から build/index.ts と同じく
