@@ -649,31 +649,41 @@ const traversed = await share("native", async () => {
     return reactServerResolved.get(key)!;
   }
   const visited = new Set<string>();
-  while (nodeModuleImports.length) {
-    const [path, source] = nodeModuleImports.pop()!;
-    for (const { path: spec } of new Bun.Transpiler({ loader: sourceLoader(path) }).scanImports(source)) {
-      if (/^(?:node:|bun:)/.test(spec) || spec in ALIASES.rsc || nextFacades.has(spec) || spec === "next" || spec.startsWith("next/")) continue;
-      let resolved: string;
-      try {
-        resolved = Bun.resolveSync(spec, dirname(path));
-      } catch {
-        continue;
+  // 同じ深さのファイルをまとめて並行に読む（1 つずつ読むと、初めて開くファイルの待ち時間が積み重なる。macOS は初回に検査する）
+  for (let frontier = nodeModuleImports; frontier.length; ) {
+    const next: string[] = [];
+    for (const [path, source] of frontier) {
+      for (const { path: spec } of new Bun.Transpiler({ loader: sourceLoader(path) }).scanImports(source)) {
+        if (/^(?:node:|bun:)/.test(spec) || spec in ALIASES.rsc || nextFacades.has(spec) || spec === "next" || spec.startsWith("next/")) continue;
+        let resolved: string;
+        try {
+          resolved = Bun.resolveSync(spec, dirname(path));
+        } catch {
+          continue;
+        }
+        if (!(resolved.includes("/node_modules/") || resolved.startsWith(barrelDir + "/")) || !/\.[cm]?js$/.test(resolved)) continue;
+        const target = reactServerResolve(spec, dirname(path), resolved);
+        if (target !== resolved && !nativeReplacements.has(resolved)) {
+          const { exports } = new Bun.Transpiler({ loader: "js" }).scan(readFileSync(target, "utf8"));
+          nativeReplacements.set(
+            resolved,
+            exports.length
+              ? `export * from ${JSON.stringify(target)};\n${exports.includes("default") ? `export { default } from ${JSON.stringify(target)};\n` : ""}`
+              : failModule(`[proofyard] Unsupported: CommonJS react-server exports in node_modules (${target})`),
+          );
+          resolved = target;
+        }
+        if (visited.has(resolved)) continue;
+        visited.add(resolved);
+        next.push(resolved);
       }
-      if (!(resolved.includes("/node_modules/") || resolved.startsWith(barrelDir + "/")) || !/\.[cm]?js$/.test(resolved)) continue;
-      const target = reactServerResolve(spec, dirname(path), resolved);
-      if (target !== resolved && !nativeReplacements.has(resolved)) {
-        const { exports } = new Bun.Transpiler({ loader: "js" }).scan(readFileSync(target, "utf8"));
-        nativeReplacements.set(
-          resolved,
-          exports.length
-            ? `export * from ${JSON.stringify(target)};\n${exports.includes("default") ? `export { default } from ${JSON.stringify(target)};\n` : ""}`
-            : failModule(`[proofyard] Unsupported: CommonJS react-server exports in node_modules (${target})`),
-        );
-        resolved = target;
-      }
-      if (visited.has(resolved)) continue;
-      visited.add(resolved);
-      const dep = readFileSync(resolved, "utf8");
+    }
+    const sources: string[] = [];
+    // ponytail: 同時に開くのは 64 まで（macOS の既定のファイル数の上限は 256）
+    for (let i = 0; i < next.length; i += 64) sources.push(...(await Promise.all(next.slice(i, i + 64).map((file) => Bun.file(file).text()))));
+    frontier = [];
+    for (const [i, resolved] of next.entries()) {
+      const dep = sources[i]!;
       if (USE_CLIENT.test(dep)) {
         nativeReplacements.set(resolved, clientReferenceStub(resolved, dep));
         continue;
@@ -690,7 +700,7 @@ const traversed = await share("native", async () => {
           nativeReplacements.set(resolved, code);
         }
       }
-      nodeModuleImports.push([resolved, dep]);
+      frontier.push([resolved, dep]);
     }
   }
   return {
