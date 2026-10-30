@@ -126,6 +126,11 @@ const baseKey = [
   appFiles,
 ];
 const cacheKey = (...parts: unknown[]) => Bun.hash(cache!.portable(JSON.stringify([baseKey, ...parts]))).toString(36);
+// PROOFYARD_DEBUG: キャッシュを使えなかった理由と、保存しなかった理由
+const cacheMiss = (name: string) => (debug ? (reason: string) => console.log(`[proofyard] (${name}: not from the cache, ${reason})`) : undefined);
+const cacheSkipped = (name: string, changed: string | undefined) => {
+  if (debug && changed) console.log(`[proofyard] (${name}: not cached, changed during the build: ${changed})`);
+};
 const commonInputs = [
   ...appSources(join(import.meta.dir, ".."), /./),
   ...readdirSync(projectDir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(projectDir, e.name)),
@@ -139,7 +144,7 @@ const buildOutput = BUILD_OUTPUT
         const output = join(runDir, "build-output.json");
         // 前の実行の結果（アプリのファイルが同じなら。prerender が読む外部のデータ（generateStaticParams の DB など）の変化は見ない）
         const key = cache && cacheKey("build-output");
-        const cached = key && cache!.lookup<BuildOutput>(key);
+        const cached = key && cache!.lookup<BuildOutput>(key, cacheMiss("build-output"));
         if (cached) {
           if (debug) console.log("[proofyard] (build-output: from the cache)");
           write(output, cached);
@@ -167,7 +172,7 @@ const buildOutput = BUILD_OUTPUT
           console.log(`[proofyard] (prerender process) total ${(performance.now() - spawned).toFixed(0)}ms`);
         }
         const exported: BuildOutput = await Bun.file(output).json();
-        unit?.commit([...commonInputs, ...appFiles], exported, startedAt);
+        cacheSkipped("build-output", unit?.commit([...commonInputs, ...appFiles], exported, startedAt));
         return exported;
       })();
 // prerenderRoute が使う Next.js の静的シェルのデバッグ機能を有効にしてビルドする（getDefineEnv が define に入れる。
@@ -601,13 +606,13 @@ const share = async <T>(name: string, keyParts: unknown, compute: (outdir: strin
   const file = join(runDir, `${name}.json`);
   try {
     const key = cache && cacheKey(define, Bun.hash(encryptionKey).toString(36), name, keyParts);
-    let value = key ? cache!.lookup<T>(key) : undefined;
+    let value = key ? cache!.lookup<T>(key, cacheMiss(name)) : undefined;
     if (value === undefined) {
       const unit = key ? cache!.begin(key) : undefined;
       const startedAt = Date.now();
       const inputs = new Set(commonInputs);
       value = await compute(unit ? join(unit.dir, "out") : join(runDir, name), inputs);
-      unit?.commit(inputs, value, startedAt);
+      cacheSkipped(name, unit?.commit(inputs, value, startedAt));
     } else if (debug) console.log(`[proofyard] (${name}: from the cache)`);
     write(`${file}.${process.pid}`, value);
     renameSync(`${file}.${process.pid}`, file);
@@ -782,6 +787,8 @@ if (!traversedHere) {
     nativeReplacements.set(path.startsWith(traversed.barrelDir + "/") ? barrelDir + path.slice(traversed.barrelDir.length) : path, code);
   addClientReferences(traversed);
 }
+// 順を揃える（rsc 層のビルドは並行に読むので、見つけた順は実行ごとに変わる。後の層の入口の順と、実行をまたいだキャッシュの鍵になる）
+for (const id of [...clientIds].sort()) clientIds.delete(id), clientIds.add(id);
 lap(`node_modules (${traversed.summary})`);
 // ブラウザ層（Client Mode）
 // - Next.js のブラウザ向けの define（getDefineEnv の isClient）
@@ -925,24 +932,6 @@ const buildRoute = async (outdir: string, inputs: Set<string>, asyncIds: Set<str
   write(factory, `export default function createRoute() {\n${code.slice(0, -tail.length)}\nreturn require_route_entry();\n}\n`);
   return new Map([[ROUTE_ENTRY, factory]]);
 };
-// async な Client Component（top-level await）は SSR 層を作るまで分からない。無いもの（ほとんどのアプリ）としてビルドを SSR 層と同時に始め、
-// あったら作り直す。next build の prerender のプロセス（buildOutput）はブラウザ層を使わないので作らない
-const asyncClientIdsReady = Promise.withResolvers<Set<string>>();
-const routeStarted = performance.now();
-// （キャッシュの入力を比べるので、入口は先に書いておく）
-if (!BUILD_OUTPUT) writeRouteEntry(new Set());
-const routeBuild = BUILD_OUTPUT
-  ? undefined
-  : shareLayer("route", [ROUTE_ENTRY], async (outdir, inputs) => {
-      const guess = buildRoute(outdir, inputs, new Set());
-      guess.catch(() => {}); // 作り直すなら、この失敗は使わない
-      const asyncIds = await asyncClientIdsReady.promise;
-      if (!asyncIds.size) return guess;
-      await guess.catch(() => {});
-      return buildRoute(outdir, inputs, asyncIds);
-    }, true).then((outputs) => outputs.get(ROUTE_ENTRY)!);
-// 失敗はテストの前に待つところで出す
-routeBuild?.catch(() => {});
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
 const ssrEntries = [...clientIds, SSR_RUNTIME];
 const ssr = await shareLayer("ssr", ssrEntries, (outdir, inputs) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style, inputs }), true);
@@ -1090,7 +1079,16 @@ const isAsyncOutput = (file: string): boolean => {
   return asyncOutputs.get(file)!;
 };
 const asyncClientIds = new Set([...clientIds].filter((id) => isAsyncOutput(ssr.get(id)!)));
-asyncClientIdsReady.resolve(asyncClientIds);
+// renderRoute のバンドルは async な Client Component（top-level await）を知ってから作る（SSR 層と同時に作ると、Mac では CPU を取り合って遅くなった）。
+// next build の prerender のプロセス（buildOutput）はブラウザ層を使わないので作らない
+const routeStarted = performance.now();
+// （キャッシュの入力を比べるので、入口は先に書いておく）
+if (!BUILD_OUTPUT) writeRouteEntry(asyncClientIds);
+const routeBuild = BUILD_OUTPUT
+  ? undefined
+  : shareLayer("route", [ROUTE_ENTRY], (outdir, inputs) => buildRoute(outdir, inputs, asyncClientIds), true).then((outputs) => outputs.get(ROUTE_ENTRY)!);
+// 失敗はテストの前に待つところで出す
+routeBuild?.catch(() => {});
 const clientEntry = (id: string) => ({ id, name: "*", chunks: [], async: asyncClientIds.has(id) });
 const clientReferenceManifest = {
   clientModules: Object.fromEntries([...clientIds].map((id) => [id, clientEntry(id)])),
@@ -1562,7 +1560,7 @@ const ssrImported = performance.now() - t;
 const [, routeTook] = await Promise.all([buildBrowser(), routeBuild!.then(() => performance.now() - routeStarted)]);
 const ms = (n: number) => `${n.toFixed(0)}ms`;
 // browser build は SSR 層のビルドと同時に始めるので、ここで待った時間より長い
-console.log(`[proofyard] browser layer: ${ms(performance.now() - t)}${debug ? ` (ssr modules ${ms(ssrImported)}, browser build ${ms(browserTook)}, route build ${ms(routeTook)}, both from before the ssr build)` : ""}`);
+console.log(`[proofyard] browser layer: ${ms(performance.now() - t)}${debug ? ` (ssr modules ${ms(ssrImported)}, browser build ${ms(browserTook)}, route build ${ms(routeTook)}; browser build from before the ssr build)` : ""}`);
 
 // next build と同じく、Next.js の exportApp（静的なページの prerender。build/index.ts の static-generation）を
 // このプロセスで動かし（StaticWorker の代わりに export/worker を直接呼ぶ）、その結果から build/index.ts と同じく

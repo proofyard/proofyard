@@ -22,13 +22,18 @@ export function unitCache(root: string, work: string) {
   const ids = (base: string) => (existsSync(base) ? readdirSync(base).sort().reverse() : []);
   return {
     portable,
-    // 鍵が同じで入力が変わっていない結果（新しいものから）
-    lookup<T>(key: string): T | undefined {
+    // 鍵が同じで入力が変わっていない結果（新しいものから）。miss には使えなかった理由（新しいもの）を渡す
+    lookup<T>(key: string, miss?: (reason: string) => void): T | undefined {
       const base = join(root, key);
+      let reason = "no entry for this key";
       for (const id of ids(base)) {
         try {
           const inputs: [string, string][] = JSON.parse(readFileSync(join(base, id, "inputs.json"), "utf8"));
-          if (!inputs.every(([path, print]) => fingerprint(path.split(WORK).join(work)) === print)) continue;
+          const changed = inputs.find(([path, print]) => fingerprint(path.split(WORK).join(work)) !== print);
+          if (changed) {
+            if (reason === "no entry for this key") reason = `changed: ${changed[0]} (${changed[1]} -> ${fingerprint(changed[0].split(WORK).join(work))})`;
+            continue;
+          }
           const value = JSON.parse(readFileSync(join(base, id, "value.json"), "utf8").split(WORK).join(work));
           const now = new Date();
           utimesSync(base, now, now); // 使っている鍵は消さない（下）
@@ -37,6 +42,7 @@ export function unitCache(root: string, work: string) {
           // 作りかけや壊れたもの
         }
       }
+      miss?.(reason);
       return undefined;
     },
     // 作る単位の置き場所（dir に出力を書く）。作り終えたら commit で結果を書く（それまで lookup は使わない）
@@ -50,13 +56,13 @@ export function unitCache(root: string, work: string) {
         if (statSync(join(root, other)).mtimeMs < Date.now() - 7 * 86400_000) rmSync(join(root, other), { recursive: true, force: true });
       return {
         dir,
-        // 作り始める前（startedAt）より後に変わった入力があれば、作ったものが古いかもしれないので保存しない
-        commit(inputs: Iterable<string>, value: unknown, startedAt: number) {
+        // 作り始める前（startedAt）より後に変わった入力があれば、作ったものが古いかもしれないので保存しない（そのファイルを返す）
+        commit(inputs: Iterable<string>, value: unknown, startedAt: number): string | undefined {
           const prints: [string, string][] = [];
           for (const path of inputs) {
             const print = fingerprint(path);
             if (print === null) continue; // 無いファイル（生成して消えたものなど）
-            if (!path.startsWith(work + "/") && Number(print.split(":")[0]) > startedAt) return;
+            if (!path.startsWith(work + "/") && Number(print.split(":")[0]) > startedAt) return path;
             prints.push([portable(path), print]);
           }
           writeFileSync(join(dir, "inputs.json"), JSON.stringify(prints));
