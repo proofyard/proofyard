@@ -71,6 +71,8 @@ const config = await loadConfig(PHASE_PRODUCTION_BUILD, projectDir, { silent: tr
 // このプリロードを静的なページの prerender（exportApp）だけのために動かして求める（collectBuildOutput）。アプリのコードの副作用はテストのプロセスに残らない。
 // Next.js は manifest を読んだ結果（無いことも）をランタイムのバンドルの中に覚えるので、同じプロセスでは prerender の後に読み直させられない
 const BUILD_OUTPUT = process.env.PROOFYARD_BUILD_OUTPUT;
+// 起動時間の内訳は PROOFYARD_DEBUG を付けたときだけ出す
+const debug = !!process.env.PROOFYARD_DEBUG;
 // bun test --parallel のワーカーどうしは、同じ実行（親のプロセス）の中で 1 回だけ作って共有する（next build も 1 回）。
 // 最初のワーカーが作り、他のワーカーはその結果（失敗も）を待つ
 // prerender の別プロセスは、それを動かしたプロセスの結果（層のビルドと node_modules を辿った結果）を待って使う
@@ -125,8 +127,10 @@ const buildOutput = BUILD_OUTPUT
           throw new Error(message);
         }
         // 別プロセスの内訳（そのプロセスのログ）
-        for (const line of stdout.split("\n")) if (line.startsWith("[proofyard] ")) console.log(`[proofyard] (prerender process) ${line.slice(12)}`);
-        console.log(`[proofyard] (prerender process) total ${(performance.now() - spawned).toFixed(0)}ms`);
+        if (debug) {
+          for (const line of stdout.split("\n")) if (line.startsWith("[proofyard] ")) console.log(`[proofyard] (prerender process) ${line.slice(12)}`);
+          console.log(`[proofyard] (prerender process) total ${(performance.now() - spawned).toFixed(0)}ms`);
+        }
         return (await Bun.file(output).json()) as BuildOutput;
       })();
 // prerenderRoute が使う Next.js の静的シェルのデバッグ機能を有効にしてビルドする（getDefineEnv が define に入れる。
@@ -721,6 +725,72 @@ if (!leader) {
   addClientReferences(traversed);
 }
 lap(`node_modules (${traversed.summary})`);
+// ブラウザ層（Client Mode）
+// - Next.js のブラウザ向けの define（getDefineEnv の isClient）
+// - Flight クライアントのモジュール読み込み（globalThis.__next_require__）を SSR と分ける
+const BROWSER_RUNTIME = join(import.meta.dir, "../client/runtime.ts");
+// ビルドはプリロードで済ませる。読み込み（評価）は最初の render() で DOM を入れた後（react-dom は読み込み時に window を見る）
+// ブラウザ層のファイルの差し替え（create-compiler-aliases.ts の isClient のもの）
+// - .browser の兄弟があるモジュールはそれに（サーバーの処理をブラウザのバンドルに入れない）
+// - Instant Navigation Testing API を使わないなら navigation-testing-lock は無効版に
+// - experimental.concurrentRouterQueue ならルーターの入口を concurrent の実装に
+const nextDist = dirname(Bun.resolveSync("next/dist/server/next", process.cwd())).replace(/\/server$/, "");
+const testingApiEnabled = !!config.cacheComponents && (dev || !!config.experimental.exposeTestingApiInProductionBuild);
+const browserRedirect = (resolved: string): string | undefined => {
+  if (!resolved.startsWith(nextDist + "/") || !resolved.endsWith(".js")) return undefined;
+  const rel = resolved.slice(nextDist.length + 1, -".js".length);
+  if (!testingApiEnabled && rel === "client/components/segment-cache/navigation-testing-lock")
+    return join(nextDist, "client/components/segment-cache/navigation-testing-lock.disabled.js");
+  if (config.experimental.concurrentRouterQueue) {
+    if (rel === "client/components/navigator") return join(nextDist, "client/components/concurrent-router-queue.js");
+    if (rel === "client/app-call-server") return join(nextDist, "client/concurrent-call-server.js");
+  }
+  const sibling = join(nextDist, `${rel}.browser.js`);
+  return !rel.endsWith(".browser") && existsSync(sibling) ? sibling : undefined;
+};
+// Next.js のブラウザ向けの define
+const clientDefine = Object.fromEntries(
+  Object.entries(
+    getDefineEnv({
+      isTurbopack: false,
+      config,
+      dev,
+      distDir,
+      projectPath: projectDir,
+      fetchCacheKeyPrefix: config.experimental.fetchCacheKeyPrefix,
+      hasRewrites,
+      isClient: true,
+      isEdgeServer: false,
+      isNodeServer: false,
+      middlewareMatchers,
+      rewrites: customRoutes.rewrites,
+    }) as Record<string, unknown>,
+  ).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]),
+);
+let browserBuild: ReturnType<typeof buildLayer> | undefined;
+const browserEntries = () => [...clientIds, BROWSER_RUNTIME];
+const buildBrowser = () =>
+  (browserBuild ??= shareLayer("browser", browserEntries(), (outdir) => buildLayer("browser", browserEntries(), {
+    outdir,
+    transform: swcTransformFor("browser"),
+    style,
+    redirect: browserRedirect,
+    define: {
+      ...clientDefine,
+      // React の act（Testing Library が使う）は開発版にしかないので、ブラウザ層の React だけ開発版にする（Jest などと同じ）。
+      // Next.js 自身の他の define は本番のまま
+      "process.env.NODE_ENV": '"development"',
+      // ブラウザ用の Flight クライアントは webpack のランタイム（__webpack_require__ と __webpack_chunk_load__）でモジュールを読む
+      __webpack_require__: "globalThis.__proofyardBrowserRequire",
+      __webpack_chunk_load__: "globalThis.__proofyardBrowserChunkLoad",
+      "globalThis.__next_require__": "globalThis.__proofyardBrowserRequire",
+    },
+  })));
+// Client Reference が揃ったら、SSR 層と同時にビルドを始める（待つのはテストが始まる前。prerender の別プロセスは作らない）
+// （失敗はそこで待つときに出す。先に失敗しても未処理の拒否にしない）
+const browserStarted = performance.now();
+let browserTook = 0;
+if (!BUILD_OUTPUT) buildBrowser().then(() => (browserTook = performance.now() - browserStarted), () => {});
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
 const ssrEntries = [...clientIds, SSR_RUNTIME];
 const ssr = await shareLayer("ssr", ssrEntries, (outdir) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style }));
@@ -779,7 +849,7 @@ Bun.plugin({
 // パス（クエリ付き）でテキストとして読み込んで、Bun に監視させる（コードは実行しない。--watch かどうかは分からないので毎回）
 await Promise.all([...appSources(projectDir, /\.(?:[cm]?[jt]sx?|css|scss|sass)$/)].map((file) => import(`${file}?proofyard-watch`, { with: { type: "text" } })));
 lap("other");
-console.log(`[proofyard] rsc+ssr layers: ${(performance.now() - t).toFixed(0)}ms (${laps.join(", ")}), client references: ${clientIds.size}`);
+console.log(`[proofyard] rsc+ssr layers: ${(performance.now() - t).toFixed(0)}ms${debug ? ` (${laps.join(", ")})` : ""}, client references: ${clientIds.size}`);
 t = performance.now();
 
 // SSR 層の Client Component（webpack の require と同じく CJS は module.exports、ESM は名前空間）
@@ -1294,67 +1364,6 @@ afterEach(() => {
   restoreMocks(testMocks);
 });
 
-// ブラウザ層（Client Mode）。使うときに初めてビルドする
-// - Next.js のブラウザ向けの define（getDefineEnv の isClient）
-// - Flight クライアントのモジュール読み込み（globalThis.__next_require__）を SSR と分ける
-const BROWSER_RUNTIME = join(import.meta.dir, "../client/runtime.ts");
-// ビルドはプリロードで済ませる。読み込み（評価）は最初の render() で DOM を入れた後（react-dom は読み込み時に window を見る）
-// ブラウザ層のファイルの差し替え（create-compiler-aliases.ts の isClient のもの）
-// - .browser の兄弟があるモジュールはそれに（サーバーの処理をブラウザのバンドルに入れない）
-// - Instant Navigation Testing API を使わないなら navigation-testing-lock は無効版に
-// - experimental.concurrentRouterQueue ならルーターの入口を concurrent の実装に
-const nextDist = dirname(Bun.resolveSync("next/dist/server/next", process.cwd())).replace(/\/server$/, "");
-const testingApiEnabled = !!config.cacheComponents && (dev || !!config.experimental.exposeTestingApiInProductionBuild);
-const browserRedirect = (resolved: string): string | undefined => {
-  if (!resolved.startsWith(nextDist + "/") || !resolved.endsWith(".js")) return undefined;
-  const rel = resolved.slice(nextDist.length + 1, -".js".length);
-  if (!testingApiEnabled && rel === "client/components/segment-cache/navigation-testing-lock")
-    return join(nextDist, "client/components/segment-cache/navigation-testing-lock.disabled.js");
-  if (config.experimental.concurrentRouterQueue) {
-    if (rel === "client/components/navigator") return join(nextDist, "client/components/concurrent-router-queue.js");
-    if (rel === "client/app-call-server") return join(nextDist, "client/concurrent-call-server.js");
-  }
-  const sibling = join(nextDist, `${rel}.browser.js`);
-  return !rel.endsWith(".browser") && existsSync(sibling) ? sibling : undefined;
-};
-// Next.js のブラウザ向けの define
-const clientDefine = Object.fromEntries(
-  Object.entries(
-    getDefineEnv({
-      isTurbopack: false,
-      config,
-      dev,
-      distDir,
-      projectPath: projectDir,
-      fetchCacheKeyPrefix: config.experimental.fetchCacheKeyPrefix,
-      hasRewrites,
-      isClient: true,
-      isEdgeServer: false,
-      isNodeServer: false,
-      middlewareMatchers,
-      rewrites: customRoutes.rewrites,
-    }) as Record<string, unknown>,
-  ).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]),
-);
-let browserBuild: ReturnType<typeof buildLayer> | undefined;
-const browserEntries = () => [...clientIds, BROWSER_RUNTIME];
-const buildBrowser = () =>
-  (browserBuild ??= shareLayer("browser", browserEntries(), (outdir) => buildLayer("browser", browserEntries(), {
-    outdir,
-    transform: swcTransformFor("browser"),
-    style,
-    redirect: browserRedirect,
-    define: {
-      ...clientDefine,
-      // React の act（Testing Library が使う）は開発版にしかないので、ブラウザ層の React だけ開発版にする（Jest などと同じ）。
-      // Next.js 自身の他の define は本番のまま
-      "process.env.NODE_ENV": '"development"',
-      // ブラウザ用の Flight クライアントは webpack のランタイム（__webpack_require__ と __webpack_chunk_load__）でモジュールを読む
-      __webpack_require__: "globalThis.__proofyardBrowserRequire",
-      __webpack_chunk_load__: "globalThis.__proofyardBrowserChunkLoad",
-      "globalThis.__next_require__": "globalThis.__proofyardBrowserRequire",
-    },
-  })));
 
 // renderRoute の Client Mode: Next.js 本体のクライアント（app-next.js）と Client Component を 1 つのファイルにまとめる。
 // バンドル全体を 1 つの関数（createRoute）で包み、renderRoute のたびに呼ぶ（ルーターなどのモジュールの状態をテストごとに新しくする）。
@@ -1467,11 +1476,12 @@ if (BUILD_OUTPUT) {
   process.exit(0);
 }
 // テストが始まる前にビルドを終える（最初の render() のテストがビルドの時間でタイムアウトしないように）
-const since = (start: number) => `${(performance.now() - start).toFixed(0)}ms`;
-const ssrImported = since(t);
-const builds = performance.now();
-const [browserDone, routeDone] = await Promise.all([buildBrowser().then(() => since(builds)), routeBuild!.then(() => since(builds))]);
-console.log(`[proofyard] browser layer: ${since(t)} (ssr modules ${ssrImported}, then in parallel: browser build ${browserDone}, route build ${routeDone})`);
+const ssrImported = performance.now() - t;
+const routeStarted = performance.now();
+const [, routeTook] = await Promise.all([buildBrowser(), routeBuild!.then(() => performance.now() - routeStarted)]);
+const ms = (n: number) => `${n.toFixed(0)}ms`;
+// browser build は SSR 層のビルドと同時に始めるので、ここで待った時間より長い
+console.log(`[proofyard] browser layer: ${ms(performance.now() - t)}${debug ? ` (ssr modules ${ms(ssrImported)}, browser build ${ms(browserTook)} from before the ssr build, route build ${ms(routeTook)})` : ""}`);
 
 // next build と同じく、Next.js の exportApp（静的なページの prerender。build/index.ts の static-generation）を
 // このプロセスで動かし（StaticWorker の代わりに export/worker を直接呼ぶ）、その結果から build/index.ts と同じく
