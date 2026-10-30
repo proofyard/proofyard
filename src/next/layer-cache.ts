@@ -1,6 +1,7 @@
 // 実行をまたいだビルドの結果のキャッシュ（層のビルド、node_modules を辿った結果）。
-// 単位ごとに、鍵（設定やバージョンなど）と、作るときに読んだファイル（入力）の mtime と大きさを保存し、次の実行で鍵が同じで入力が
-// 変わっていなければ、結果（と出力のディレクトリ）をそのまま使う。プロセスごとの作業ディレクトリのファイルは毎回書き直すので中身で比べる
+// 単位ごとに、鍵（設定やバージョンなど）と、作るときに読んだファイル（入力）の指紋を保存し、次の実行で鍵が同じで入力が
+// 変わっていなければ、結果（と出力のディレクトリ）をそのまま使う。指紋は、node_modules（数千のファイル）は mtime と大きさ、
+// それ以外（アプリのファイルと、プロセスごとの作業ディレクトリに毎回書き直すファイル）は中身（touch や git のブランチの行き来で外れないように）
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,6 +14,7 @@ export function unitCache(root: string, work: string) {
   const fingerprint = (path: string): string | null => {
     try {
       if (path.startsWith(work + "/")) return Bun.hash(portable(readFileSync(path, "utf8"))).toString(36);
+      if (!path.includes("/node_modules/")) return Bun.hash(readFileSync(path)).toString(36);
       const stat = statSync(path);
       return `${stat.mtimeMs}:${stat.size}`;
     } catch {
@@ -62,7 +64,7 @@ export function unitCache(root: string, work: string) {
           for (const path of inputs) {
             const print = fingerprint(path);
             if (print === null) continue; // 無いファイル（生成して消えたものなど）
-            if (!path.startsWith(work + "/") && Number(print.split(":")[0]) > startedAt) return path;
+            if (!path.startsWith(work + "/") && statSync(path).mtimeMs > startedAt) return path;
             prints.push([portable(path), print]);
           }
           writeFileSync(join(dir, "inputs.json"), JSON.stringify(prints));
