@@ -259,8 +259,11 @@ async function loadMetadataFiles(code: string, prefix: string) {
 }
 // webpack の compilation（next-app-loader はこれごとにディレクトリの中身をキャッシュする。ないと確認のたびに readdir する）
 const compilation = {};
+// 生成するファイルの名前は、ルートの名前の順の番号（entrypoints の順は実行ごとに変わる。実行をまたいだキャッシュは生成したファイルの中身で比べる）
+const entryNames = Object.keys(entrypoints.server).sort();
 const loaded = await Promise.all(
-  Object.entries(entrypoints.server as Record<string, string | { import: string; layer?: string }>).map(async ([name, value], i) => {
+  Object.entries(entrypoints.server as Record<string, string | { import: string; layer?: string }>).map(async ([name, value]) => {
+    const i = entryNames.indexOf(name);
     const entry = join(generatedDir, `${i}.js`);
     // instrumentation はローダーを通さず、ファイルそのもの（getInstrumentationEntry。Proxy と同じ react-server の層）
     if (typeof value === "object" && value.layer === "instrument") {
@@ -648,7 +651,8 @@ const shareLayer = async (
   addClientReferences(shared);
   return new Map(entries.map((entry, i) => [entry, shared.outputs[i]!]));
 };
-const rscEntries = [...entries, ...facadeEntries.values()];
+// 名前の順（ルートの登録の順は実行ごとに変わる。実行をまたいだキャッシュの鍵になる）
+const rscEntries = [...entries, ...facadeEntries.values()].sort();
 const rsc = await shareLayer("rsc", rscEntries, (outdir, inputs) => buildLayer("rsc", rscEntries, { outdir, define, generatedDir, nativeDir: projectDir, style, inputs }));
 lap("rsc build");
 
