@@ -169,6 +169,9 @@ export async function buildLayer(layer: Layer, entries: string[], { outdir, defi
     Object.entries({ ...BUNDLED_ALIASES[layer], ...override }).filter((e): e is [string, string] => e[1] !== undefined),
   );
   const entryPaths = entries.map((e) => (e.startsWith("/") ? e : abs(e)));
+  // PROOFYARD_DEBUG: プラグインが JS で使った時間（onResolve と、onLoad の読み込み後の処理）と呼ばれた回数
+  const spent = { resolve: 0, resolves: 0, load: 0, loads: 0 };
+  const started = performance.now();
   const result = await Bun.build({
     entrypoints: entryPaths,
     outdir,
@@ -186,6 +189,15 @@ export async function buildLayer(layer: Layer, entries: string[], { outdir, defi
         name: `next-${layer}-layer`,
         setup(build) {
           build.onResolve({ filter: /.*/ }, (args) => {
+            const start = performance.now();
+            try {
+              return resolve(args);
+            } finally {
+              spent.resolve += performance.now() - start;
+              spent.resolves++;
+            }
+          });
+          const resolve = (args: { path: string; importer: string }) => {
             if (args.path in aliases) return { path: abs(aliases[args.path]!), external: true };
             const shared = layer !== "browser" && args.path.match(/\.\/(?:.+\/)?([^/]+)\.shared-runtime$/);
             if (shared) return { path: abs(`${VENDORED}/contexts/${shared[1]}`), external: true };
@@ -206,37 +218,54 @@ export async function buildLayer(layer: Layer, entries: string[], { outdir, defi
             const redirected = redirect?.(resolved);
             if (redirected) return { path: redirected };
             if (generated) return { path: resolved };
-          });
+          };
+          // 読み込んだ後の処理の時間を足す
+          const afterRead = async <T>(path: string, f: (source: string) => T | Promise<T>): Promise<T> => {
+            const source = await Bun.file(path).text();
+            const start = performance.now();
+            try {
+              return await f(source);
+            } finally {
+              spent.load += performance.now() - start;
+              spent.loads++;
+            }
+          };
           if (style) build.onLoad({ filter: STYLE_FILE }, (args) => style(args.path));
           if (layer === "rsc") {
             // node_modules の JS とアプリのソース（"use client" は Client Reference に、それ以外のアプリのソースは SWC に）
             build.onLoad({ filter: /\.(?:[cm]?js|jsx|tsx?)$/ }, async (args) => {
               const inNodeModules = args.path.includes("/node_modules/");
               if (inNodeModules && !/\.[cm]?js$/.test(args.path)) return;
-              const source = await Bun.file(args.path).text();
-              if (USE_CLIENT.test(source)) return { loader: "js", contents: clientReferenceStub(args.path, source) };
-              if (inNodeModules) {
-                // rsc 層のバンドルは Next.js 本体だけ。変換はネイティブで読み込むとき（preload.ts）なので、バンドルに入れば変換されない
-                if (SERVER_DIRECTIVE.test(source))
-                  throw new Error(`Unsupported Next.js feature: "use server" / "use cache" in node_modules is not compiled by the current runtime (${args.path})`);
-                return;
-              }
-              const code = await transform?.(args.path, source);
-              if (code !== undefined) return { loader: "js", contents: code };
+              return afterRead(args.path, async (source) => {
+                if (USE_CLIENT.test(source)) return { loader: "js", contents: clientReferenceStub(args.path, source) };
+                if (inNodeModules) {
+                  // rsc 層のバンドルは Next.js 本体だけ。変換はネイティブで読み込むとき（preload.ts）なので、バンドルに入れば変換されない
+                  if (SERVER_DIRECTIVE.test(source))
+                    throw new Error(`Unsupported Next.js feature: "use server" / "use cache" in node_modules is not compiled by the current runtime (${args.path})`);
+                  return;
+                }
+                const code = await transform?.(args.path, source);
+                if (code !== undefined) return { loader: "js", contents: code };
+              });
             });
           } else if (transform) {
-            build.onLoad({ filter: /\.(?:[cm]?js|jsx|tsx?)$/ }, async (args) => {
-              const source = await Bun.file(args.path).text();
-              // node_modules は "use server" / "use cache" のあるものだけ変換する
-              if (args.path.includes("/node_modules/") && !SERVER_DIRECTIVE.test(source)) return;
-              const code = await transform(args.path, source);
-              if (code !== undefined) return { loader: "js", contents: code };
-            });
+            build.onLoad({ filter: /\.(?:[cm]?js|jsx|tsx?)$/ }, (args) =>
+              afterRead(args.path, async (source) => {
+                // node_modules は "use server" / "use cache" のあるものだけ変換する
+                if (args.path.includes("/node_modules/") && !SERVER_DIRECTIVE.test(source)) return;
+                const code = await transform(args.path, source);
+                if (code !== undefined) return { loader: "js" as const, contents: code };
+              }),
+            );
           }
         },
       },
     ],
   });
+  if (process.env.PROOFYARD_DEBUG)
+    console.log(
+      `[proofyard] (${layer} build, ${entries.length} entries) ${(performance.now() - started).toFixed(0)}ms; plugin JS: onResolve ${spent.resolves}x ${spent.resolve.toFixed(0)}ms, onLoad ${spent.loads}x ${spent.load.toFixed(0)}ms`,
+    );
   if (!result.success) throw new AggregateError(result.logs, `${layer} layer build failed`);
   // 入口ごとの出力（[dir] を保つので入口の絶対パスから引ける）
   const out = new Map<string, string>();

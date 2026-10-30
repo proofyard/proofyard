@@ -791,6 +791,96 @@ const buildBrowser = () =>
 const browserStarted = performance.now();
 let browserTook = 0;
 if (!BUILD_OUTPUT) buildBrowser().then(() => (browserTook = performance.now() - browserStarted), () => {});
+
+// renderRoute の Client Mode: Next.js 本体のクライアント（app-next.js）と Client Component を 1 つのファイルにまとめる。
+// バンドル全体を 1 つの関数（createRoute）で包み、renderRoute のたびに呼ぶ（ルーターなどのモジュールの状態をテストごとに新しくする）。
+// ファイルの解析は 1 回で、JSC の最適化もテストをまたいで効く（以前はクエリ付きで import し直していて、毎回の解析と最適化のやり直しで 1 テストあたり数倍遅かった）
+// next build のブラウザ向けと同じく本番版（React も本番版なので act はない。表示は findBy / waitFor で待つ）
+// instrumentation-client: Next.js のローダーが書く、設定の instrumentationClientInject とアプリのファイルを読むモジュール。
+// アプリのファイルは private-next-instrumentation-client-user（src/ を先に探す。なければ空のモジュール）
+const INSTRUMENTATION_CLIENT = join(work, "instrumentation-client.js");
+const instrumentationClientUser =
+  ["src/instrumentation-client", "instrumentation-client"].flatMap((name) => pageExtensions.map((ext) => join(projectDir, `${name}.${ext}`))).find((file) => existsSync(file)) ??
+  join(import.meta.dir, "../client/empty-module.js");
+write(
+  INSTRUMENTATION_CLIENT,
+  (
+    await require("next/dist/build/webpack/loaders/next-instrumentation-client-loader").default.call({
+      getOptions: () => ({ modules: config.instrumentationClientInject ?? [] }),
+      getResolve: () => async (context: string, request: string) => Bun.resolveSync(request, context),
+      rootContext: projectDir,
+    })
+  ).replace(/(["'])private-next-instrumentation-client-user\1/, JSON.stringify(instrumentationClientUser)),
+);
+const ROUTE_ENTRY = join(work, "route-entry.js");
+const writeRouteEntry = (asyncIds: Set<string>) =>
+  write(
+    ROUTE_ENTRY,
+    [
+      // webpack のランタイムの代わり（Flight クライアントが Client Reference のモジュールを読む）
+      "const modules = {",
+      // async module（top-level await）は import() で読み、同じ Promise を返す（Flight クライアントが状態を書き込んで待つ）
+      ...[...clientIds].map((id) => `  ${JSON.stringify(id)}: () => ${asyncIds.has(id) ? "import" : "require"}(${JSON.stringify(id)}),`),
+      "};",
+      "const loaded = {};",
+      "globalThis.__proofyardRouteRequire = Object.assign((id) => {",
+      "  if (!(id in modules)) throw new Error(`[proofyard] unknown client module ${id}`);",
+      "  return id in loaded ? loaded[id] : (loaded[id] = modules[id]());",
+      "}, { u: (chunkId) => chunkId });",
+      "globalThis.__proofyardRouteChunkLoad = () => Promise.resolve();",
+      `require(${JSON.stringify(join(nextDist, "client/app-next.js"))});`,
+    ].join("\n"),
+  );
+const buildRoute = async (outdir: string, asyncIds: Set<string>) => {
+  writeRouteEntry(asyncIds);
+  const outputs = await buildLayer("browser", [ROUTE_ENTRY], {
+    outdir,
+    style,
+    transform: swcTransformFor("route"),
+    redirect: browserRedirect,
+    splitting: false,
+    aliases: {
+      "react-dom/test-utils": undefined,
+      "next/dist/client/app-call-server": undefined,
+      "react-server-dom-webpack/client": "next/dist/compiled/react-server-dom-webpack/client",
+      "react-dom/client": join(import.meta.dir, "../client/route-react-dom-client.ts"),
+      "private-next-instrumentation-client": INSTRUMENTATION_CLIENT,
+    },
+    define: {
+      ...clientDefine,
+      __webpack_require__: "globalThis.__proofyardRouteRequire",
+      __webpack_chunk_load__: "globalThis.__proofyardRouteChunkLoad",
+      "globalThis.__next_require__": "globalThis.__proofyardRouteRequire",
+      // クライアントの通信（RSC の取得、Server Actions）はメモリ内の Next.js の handler へ（src/testing/render-route.ts）
+      fetch: "globalThis.__proofyardRouteFetch",
+      // ハイドレーションの完了を window.__NEXT_HYDRATED_CB で知らせる（Next.js 自身のテストと同じ）
+      "process.env.__NEXT_TEST_MODE": "true",
+    },
+  });
+  const out = outputs.get(ROUTE_ENTRY)!;
+  const code = readFileSync(out, "utf8").trimEnd();
+  const tail = "export default require_route_entry();";
+  if (!code.endsWith(tail)) throw new Error(`[proofyard] the route bundle does not end with ${tail}`);
+  const factory = out.replace(/\.js$/, ".factory.js");
+  write(factory, `export default function createRoute() {\n${code.slice(0, -tail.length)}\nreturn require_route_entry();\n}\n`);
+  return new Map([[ROUTE_ENTRY, factory]]);
+};
+// async な Client Component（top-level await）は SSR 層を作るまで分からない。無いもの（ほとんどのアプリ）としてビルドを SSR 層と同時に始め、
+// あったら作り直す。next build の prerender のプロセス（buildOutput）はブラウザ層を使わないので作らない
+const asyncClientIdsReady = Promise.withResolvers<Set<string>>();
+const routeStarted = performance.now();
+const routeBuild = BUILD_OUTPUT
+  ? undefined
+  : shareLayer("route", [ROUTE_ENTRY], async (outdir) => {
+      const guess = buildRoute(outdir, new Set());
+      guess.catch(() => {}); // 作り直すなら、この失敗は使わない
+      const asyncIds = await asyncClientIdsReady.promise;
+      if (!asyncIds.size) return guess;
+      await guess.catch(() => {});
+      return buildRoute(outdir, asyncIds);
+    }).then((outputs) => outputs.get(ROUTE_ENTRY)!);
+// 失敗はテストの前に待つところで出す
+routeBuild?.catch(() => {});
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
 const ssrEntries = [...clientIds, SSR_RUNTIME];
 const ssr = await shareLayer("ssr", ssrEntries, (outdir) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style }));
@@ -938,6 +1028,7 @@ const isAsyncOutput = (file: string): boolean => {
   return asyncOutputs.get(file)!;
 };
 const asyncClientIds = new Set([...clientIds].filter((id) => isAsyncOutput(ssr.get(id)!)));
+asyncClientIdsReady.resolve(asyncClientIds);
 const clientEntry = (id: string) => ({ id, name: "*", chunks: [], async: asyncClientIds.has(id) });
 const clientReferenceManifest = {
   clientModules: Object.fromEntries([...clientIds].map((id) => [id, clientEntry(id)])),
@@ -1365,77 +1456,6 @@ afterEach(() => {
 });
 
 
-// renderRoute の Client Mode: Next.js 本体のクライアント（app-next.js）と Client Component を 1 つのファイルにまとめる。
-// バンドル全体を 1 つの関数（createRoute）で包み、renderRoute のたびに呼ぶ（ルーターなどのモジュールの状態をテストごとに新しくする）。
-// ファイルの解析は 1 回で、JSC の最適化もテストをまたいで効く（以前はクエリ付きで import し直していて、毎回の解析と最適化のやり直しで 1 テストあたり数倍遅かった）
-// next build のブラウザ向けと同じく本番版（React も本番版なので act はない。表示は findBy / waitFor で待つ）
-// instrumentation-client: Next.js のローダーが書く、設定の instrumentationClientInject とアプリのファイルを読むモジュール。
-// アプリのファイルは private-next-instrumentation-client-user（src/ を先に探す。なければ空のモジュール）
-const INSTRUMENTATION_CLIENT = join(work, "instrumentation-client.js");
-const instrumentationClientUser =
-  ["src/instrumentation-client", "instrumentation-client"].flatMap((name) => pageExtensions.map((ext) => join(projectDir, `${name}.${ext}`))).find((file) => existsSync(file)) ??
-  join(import.meta.dir, "../client/empty-module.js");
-write(
-  INSTRUMENTATION_CLIENT,
-  (
-    await require("next/dist/build/webpack/loaders/next-instrumentation-client-loader").default.call({
-      getOptions: () => ({ modules: config.instrumentationClientInject ?? [] }),
-      getResolve: () => async (context: string, request: string) => Bun.resolveSync(request, context),
-      rootContext: projectDir,
-    })
-  ).replace(/(["'])private-next-instrumentation-client-user\1/, JSON.stringify(instrumentationClientUser)),
-);
-const ROUTE_ENTRY = join(work, "route-entry.js");
-write(
-  ROUTE_ENTRY,
-  [
-    // webpack のランタイムの代わり（Flight クライアントが Client Reference のモジュールを読む）
-    "const modules = {",
-    // async module（top-level await）は import() で読み、同じ Promise を返す（Flight クライアントが状態を書き込んで待つ）
-    ...[...clientIds].map((id) => `  ${JSON.stringify(id)}: () => ${asyncClientIds.has(id) ? "import" : "require"}(${JSON.stringify(id)}),`),
-    "};",
-    "const loaded = {};",
-    "globalThis.__proofyardRouteRequire = Object.assign((id) => {",
-    "  if (!(id in modules)) throw new Error(`[proofyard] unknown client module ${id}`);",
-    "  return id in loaded ? loaded[id] : (loaded[id] = modules[id]());",
-    "}, { u: (chunkId) => chunkId });",
-    "globalThis.__proofyardRouteChunkLoad = () => Promise.resolve();",
-    `require(${JSON.stringify(join(nextDist, "client/app-next.js"))});`,
-  ].join("\n"),
-);
-// next build の prerender のプロセス（buildOutput）はブラウザ層を使わないので作らない
-const routeBuild = BUILD_OUTPUT ? undefined : shareLayer("route", [ROUTE_ENTRY], (outdir) => buildLayer("browser", [ROUTE_ENTRY], {
-  outdir,
-  style,
-  transform: swcTransformFor("route"),
-  redirect: browserRedirect,
-  splitting: false,
-  aliases: {
-    "react-dom/test-utils": undefined,
-    "next/dist/client/app-call-server": undefined,
-    "react-server-dom-webpack/client": "next/dist/compiled/react-server-dom-webpack/client",
-    "react-dom/client": join(import.meta.dir, "../client/route-react-dom-client.ts"),
-    "private-next-instrumentation-client": INSTRUMENTATION_CLIENT,
-  },
-  define: {
-    ...clientDefine,
-    __webpack_require__: "globalThis.__proofyardRouteRequire",
-    __webpack_chunk_load__: "globalThis.__proofyardRouteChunkLoad",
-    "globalThis.__next_require__": "globalThis.__proofyardRouteRequire",
-    // クライアントの通信（RSC の取得、Server Actions）はメモリ内の Next.js の handler へ（src/testing/render-route.ts）
-    fetch: "globalThis.__proofyardRouteFetch",
-    // ハイドレーションの完了を window.__NEXT_HYDRATED_CB で知らせる（Next.js 自身のテストと同じ）
-    "process.env.__NEXT_TEST_MODE": "true",
-  },
-}).then((outputs) => {
-  const out = outputs.get(ROUTE_ENTRY)!;
-  const code = readFileSync(out, "utf8").trimEnd();
-  const tail = "export default require_route_entry();";
-  if (!code.endsWith(tail)) throw new Error(`[proofyard] the route bundle does not end with ${tail}`);
-  const factory = out.replace(/\.js$/, ".factory.js");
-  write(factory, `export default function createRoute() {\n${code.slice(0, -tail.length)}\nreturn require_route_entry();\n}\n`);
-  return new Map([[ROUTE_ENTRY, factory]]);
-})).then((outputs) => outputs.get(ROUTE_ENTRY)!);
 let browser: Promise<typeof import("../client/runtime")> | undefined;
 const loadBrowser = () =>
   (browser ??= (async () => {
@@ -1477,11 +1497,10 @@ if (BUILD_OUTPUT) {
 }
 // テストが始まる前にビルドを終える（最初の render() のテストがビルドの時間でタイムアウトしないように）
 const ssrImported = performance.now() - t;
-const routeStarted = performance.now();
 const [, routeTook] = await Promise.all([buildBrowser(), routeBuild!.then(() => performance.now() - routeStarted)]);
 const ms = (n: number) => `${n.toFixed(0)}ms`;
 // browser build は SSR 層のビルドと同時に始めるので、ここで待った時間より長い
-console.log(`[proofyard] browser layer: ${ms(performance.now() - t)}${debug ? ` (ssr modules ${ms(ssrImported)}, browser build ${ms(browserTook)} from before the ssr build, route build ${ms(routeTook)})` : ""}`);
+console.log(`[proofyard] browser layer: ${ms(performance.now() - t)}${debug ? ` (ssr modules ${ms(ssrImported)}, browser build ${ms(browserTook)}, route build ${ms(routeTook)}, both from before the ssr build)` : ""}`);
 
 // next build と同じく、Next.js の exportApp（静的なページの prerender。build/index.ts の static-generation）を
 // このプロセスで動かし（StaticWorker の代わりに export/worker を直接呼ぶ）、その結果から build/index.ts と同じく
