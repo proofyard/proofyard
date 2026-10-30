@@ -6,7 +6,6 @@
 // - react 系は Next.js の runtime バンドル内の React（vendored/rsc, vendored/ssr）へ（create-compiler-aliases.ts）
 // - *.shared-runtime は app-page 用の vendored/contexts へ（webpack-config.ts の NormalModuleReplacementPlugin。サーバーの層だけ）
 // - *.external.js と runtime バンドルは層をまたいで共有するので外部のまま（handle-externals.ts）
-import { readFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { STYLE_FILE } from "./css";
 
@@ -214,7 +213,7 @@ export async function buildLayer(layer: Layer, entries: string[], { outdir, defi
             build.onLoad({ filter: /\.(?:[cm]?js|jsx|tsx?)$/ }, async (args) => {
               const inNodeModules = args.path.includes("/node_modules/");
               if (inNodeModules && !/\.[cm]?js$/.test(args.path)) return;
-              const source = readFileSync(args.path, "utf8");
+              const source = await Bun.file(args.path).text();
               if (USE_CLIENT.test(source)) return { loader: "js", contents: clientReferenceStub(args.path, source) };
               if (inNodeModules) {
                 // rsc 層のバンドルは Next.js 本体だけ。変換はネイティブで読み込むとき（preload.ts）なので、バンドルに入れば変換されない
@@ -227,7 +226,7 @@ export async function buildLayer(layer: Layer, entries: string[], { outdir, defi
             });
           } else if (transform) {
             build.onLoad({ filter: /\.(?:[cm]?js|jsx|tsx?)$/ }, async (args) => {
-              const source = readFileSync(args.path, "utf8");
+              const source = await Bun.file(args.path).text();
               // node_modules は "use server" / "use cache" のあるものだけ変換する
               if (args.path.includes("/node_modules/") && !SERVER_DIRECTIVE.test(source)) return;
               const code = await transform(args.path, source);
