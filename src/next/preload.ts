@@ -19,6 +19,7 @@ import { randomBytes } from "node:crypto";
 import { actionModule, serverActions, type ActionCall } from "../testing/actions";
 import { ALIASES, BUNDLED_ALIASES, SERVER_DIRECTIVE, USE_CLIENT, buildLayer, cjsExportNames, clientExports, clientIds, clientReferenceStub, esmClientIds } from "./layers";
 import { FONT_IMPORT, STYLE_FILE, createStyleLoader, unquote } from "./css";
+import { unitCache } from "./layer-cache";
 
 // 対象アプリ（next.config と app/ のあるディレクトリ）。既定は bun test を実行したディレクトリ
 // ponytail: 環境変数で受け取る。設定ファイル（proofyard.config 等）は必要になったら
@@ -106,12 +107,46 @@ const waitForLeader = async (name: string) => {
   if (existsSync(failure)) throw new Error(readFileSync(failure, "utf8"));
   return Bun.file(output).json();
 };
+// 実行をまたいで使うもの（SWC の変換結果など）。プロセスどうしでも共有する
+const cacheDir = resolve(process.env.PROOFYARD_CACHE_DIR ?? join(tmp, "proofyard-cache"));
+// 実行をまたいだキャッシュ（src/next/layer-cache.ts）。PROOFYARD_NO_CACHE=1 で使わない
+const cache = process.env.PROOFYARD_NO_CACHE ? undefined : unitCache(join(cacheDir, "units"), work);
+// 鍵: 結果を変えうるもののうち、ファイルの中身以外（設定、環境変数、バージョン、ファイルの一覧（増えたファイルで解決が変わる））
+// 入力: どの単位も読みうるファイル（proofyard 自身、プロジェクト直下の設定や lockfile、Next.js のバージョン）と、単位ごとに読んだファイル
+const NOT_SOURCE = /^(?:test-results|coverage|playwright-report|out|dist|build)\//;
+const TEST_FILE = /[._](?:test|spec)\.[cm]?[jt]sx?$/;
+const projectFiles = [...appSources(projectDir, /./)].filter((file) => !NOT_SOURCE.test(relative(projectDir, file)));
+const appFiles = projectFiles.filter((file) => !TEST_FILE.test(file));
+const baseKey = [
+  Bun.version,
+  Bun.revision,
+  projectDir,
+  JSON.stringify(config, (_, v) => (typeof v === "function" ? v.toString() : v)),
+  Object.entries(process.env).filter(([k]) => /^(?:NEXT_|__NEXT|NODE_ENV$|PROOFYARD_(?!DEBUG$|BUILD_OUTPUT$|RUN_DIR$))/.test(k)).sort(),
+  appFiles,
+];
+const cacheKey = (...parts: unknown[]) => Bun.hash(cache!.portable(JSON.stringify([baseKey, ...parts]))).toString(36);
+const commonInputs = [
+  ...appSources(join(import.meta.dir, ".."), /./),
+  ...readdirSync(projectDir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(projectDir, e.name)),
+  require.resolve("next/package.json"),
+];
 const buildOutput = BUILD_OUTPUT
   ? undefined
   : !leader
     ? (waitForLeader("build-output") as Promise<BuildOutput>)
     : (async () => {
         const output = join(runDir, "build-output.json");
+        // 前の実行の結果（アプリのファイルが同じなら。prerender が読む外部のデータ（generateStaticParams の DB など）の変化は見ない）
+        const key = cache && cacheKey("build-output");
+        const cached = key && cache!.lookup<BuildOutput>(key);
+        if (cached) {
+          if (debug) console.log("[proofyard] (build-output: from the cache)");
+          write(output, cached);
+          return cached;
+        }
+        const unit = key ? cache!.begin(key) : undefined;
+        const startedAt = Date.now();
         // テストのファイルの代わりにこのファイルを渡す（プリロードの最後で終わるので読み込まれない）
         const spawned = performance.now();
         const proc = Bun.spawn([process.execPath, "test", "--preload", import.meta.path, import.meta.path], {
@@ -131,7 +166,9 @@ const buildOutput = BUILD_OUTPUT
           for (const line of stdout.split("\n")) if (line.startsWith("[proofyard] ")) console.log(`[proofyard] (prerender process) ${line.slice(12)}`);
           console.log(`[proofyard] (prerender process) total ${(performance.now() - spawned).toFixed(0)}ms`);
         }
-        return (await Bun.file(output).json()) as BuildOutput;
+        const exported: BuildOutput = await Bun.file(output).json();
+        unit?.commit([...commonInputs, ...appFiles], exported, startedAt);
+        return exported;
       })();
 // prerenderRoute が使う Next.js の静的シェルのデバッグ機能を有効にしてビルドする（getDefineEnv が define に入れる。
 // ?__nextppronly のリクエストだけが使う。next build をこの環境変数付きで実行するのと同じ）
@@ -290,8 +327,6 @@ const nextDefine: Record<string, unknown> = getDefineEnv({
 // webpack の DefinePlugin と同じく undefined は undefined に（Bun.build は文字列だけ受け付ける）
 const define = Object.fromEntries(Object.entries(nextDefine).map(([k, v]) => [k, typeof v === "string" ? v : String(v)]));
 // rsc 層のアプリのソースは next-swc-loader と同じ SWC 変換（"use cache" / "use server" はここで変換される）
-// 実行をまたいで使うもの（SWC の変換結果など）。プロセスどうしでも共有する
-const cacheDir = resolve(process.env.PROOFYARD_CACHE_DIR ?? join(tmp, "proofyard-cache"));
 // next build と同じく、鍵は環境変数（NEXT_SERVER_ACTIONS_ENCRYPTION_KEY）か、保存したもの（next build は distDir/cache/.rscinfo）を使い回す。
 // Server Action の id もこの鍵で決まるので、SWC の変換結果を使い回せる
 const encryptionKey = (() => {
@@ -558,12 +593,22 @@ for (const file of new Set([...nextFacades.values(), MANIFESTS_SINGLETON])) {
   write(entry, `import * as m from ${JSON.stringify(file)};\nexport default m;\n`);
   facadeEntries.set(file, entry);
 }
-// 最初のプロセスが 1 回だけ求めて runDir に書き、他のプロセス（--parallel の他のワーカーと prerender の別プロセス）はそれを読む
-const share = async <T>(name: string, compute: () => Promise<T>): Promise<T> => {
+// 最初のプロセスが 1 回だけ求めて runDir に書き、他のプロセス（--parallel の他のワーカーと prerender の別プロセス）はそれを読む。
+// 求めるときは、前の実行の結果が使えればそれを使う。compute は出力のディレクトリと、読んだファイルを足す Set を受け取る。
+// 使い回したときは compute を呼ばないので、結果の副作用（Client Reference など）は呼び出し側が反映する
+const share = async <T>(name: string, keyParts: unknown, compute: (outdir: string, inputs: Set<string>) => Promise<T>): Promise<T> => {
   if (!leader) return waitForLeader(name);
   const file = join(runDir, `${name}.json`);
   try {
-    const value = await compute();
+    const key = cache && cacheKey(define, Bun.hash(encryptionKey).toString(36), name, keyParts);
+    let value = key ? cache!.lookup<T>(key) : undefined;
+    if (value === undefined) {
+      const unit = key ? cache!.begin(key) : undefined;
+      const startedAt = Date.now();
+      const inputs = new Set(commonInputs);
+      value = await compute(unit ? join(unit.dir, "out") : join(runDir, name), inputs);
+      unit?.commit(inputs, value, startedAt);
+    } else if (debug) console.log(`[proofyard] (${name}: from the cache)`);
     write(`${file}.${process.pid}`, value);
     renameSync(`${file}.${process.pid}`, file);
     return value;
@@ -578,12 +623,19 @@ const addClientReferences = (shared: SharedClientReferences) => {
   for (const id of shared.esmClientIds) esmClientIds.add(id);
   for (const [id, names] of shared.clientExports) clientExports.set(id, names);
 };
-// 層のビルド（出力は runDir）。ビルドの副作用（rsc 層のバンドルで見つけた Client Reference）も一緒に渡す。
+// 層のビルド。ビルドの副作用（rsc 層のバンドルで見つけた Client Reference）も一緒に渡す。
 // 入口は同じコードと同じアプリから同じ順で作るので、出力は順番で対応させる（生成した入口のパスはプロセスごとに違う）
-const shareLayer = async (name: string, entries: string[], build: (outdir: string) => Promise<Map<string, string>>): Promise<Map<string, string>> => {
+// styled: CSS を読む層。CSS（Tailwind など）はアプリのどのファイルからも作られうるので、アプリのファイルをすべて入力にする
+const shareLayer = async (
+  name: string,
+  entries: string[],
+  build: (outdir: string, inputs: Set<string>) => Promise<Map<string, string>>,
+  styled = false,
+): Promise<Map<string, string>> => {
   let out: Map<string, string> | undefined;
-  const shared = await share(name, async () => {
-    out = await build(join(runDir, name));
+  const shared = await share(name, entries, async (outdir, inputs) => {
+    if (styled) for (const file of appFiles) inputs.add(file);
+    out = await build(outdir, inputs);
     return { outputs: [...out.values()], clientIds: [...clientIds], esmClientIds: [...esmClientIds], clientExports: [...clientExports] };
   });
   if (out) return out;
@@ -592,7 +644,7 @@ const shareLayer = async (name: string, entries: string[], build: (outdir: strin
   return new Map(entries.map((entry, i) => [entry, shared.outputs[i]!]));
 };
 const rscEntries = [...entries, ...facadeEntries.values()];
-const rsc = await shareLayer("rsc", rscEntries, (outdir) => buildLayer("rsc", rscEntries, { outdir, define, generatedDir, nativeDir: projectDir, style }));
+const rsc = await shareLayer("rsc", rscEntries, (outdir, inputs) => buildLayer("rsc", rscEntries, { outdir, define, generatedDir, nativeDir: projectDir, style, inputs }));
 lap("rsc build");
 
 // アプリの "use client" ファイルを Client Reference として登録する（Next.js 本体のものは rsc 層のビルドで登録済み）
@@ -601,9 +653,12 @@ const sourceLoader = (path: string) => (path.match(/\.([jt]sx?)$/)?.[1] ?? "js")
 const actionFiles = new Map<string, string>();
 const nativeReplacements = new Map<string, string>(); // node_modules のファイル → 代わりのモジュール
 // アプリと node_modules を辿った結果は、最初のプロセスが求めて他のプロセス（--parallel の他のワーカーと prerender の別プロセス）と共有する
-const traversed = await share("native", async () => {
+let traversedHere = false;
+const traversed = await share("native", projectFiles, async (_, inputs) => {
+  traversedHere = true;
   const nodeModuleImports: [string, string][] = []; // node_modules の import を辿るファイル
   for (const path of appSources(projectDir)) {
+    inputs.add(path);
     const source = readFileSync(path, "utf8");
     if (/["']use server["']/.test(source))
       for (const m of swcTransformSync(path, source).matchAll(/registerServerReference\([^,]+,\s*"([0-9a-f]+)"/g)) actionFiles.set(m[1]!, path);
@@ -630,6 +685,7 @@ const traversed = await share("native", async () => {
   function packageDir(dir: string): string | undefined {
     if (!packageDirs.has(dir)) {
       const pkg = join(dir, "package.json");
+      inputs.add(pkg);
       packageDirs.set(dir, existsSync(pkg) && /"name"\s*:/.test(readFileSync(pkg, "utf8")) ? dir : dir === dirname(dir) ? undefined : packageDir(dirname(dir)));
     }
     return packageDirs.get(dir);
@@ -668,6 +724,7 @@ const traversed = await share("native", async () => {
         if (!(resolved.includes("/node_modules/") || resolved.startsWith(barrelDir + "/")) || !/\.[cm]?js$/.test(resolved)) continue;
         const target = reactServerResolve(spec, dirname(path), resolved);
         if (target !== resolved && !nativeReplacements.has(resolved)) {
+          inputs.add(target);
           const { exports } = new Bun.Transpiler({ loader: "js" }).scan(readFileSync(target, "utf8"));
           nativeReplacements.set(
             resolved,
@@ -679,6 +736,7 @@ const traversed = await share("native", async () => {
         }
         if (visited.has(resolved)) continue;
         visited.add(resolved);
+        inputs.add(resolved);
         next.push(resolved);
       }
     }
@@ -717,7 +775,7 @@ const traversed = await share("native", async () => {
     clientExports: [...clientExports],
   };
 });
-if (!leader) {
+if (!traversedHere) {
   for (const [id, path] of traversed.actionFiles) actionFiles.set(id, path);
   // バレルのファイルはプロセスごとの場所にある（同じ順に作るので名前は同じ）
   for (const [path, code] of traversed.nativeReplacements)
@@ -770,8 +828,9 @@ const clientDefine = Object.fromEntries(
 let browserBuild: ReturnType<typeof buildLayer> | undefined;
 const browserEntries = () => [...clientIds, BROWSER_RUNTIME];
 const buildBrowser = () =>
-  (browserBuild ??= shareLayer("browser", browserEntries(), (outdir) => buildLayer("browser", browserEntries(), {
+  (browserBuild ??= shareLayer("browser", browserEntries(), (outdir, inputs) => buildLayer("browser", browserEntries(), {
     outdir,
+    inputs,
     transform: swcTransformFor("browser"),
     style,
     redirect: browserRedirect,
@@ -785,7 +844,7 @@ const buildBrowser = () =>
       __webpack_chunk_load__: "globalThis.__proofyardBrowserChunkLoad",
       "globalThis.__next_require__": "globalThis.__proofyardBrowserRequire",
     },
-  })));
+  }), true));
 // Client Reference が揃ったら、SSR 層と同時にビルドを始める（待つのはテストが始まる前。prerender の別プロセスは作らない）
 // （失敗はそこで待つときに出す。先に失敗しても未処理の拒否にしない）
 const browserStarted = performance.now();
@@ -831,10 +890,11 @@ const writeRouteEntry = (asyncIds: Set<string>) =>
       `require(${JSON.stringify(join(nextDist, "client/app-next.js"))});`,
     ].join("\n"),
   );
-const buildRoute = async (outdir: string, asyncIds: Set<string>) => {
+const buildRoute = async (outdir: string, inputs: Set<string>, asyncIds: Set<string>) => {
   writeRouteEntry(asyncIds);
   const outputs = await buildLayer("browser", [ROUTE_ENTRY], {
     outdir,
+    inputs,
     style,
     transform: swcTransformFor("route"),
     redirect: browserRedirect,
@@ -869,21 +929,23 @@ const buildRoute = async (outdir: string, asyncIds: Set<string>) => {
 // あったら作り直す。next build の prerender のプロセス（buildOutput）はブラウザ層を使わないので作らない
 const asyncClientIdsReady = Promise.withResolvers<Set<string>>();
 const routeStarted = performance.now();
+// （キャッシュの入力を比べるので、入口は先に書いておく）
+if (!BUILD_OUTPUT) writeRouteEntry(new Set());
 const routeBuild = BUILD_OUTPUT
   ? undefined
-  : shareLayer("route", [ROUTE_ENTRY], async (outdir) => {
-      const guess = buildRoute(outdir, new Set());
+  : shareLayer("route", [ROUTE_ENTRY], async (outdir, inputs) => {
+      const guess = buildRoute(outdir, inputs, new Set());
       guess.catch(() => {}); // 作り直すなら、この失敗は使わない
       const asyncIds = await asyncClientIdsReady.promise;
       if (!asyncIds.size) return guess;
       await guess.catch(() => {});
-      return buildRoute(outdir, asyncIds);
-    }).then((outputs) => outputs.get(ROUTE_ENTRY)!);
+      return buildRoute(outdir, inputs, asyncIds);
+    }, true).then((outputs) => outputs.get(ROUTE_ENTRY)!);
 // 失敗はテストの前に待つところで出す
 routeBuild?.catch(() => {});
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
 const ssrEntries = [...clientIds, SSR_RUNTIME];
-const ssr = await shareLayer("ssr", ssrEntries, (outdir) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style }));
+const ssr = await shareLayer("ssr", ssrEntries, (outdir, inputs) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style, inputs }), true);
 lap("ssr build");
 
 // ネイティブで読み込むアプリ（と、その依存）の rsc 層の解決と変換

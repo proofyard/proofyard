@@ -6,7 +6,7 @@
 // - react 系は Next.js の runtime バンドル内の React（vendored/rsc, vendored/ssr）へ（create-compiler-aliases.ts）
 // - *.shared-runtime は app-page 用の vendored/contexts へ（webpack-config.ts の NormalModuleReplacementPlugin。サーバーの層だけ）
 // - *.external.js と runtime バンドルは層をまたいで共有するので外部のまま（handle-externals.ts）
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, resolve as resolvePath } from "node:path";
 import { STYLE_FILE } from "./css";
 
 const VENDORED = "next/dist/server/route-modules/app-page/vendored";
@@ -159,11 +159,13 @@ export type LayerOptions = {
   style?: (path: string) => Promise<{ loader: "js"; contents: string }>;
   // false なら 1 つのファイルにまとめる（クエリ付きの import で評価し直すと、モジュールの状態ごと新しくなる）
   splitting?: boolean;
+  // ビルドが読んだファイルを足す（実行をまたいだキャッシュの入力。src/next/layer-cache.ts）
+  inputs?: Set<string>;
 };
 
 export type Layer = "rsc" | "ssr" | "browser";
 
-export async function buildLayer(layer: Layer, entries: string[], { outdir, define, generatedDir, transform, nativeDir, redirect, aliases: override, style, splitting = true }: LayerOptions) {
+export async function buildLayer(layer: Layer, entries: string[], { outdir, define, generatedDir, transform, nativeDir, redirect, aliases: override, style, splitting = true, inputs }: LayerOptions) {
   const aliases: Record<string, string> = ALIASES[layer];
   const bundledAliases = Object.fromEntries(
     Object.entries({ ...BUNDLED_ALIASES[layer], ...override }).filter((e): e is [string, string] => e[1] !== undefined),
@@ -184,6 +186,7 @@ export async function buildLayer(layer: Layer, entries: string[], { outdir, defi
     // define の NODE_ENV と揃える（prod の React に jsxDEV はない）
     jsx: { development: define["process.env.NODE_ENV"] === '"development"' },
     define,
+    metafile: !!inputs,
     plugins: [
       {
         name: `next-${layer}-layer`,
@@ -267,6 +270,8 @@ export async function buildLayer(layer: Layer, entries: string[], { outdir, defi
       `[proofyard] (${layer} build, ${entries.length} entries) ${(performance.now() - started).toFixed(0)}ms; plugin JS: onResolve ${spent.resolves}x ${spent.resolve.toFixed(0)}ms, onLoad ${spent.loads}x ${spent.load.toFixed(0)}ms`,
     );
   if (!result.success) throw new AggregateError(result.logs, `${layer} layer build failed`);
+  // metafile のパスは実行したディレクトリからの相対パス
+  for (const path of Object.keys(result.metafile?.inputs ?? {})) inputs?.add(resolvePath(path));
   // 入口ごとの出力（[dir] を保つので入口の絶対パスから引ける）
   const out = new Map<string, string>();
   for (const entry of entryPaths) {

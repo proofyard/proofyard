@@ -56,7 +56,11 @@ preload = ["proofyard/preload"]
 `PROOFYARD_NEXT_APP` sets the app directory (default: the current directory).
 `PROOFYARD_CACHE_DIR` sets where SWC output and similar files are cached
 (default: `proofyard-cache` in the temp directory). Keep it between CI runs for
-faster startup.
+faster startup. When the app's files, config, env and dependencies are
+unchanged, the next run reuses the previous bundles and prerender results.
+That reuse does not see outside data that prerendering reads (for example a
+database in `generateStaticParams`). Set `PROOFYARD_NO_CACHE=1` to rebuild
+everything.
 
 ## Quick start
 
