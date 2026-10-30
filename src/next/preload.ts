@@ -73,11 +73,19 @@ const config = await loadConfig(PHASE_PRODUCTION_BUILD, projectDir, { silent: tr
 const BUILD_OUTPUT = process.env.PROOFYARD_BUILD_OUTPUT;
 // bun test --parallel のワーカーどうしは、同じ実行（親のプロセス）の中で 1 回だけ作って共有する（next build も 1 回）。
 // 最初のワーカーが作り、他のワーカーはその結果（失敗も）を待つ
-const runDir = process.env.BUN_TEST_WORKER_ID && !BUILD_OUTPUT ? join(tmp, `proofyard-run-${process.ppid}`) : undefined;
+// prerender の別プロセスは、それを動かしたプロセスの結果（層のビルドと node_modules を辿った結果）を待って使う
+// （--parallel でなければ実行ごとに作る。bun test --watch は同じプロセスでプリロードをやり直すので、前の実行の結果を消す）
+if (!BUILD_OUTPUT && !process.env.BUN_TEST_WORKER_ID)
+  for (const name of existsSync(work) ? readdirSync(work) : []) if (name.startsWith("run-")) rmSync(join(work, name), { recursive: true, force: true });
+const runDir = BUILD_OUTPUT
+  ? process.env.PROOFYARD_RUN_DIR!
+  : process.env.BUN_TEST_WORKER_ID
+    ? join(tmp, `proofyard-run-${process.ppid}`)
+    : join(work, `run-${Date.now()}`);
 const leader = (() => {
-  if (!runDir) return true;
+  if (BUILD_OUTPUT) return false;
   try {
-    mkdirSync(runDir);
+    mkdirSync(runDir, { recursive: !process.env.BUN_TEST_WORKER_ID });
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -85,9 +93,14 @@ const leader = (() => {
   }
 })();
 // 最初のワーカーが runDir に書いた結果（name.json か、失敗なら name.error）を待つ
+// （結果を書くプロセスが先に終わったら、待たずに失敗する）
+const parentPid = process.ppid;
 const waitForLeader = async (name: string) => {
-  const [output, failure] = [join(runDir!, `${name}.json`), join(runDir!, `${name}.error`)];
-  while (!existsSync(output) && !existsSync(failure)) await Bun.sleep(50);
+  const [output, failure] = [join(runDir, `${name}.json`), join(runDir, `${name}.error`)];
+  while (!existsSync(output) && !existsSync(failure)) {
+    if (process.ppid !== parentPid) throw new Error(`[proofyard] the process that builds ${name} has exited`);
+    await Bun.sleep(50);
+  }
   if (existsSync(failure)) throw new Error(readFileSync(failure, "utf8"));
   return Bun.file(output).json();
 };
@@ -96,19 +109,19 @@ const buildOutput = BUILD_OUTPUT
   : !leader
     ? (waitForLeader("build-output") as Promise<BuildOutput>)
     : (async () => {
-        const output = join(runDir ?? work, "build-output.json");
+        const output = join(runDir, "build-output.json");
         // テストのファイルの代わりにこのファイルを渡す（プリロードの最後で終わるので読み込まれない）
         const spawned = performance.now();
         const proc = Bun.spawn([process.execPath, "test", "--preload", import.meta.path, import.meta.path], {
           cwd: process.cwd(),
-          env: { ...process.env, PROOFYARD_BUILD_OUTPUT: output },
+          env: { ...process.env, PROOFYARD_BUILD_OUTPUT: output, PROOFYARD_RUN_DIR: runDir },
           stdout: "pipe",
           stderr: "pipe",
         });
         const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
         if (code !== 0) {
           const message = `[proofyard] prerendering (next build) failed\n${stdout}${stderr}`;
-          if (runDir) write(join(runDir, "build-output.error"), message);
+          write(join(runDir, "build-output.error"), message);
           throw new Error(message);
         }
         // 別プロセスの内訳（そのプロセスのログ）
@@ -541,29 +554,38 @@ for (const file of new Set([...nextFacades.values(), MANIFESTS_SINGLETON])) {
   write(entry, `import * as m from ${JSON.stringify(file)};\nexport default m;\n`);
   facadeEntries.set(file, entry);
 }
-// 層のビルド。bun test --parallel のワーカーどうしは、最初のワーカーが 1 回だけビルドして（出力は runDir）共有する。
-// ビルドの副作用（rsc 層のバンドルで見つけた Client Reference）も一緒に渡す。
-// 入口は同じコードと同じアプリから同じ順で作るので、出力は順番で対応させる（生成した入口のパスはワーカーごとに違う）
-const shareLayer = async (name: string, entries: string[], build: (outdir: string) => Promise<Map<string, string>>): Promise<Map<string, string>> => {
-  if (!runDir) return build(join(work, name));
-  if (leader) {
-    const file = join(runDir, `${name}.json`);
-    try {
-      const out = await build(join(runDir, name));
-      write(`${file}.${process.pid}`, { outputs: [...out.values()], clientIds: [...clientIds], esmClientIds: [...esmClientIds], clientExports: [...clientExports] });
-      renameSync(`${file}.${process.pid}`, file);
-      return out;
-    } catch (error) {
-      write(join(runDir, `${name}.error`), Bun.inspect(error));
-      throw error;
-    }
+// 最初のプロセスが 1 回だけ求めて runDir に書き、他のプロセス（--parallel の他のワーカーと prerender の別プロセス）はそれを読む
+const share = async <T>(name: string, compute: () => Promise<T>): Promise<T> => {
+  if (!leader) return waitForLeader(name);
+  const file = join(runDir, `${name}.json`);
+  try {
+    const value = await compute();
+    write(`${file}.${process.pid}`, value);
+    renameSync(`${file}.${process.pid}`, file);
+    return value;
+  } catch (error) {
+    write(join(runDir, `${name}.error`), Bun.inspect(error));
+    throw error;
   }
-  const shared = await waitForLeader(name);
-  if (shared.outputs.length !== entries.length) throw new Error(`[proofyard] the shared ${name} layer has ${shared.outputs.length} outputs for ${entries.length} entries`);
+};
+type SharedClientReferences = { clientIds: string[]; esmClientIds: string[]; clientExports: [string, string[]][] };
+const addClientReferences = (shared: SharedClientReferences) => {
   for (const id of shared.clientIds) clientIds.add(id);
   for (const id of shared.esmClientIds) esmClientIds.add(id);
   for (const [id, names] of shared.clientExports) clientExports.set(id, names);
-  return new Map(entries.map((entry, i) => [entry, shared.outputs[i]]));
+};
+// 層のビルド（出力は runDir）。ビルドの副作用（rsc 層のバンドルで見つけた Client Reference）も一緒に渡す。
+// 入口は同じコードと同じアプリから同じ順で作るので、出力は順番で対応させる（生成した入口のパスはプロセスごとに違う）
+const shareLayer = async (name: string, entries: string[], build: (outdir: string) => Promise<Map<string, string>>): Promise<Map<string, string>> => {
+  let out: Map<string, string> | undefined;
+  const shared = await share(name, async () => {
+    out = await build(join(runDir, name));
+    return { outputs: [...out.values()], clientIds: [...clientIds], esmClientIds: [...esmClientIds], clientExports: [...clientExports] };
+  });
+  if (out) return out;
+  if (shared.outputs.length !== entries.length) throw new Error(`[proofyard] the shared ${name} layer has ${shared.outputs.length} outputs for ${entries.length} entries`);
+  addClientReferences(shared);
+  return new Map(entries.map((entry, i) => [entry, shared.outputs[i]!]));
 };
 const rscEntries = [...entries, ...facadeEntries.values()];
 const rsc = await shareLayer("rsc", rscEntries, (outdir) => buildLayer("rsc", rscEntries, { outdir, define, generatedDir, nativeDir: projectDir, style }));
@@ -573,103 +595,122 @@ lap("rsc build");
 const sourceLoader = (path: string) => (path.match(/\.([jt]sx?)$/)?.[1] ?? "js") as "js" | "jsx" | "ts" | "tsx";
 // Server Action の id → ファイル（next build は SWC の変換結果から集めて server-reference-manifest.json に書く）
 const actionFiles = new Map<string, string>();
-const nodeModuleImports: [string, string][] = []; // node_modules の import を辿るファイル
-for (const path of appSources(projectDir)) {
-  const source = readFileSync(path, "utf8");
-  if (/["']use server["']/.test(source))
-    for (const m of swcTransformSync(path, source).matchAll(/registerServerReference\([^,]+,\s*"([0-9a-f]+)"/g)) actionFiles.set(m[1]!, path);
-  if (USE_CLIENT.test(source)) {
-    clientReferenceStub(path, source);
-    continue;
-  }
-  // optimizePackageImports の import は、書き換えた後の（必要なファイルだけを読む）モジュールから辿る
-  // （rsc 層で変換できないファイルは rsc 層では読まれないので辿らない）
-  if (!barrelPackages.some((name) => source.includes(name))) nodeModuleImports.push([path, source]);
-  else if (tryCompile(path, source, "rsc")) nodeModuleImports.push([path, swcTransformSync(path, source)]);
-}
-// node_modules の "use client" はネイティブで読むとサーバーで実行されてしまう。アプリの import から node_modules を辿って
-// 見つけたものを Client Reference の代わりのモジュールにする（Next.js は rsc 層で node_modules もバンドルして同じことをする）
-// ponytail: 静的な import / require だけを辿る（require(変数) などの動的なものは辿れない）
 const nativeReplacements = new Map<string, string>(); // node_modules のファイル → 代わりのモジュール
-// 読み込んだときに失敗するモジュール（import の名前の解決で先に失敗しないよう、元のモジュールの export 名を持たせる）
-const failModule = (message: string, exports: string[] = []) =>
-  `throw new Error(${JSON.stringify(message)});\nexport default undefined;\n${exports.filter((n) => n !== "default").map((n) => `export const ${n} = undefined;\n`).join("")}`;
-// exports に react-server の条件を持つパッケージは、Next.js の rsc 層（webpack の conditionNames）では別のファイルになる。
-// Bun の解決（--conditions react-server）で求め、元のファイルを読んだら react-server のファイルを読むようにする
-// ponytail: package.json に "react-server" と書かれたパッケージへの、パッケージ名での import だけを別プロセスで解決する
-// （相対パスは exports を通らないので条件で変わらない）。同じパッケージからの同じ指定子は使い回す。多ければ 1 つのプロセスにまとめる
-const packageDirs = new Map<string, string | undefined>(); // ディレクトリ → それを含むパッケージ（name のある package.json）のディレクトリ
-function packageDir(dir: string): string | undefined {
-  if (!packageDirs.has(dir)) {
-    const pkg = join(dir, "package.json");
-    packageDirs.set(dir, existsSync(pkg) && /"name"\s*:/.test(readFileSync(pkg, "utf8")) ? dir : dir === dirname(dir) ? undefined : packageDir(dirname(dir)));
-  }
-  return packageDirs.get(dir);
-}
-const hasReactServerCondition = new Map<string, boolean>(); // パッケージのディレクトリ → package.json に "react-server" を含む
-const reactServerResolved = new Map<string, string>(); // 指定子 + import 元のパッケージ → 解決したファイル
-let reactServerSpawns = 0;
-function reactServerResolve(spec: string, from: string, resolved: string): string {
-  if (/^[./]/.test(spec)) return resolved;
-  const dir = packageDir(dirname(resolved));
-  if (!dir) return resolved;
-  if (!hasReactServerCondition.has(dir)) hasReactServerCondition.set(dir, readFileSync(join(dir, "package.json"), "utf8").includes('"react-server"'));
-  if (!hasReactServerCondition.get(dir)) return resolved;
-  const key = `${spec}\0${packageDir(from) ?? from}`;
-  if (!reactServerResolved.has(key)) {
-    reactServerSpawns++;
-    const proc = Bun.spawnSync([process.execPath, "--conditions", "react-server", "-e", "console.log(Bun.resolveSync(process.argv[1], process.argv[2]))", spec, from]);
-    if (!proc.success) throw new Error(`[proofyard] failed to resolve ${spec} with the react-server condition from ${from}\n${proc.stderr}`);
-    reactServerResolved.set(key, proc.stdout.toString().trim());
-  }
-  return reactServerResolved.get(key)!;
-}
-const visited = new Set<string>();
-while (nodeModuleImports.length) {
-  const [path, source] = nodeModuleImports.pop()!;
-  for (const { path: spec } of new Bun.Transpiler({ loader: sourceLoader(path) }).scanImports(source)) {
-    if (/^(?:node:|bun:)/.test(spec) || spec in ALIASES.rsc || nextFacades.has(spec) || spec === "next" || spec.startsWith("next/")) continue;
-    let resolved: string;
-    try {
-      resolved = Bun.resolveSync(spec, dirname(path));
-    } catch {
+// アプリと node_modules を辿った結果は、最初のプロセスが求めて他のプロセス（--parallel の他のワーカーと prerender の別プロセス）と共有する
+const traversed = await share("native", async () => {
+  const nodeModuleImports: [string, string][] = []; // node_modules の import を辿るファイル
+  for (const path of appSources(projectDir)) {
+    const source = readFileSync(path, "utf8");
+    if (/["']use server["']/.test(source))
+      for (const m of swcTransformSync(path, source).matchAll(/registerServerReference\([^,]+,\s*"([0-9a-f]+)"/g)) actionFiles.set(m[1]!, path);
+    if (USE_CLIENT.test(source)) {
+      clientReferenceStub(path, source);
       continue;
     }
-    if (!(resolved.includes("/node_modules/") || resolved.startsWith(barrelDir + "/")) || !/\.[cm]?js$/.test(resolved)) continue;
-    const target = reactServerResolve(spec, dirname(path), resolved);
-    if (target !== resolved && !nativeReplacements.has(resolved)) {
-      const { exports } = new Bun.Transpiler({ loader: "js" }).scan(readFileSync(target, "utf8"));
-      nativeReplacements.set(
-        resolved,
-        exports.length
-          ? `export * from ${JSON.stringify(target)};\n${exports.includes("default") ? `export { default } from ${JSON.stringify(target)};\n` : ""}`
-          : failModule(`[proofyard] Unsupported: CommonJS react-server exports in node_modules (${target})`),
-      );
-      resolved = target;
+    // optimizePackageImports の import は、書き換えた後の（必要なファイルだけを読む）モジュールから辿る
+    // （rsc 層で変換できないファイルは rsc 層では読まれないので辿らない）
+    if (!barrelPackages.some((name) => source.includes(name))) nodeModuleImports.push([path, source]);
+    else if (tryCompile(path, source, "rsc")) nodeModuleImports.push([path, swcTransformSync(path, source)]);
+  }
+  // node_modules の "use client" はネイティブで読むとサーバーで実行されてしまう。アプリの import から node_modules を辿って
+  // 見つけたものを Client Reference の代わりのモジュールにする（Next.js は rsc 層で node_modules もバンドルして同じことをする）
+  // ponytail: 静的な import / require だけを辿る（require(変数) などの動的なものは辿れない）
+  // 読み込んだときに失敗するモジュール（import の名前の解決で先に失敗しないよう、元のモジュールの export 名を持たせる）
+  const failModule = (message: string, exports: string[] = []) =>
+    `throw new Error(${JSON.stringify(message)});\nexport default undefined;\n${exports.filter((n) => n !== "default").map((n) => `export const ${n} = undefined;\n`).join("")}`;
+  // exports に react-server の条件を持つパッケージは、Next.js の rsc 層（webpack の conditionNames）では別のファイルになる。
+  // Bun の解決（--conditions react-server）で求め、元のファイルを読んだら react-server のファイルを読むようにする
+  // ponytail: package.json に "react-server" と書かれたパッケージへの、パッケージ名での import だけを別プロセスで解決する
+  // （相対パスは exports を通らないので条件で変わらない）。同じパッケージからの同じ指定子は使い回す。多ければ 1 つのプロセスにまとめる
+  const packageDirs = new Map<string, string | undefined>(); // ディレクトリ → それを含むパッケージ（name のある package.json）のディレクトリ
+  function packageDir(dir: string): string | undefined {
+    if (!packageDirs.has(dir)) {
+      const pkg = join(dir, "package.json");
+      packageDirs.set(dir, existsSync(pkg) && /"name"\s*:/.test(readFileSync(pkg, "utf8")) ? dir : dir === dirname(dir) ? undefined : packageDir(dirname(dir)));
     }
-    if (visited.has(resolved)) continue;
-    visited.add(resolved);
-    const dep = readFileSync(resolved, "utf8");
-    if (USE_CLIENT.test(dep)) {
-      nativeReplacements.set(resolved, clientReferenceStub(resolved, dep));
-      continue;
+    return packageDirs.get(dir);
+  }
+  const hasReactServerCondition = new Map<string, boolean>(); // パッケージのディレクトリ → package.json に "react-server" を含む
+  const reactServerResolved = new Map<string, string>(); // 指定子 + import 元のパッケージ → 解決したファイル
+  let reactServerSpawns = 0;
+  function reactServerResolve(spec: string, from: string, resolved: string): string {
+    if (/^[./]/.test(spec)) return resolved;
+    const dir = packageDir(dirname(resolved));
+    if (!dir) return resolved;
+    if (!hasReactServerCondition.has(dir)) hasReactServerCondition.set(dir, readFileSync(join(dir, "package.json"), "utf8").includes('"react-server"'));
+    if (!hasReactServerCondition.get(dir)) return resolved;
+    const key = `${spec}\0${packageDir(from) ?? from}`;
+    if (!reactServerResolved.has(key)) {
+      reactServerSpawns++;
+      const proc = Bun.spawnSync([process.execPath, "--conditions", "react-server", "-e", "console.log(Bun.resolveSync(process.argv[1], process.argv[2]))", spec, from]);
+      if (!proc.success) throw new Error(`[proofyard] failed to resolve ${spec} with the react-server condition from ${from}\n${proc.stderr}`);
+      reactServerResolved.set(key, proc.stdout.toString().trim());
     }
-    if (SERVER_DIRECTIVE.test(dep)) {
-      // "use server" / "use cache" は、Next.js と同じくアプリのソースと同じ SWC で変換する（Next.js の SWC の設定は node_modules かどうかをパスで見る）。
-      // CommonJS は実行時のプラグインで module.exports が失われるので未対応
-      const { exports, imports } = new Bun.Transpiler({ loader: "js" }).scan(dep);
-      if (!exports.length && !imports.length && /\b(?:module\.)?exports\b/.test(dep))
-        nativeReplacements.set(resolved, failModule(`[proofyard] Unsupported: CommonJS "use server" / "use cache" modules in node_modules (${resolved})`, cjsExportNames(dep)));
-      else {
-        const code = swcTransformSync(resolved, dep);
-        for (const m of code.matchAll(/registerServerReference\([^,]+,\s*"([0-9a-f]+)"/g)) actionFiles.set(m[1]!, resolved);
-        nativeReplacements.set(resolved, code);
+    return reactServerResolved.get(key)!;
+  }
+  const visited = new Set<string>();
+  while (nodeModuleImports.length) {
+    const [path, source] = nodeModuleImports.pop()!;
+    for (const { path: spec } of new Bun.Transpiler({ loader: sourceLoader(path) }).scanImports(source)) {
+      if (/^(?:node:|bun:)/.test(spec) || spec in ALIASES.rsc || nextFacades.has(spec) || spec === "next" || spec.startsWith("next/")) continue;
+      let resolved: string;
+      try {
+        resolved = Bun.resolveSync(spec, dirname(path));
+      } catch {
+        continue;
       }
+      if (!(resolved.includes("/node_modules/") || resolved.startsWith(barrelDir + "/")) || !/\.[cm]?js$/.test(resolved)) continue;
+      const target = reactServerResolve(spec, dirname(path), resolved);
+      if (target !== resolved && !nativeReplacements.has(resolved)) {
+        const { exports } = new Bun.Transpiler({ loader: "js" }).scan(readFileSync(target, "utf8"));
+        nativeReplacements.set(
+          resolved,
+          exports.length
+            ? `export * from ${JSON.stringify(target)};\n${exports.includes("default") ? `export { default } from ${JSON.stringify(target)};\n` : ""}`
+            : failModule(`[proofyard] Unsupported: CommonJS react-server exports in node_modules (${target})`),
+        );
+        resolved = target;
+      }
+      if (visited.has(resolved)) continue;
+      visited.add(resolved);
+      const dep = readFileSync(resolved, "utf8");
+      if (USE_CLIENT.test(dep)) {
+        nativeReplacements.set(resolved, clientReferenceStub(resolved, dep));
+        continue;
+      }
+      if (SERVER_DIRECTIVE.test(dep)) {
+        // "use server" / "use cache" は、Next.js と同じくアプリのソースと同じ SWC で変換する（Next.js の SWC の設定は node_modules かどうかをパスで見る）。
+        // CommonJS は実行時のプラグインで module.exports が失われるので未対応
+        const { exports, imports } = new Bun.Transpiler({ loader: "js" }).scan(dep);
+        if (!exports.length && !imports.length && /\b(?:module\.)?exports\b/.test(dep))
+          nativeReplacements.set(resolved, failModule(`[proofyard] Unsupported: CommonJS "use server" / "use cache" modules in node_modules (${resolved})`, cjsExportNames(dep)));
+        else {
+          const code = swcTransformSync(resolved, dep);
+          for (const m of code.matchAll(/registerServerReference\([^,]+,\s*"([0-9a-f]+)"/g)) actionFiles.set(m[1]!, resolved);
+          nativeReplacements.set(resolved, code);
+        }
+      }
+      nodeModuleImports.push([resolved, dep]);
     }
-    nodeModuleImports.push([resolved, dep]);
   }
+  return {
+    summary: `${visited.size} files, ${reactServerSpawns} react-server resolves`,
+    barrelDir,
+    actionFiles: [...actionFiles],
+    nativeReplacements: [...nativeReplacements],
+    clientIds: [...clientIds],
+    esmClientIds: [...esmClientIds],
+    clientExports: [...clientExports],
+  };
+});
+if (!leader) {
+  for (const [id, path] of traversed.actionFiles) actionFiles.set(id, path);
+  // バレルのファイルはプロセスごとの場所にある（同じ順に作るので名前は同じ）
+  for (const [path, code] of traversed.nativeReplacements)
+    nativeReplacements.set(path.startsWith(traversed.barrelDir + "/") ? barrelDir + path.slice(traversed.barrelDir.length) : path, code);
+  addClientReferences(traversed);
 }
-lap(`node_modules (${visited.size} files, ${reactServerSpawns} react-server resolves)`);
+lap(`node_modules (${traversed.summary})`);
 const SSR_RUNTIME = join(import.meta.dir, "ssr-runtime.ts");
 const ssrEntries = [...clientIds, SSR_RUNTIME];
 const ssr = await shareLayer("ssr", ssrEntries, (outdir) => buildLayer("ssr", ssrEntries, { outdir, define, transform: swcTransformFor("ssr"), style }));
