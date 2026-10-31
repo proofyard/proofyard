@@ -1,3 +1,2 @@
-export default function StatePage() {
-  return <h1>State</h1>;
-}
+const StatePage = () => <h1>State</h1>;
+export default StatePage;

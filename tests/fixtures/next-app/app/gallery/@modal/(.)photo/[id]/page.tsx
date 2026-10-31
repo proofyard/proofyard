@@ -1,3 +1,5 @@
-export default async function PhotoModal({ params }: { params: Promise<{ id: string }> }) {
-  return <dialog open>Photo {(await params).id} (modal)</dialog>;
-}
+const PhotoModal = async ({ params }: { params: Promise<{ id: string }> }) => {
+  const { id } = await params;
+  return <dialog open>Photo {id} (modal)</dialog>;
+};
+export default PhotoModal;

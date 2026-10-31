@@ -1,7 +1,9 @@
-import { Card } from "./theme";
 import { getUser } from "./data";
+import { Card } from "./theme";
 
-export default async function ServerContent() {
+const ServerContent = async () => {
   const user = await getUser();
   return <Card user={user} />;
-}
+};
+
+export default ServerContent;

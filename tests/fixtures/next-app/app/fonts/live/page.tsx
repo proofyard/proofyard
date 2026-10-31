@@ -2,9 +2,10 @@
 import localFont from "next/font/local";
 import { connection } from "next/server";
 
-const brand = localFont({ src: "../brand.woff2", adjustFontFallback: false });
+const brand = localFont({ adjustFontFallback: false, src: "../brand.woff2" });
 
-export default async function LiveFonts() {
+const LiveFonts = async () => {
   await connection();
   return <p className={brand.className}>Live</p>;
-}
+};
+export default LiveFonts;

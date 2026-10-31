@@ -1,3 +1,2 @@
-export function GET(request: Request) {
-  return Response.json({ path: new URL(request.url).pathname });
-}
+export const GET = (request: Request) =>
+  Response.json({ path: new URL(request.url).pathname });

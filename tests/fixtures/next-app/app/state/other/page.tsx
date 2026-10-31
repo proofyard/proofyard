@@ -1,3 +1,2 @@
-export default function OtherPage() {
-  return <h1>Other</h1>;
-}
+const OtherPage = () => <h1>Other</h1>;
+export default OtherPage;

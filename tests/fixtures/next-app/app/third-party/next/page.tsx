@@ -1,6 +1,6 @@
 import { getLocale, LocalePath, requireLocale } from "fake-next-lib";
 
-export default async function Page() {
+const Page = async () => {
   const locale = await getLocale();
   requireLocale(locale);
   return (
@@ -9,4 +9,5 @@ export default async function Page() {
       <LocalePath />
     </main>
   );
-}
+};
+export default Page;

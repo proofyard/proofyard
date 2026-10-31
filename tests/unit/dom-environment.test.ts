@@ -1,18 +1,23 @@
 import { expect, test } from "bun:test";
+
 import { installDom } from "../../src/dom/environment";
 
 installDom();
 
-function formData(html: string, submitterSelector?: string) {
+const formData = (html: string, submitterSelector?: string) => {
   document.body.innerHTML = `<form>${html}</form>`;
+  // oxlint-disable-next-line typescript/no-non-null-assertion -- なければここで失敗させる
   const form = document.querySelector("form")!;
-  const submitter = submitterSelector ? (form.querySelector(submitterSelector) as HTMLElement) : null;
+  const submitter = submitterSelector
+    ? (form.querySelector(submitterSelector) as HTMLElement)
+    : null;
   return [...new FormData(form, submitter).entries()];
-}
+};
 
 test("FormData(form): HTML 仕様の entry list", () => {
   expect(
-    formData(`
+    formData(
+      `
       <input name="text" value="Alice">
       <input name="nameless-skipped-below">
       <input value="no name">
@@ -32,7 +37,9 @@ test("FormData(form): HTML 仕様の entry list", () => {
       <button name="intent" value="save">Save</button>
       <button name="other" value="x">Other</button>
       <input type="reset" name="reset" value="x">
-    `, 'button[name="intent"]'),
+    `,
+      'button[name="intent"]'
+    )
   ).toEqual([
     ["text", "Alice"],
     ["nameless-skipped-below", ""],
@@ -45,18 +52,25 @@ test("FormData(form): HTML 仕様の entry list", () => {
 });
 
 test("submitter なしではボタンを含めない", () => {
-  expect(formData(`<input name="a" value="1"><button name="b" value="2">B</button>`)).toEqual([["a", "1"]]);
+  expect(
+    formData(`<input name="a" value="1"><button name="b" value="2">B</button>`)
+  ).toEqual([["a", "1"]]);
 });
 
 test("Bun 本来の FormData のまま（Request の body に使える）", async () => {
   const fd = new FormData();
   fd.append("a", "1");
-  const body = await new Request("http://x", { method: "POST", body: fd }).formData();
+  const body = await new Request("http://x", {
+    body: fd,
+    method: "POST",
+  }).formData();
   expect(body.get("a")).toBe("1");
 });
 
 test("file input は Fail Closed", () => {
-  expect(() => formData(`<input type="file" name="f">`)).toThrow(/Unsupported/);
+  expect(() => formData(`<input type="file" name="f">`)).toThrow(
+    /Unsupported/u
+  );
 });
 
 test("ブラウザと同じく toJSON を持たない（JSON.stringify で中身に化けない）", () => {

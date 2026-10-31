@@ -1,16 +1,15 @@
-import { Suspense } from "react";
 import { connection } from "next/server";
+import { Suspense } from "react";
 
-export async function generateStaticParams() {
-  return [{ slug: "hello" }];
-}
+// oxlint-disable-next-line eslint/require-await -- Next.js の generateStaticParams と同じく async にする
+export const generateStaticParams = async () => [{ slug: "hello" }];
 
-async function Views() {
+const Views = async () => {
   await connection();
   return <p>Views: 7</p>;
-}
+};
 
-export default async function Page({ params }: { params: Promise<{ slug: string }> }) {
+const Page = async ({ params }: { params: Promise<{ slug: string }> }) => {
   const { slug } = await params;
   return (
     <main>
@@ -20,4 +19,5 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
       </Suspense>
     </main>
   );
-}
+};
+export default Page;

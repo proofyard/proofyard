@@ -1,5 +1,4 @@
 import { ClientTime } from "../../components/client-time";
 
-export default function Mismatch() {
-  return <ClientTime />;
-}
+const Mismatch = () => <ClientTime />;
+export default Mismatch;

@@ -1,19 +1,37 @@
 // PoC 5: 実際の Next.js App Router アプリを、Next.js サーバーなしで Next.js 本体の handler に通す。
 // 期待値は Next.js 本体の挙動（本番モード）をそのまま確認する。
 import { expect, test } from "bun:test";
-import { requestRoute, type RequestRouteOptions } from "proofyard";
 
-type NextResponseResult = { status: number; headers: Headers; html: string };
-const request = async (url: string, options?: RequestRouteOptions): Promise<NextResponseResult> => {
+import { requestRoute } from "proofyard";
+import type { RequestRouteOptions } from "proofyard";
+
+interface NextResponseResult {
+  status: number;
+  headers: Headers;
+  html: string;
+}
+const request = async (
+  url: string,
+  options?: RequestRouteOptions
+): Promise<NextResponseResult> => {
   const res = await requestRoute(url, options);
-  return { status: res.status, headers: res.headers, html: await res.text() };
+  return { headers: res.headers, html: await res.text(), status: res.status };
 };
 
 // HTML 本体（script と React のテキスト区切りコメントを除く）
-const body = (res: NextResponseResult) => res.html.replace(/<script[\s\S]*?<\/script>/g, "").replace(/<!-- -->/g, "");
+const body = (res: NextResponseResult) =>
+  res.html
+    .replaceAll(/<script[\s\S]*?<\/script>/gu, "")
+    .replaceAll("<!-- -->", "");
 // HTML に埋め込まれた RSC ペイロード（self.__next_f）
 const flight = (res: NextResponseResult) =>
-  [...res.html.matchAll(/self\.__next_f\.push\((\[[\s\S]*?\])\)<\/script>/g)].map((m) => JSON.parse(m[1]!)[1] ?? "").join("");
+  [
+    ...res.html.matchAll(
+      /self\.__next_f\.push\((?<payload>\[[\s\S]*?\])\)<\/script>/gu
+    ),
+  ]
+    .map((m) => JSON.parse(String(m[1]))[1] ?? "")
+    .join("");
 
 test("ルートのレイアウトとページ", async () => {
   const res = await request("/");
@@ -31,12 +49,15 @@ test("ルートグループ (marketing) は URL に出ない", async () => {
 });
 
 test("ネストしたレイアウト・動的ルート・searchParams・cookies・headers・Client Component の SSR", async () => {
-  const res = await request("/dashboard/users/123?tab=x", { cookies: { theme: "dark" }, headers: { "user-agent": "proofyard-test" } });
+  const res = await request("/dashboard/users/123?tab=x", {
+    cookies: { theme: "dark" },
+    headers: { "user-agent": "proofyard-test" },
+  });
   expect(res.status).toBe(200);
   expect(body(res)).toContain(
     "<header>root layout</header><section><nav>dashboard nav (proofyard-test)</nav>" +
       "<article><h1>User 123</h1><p>tab: x</p><p>theme: dark</p>" +
-      '<button type="button">likes: 3 at /dashboard/users/123</button></article>',
+      '<button type="button">likes: 3 at /dashboard/users/123</button></article>'
   );
 });
 
@@ -57,7 +78,9 @@ test("notFound() は 404 と app/not-found.tsx", async () => {
   expect(body(res)).toContain('<meta name="robots" content="noindex"/>');
   // Suspense の外で投げられたので HTML はエラー用の空シェル。not-found はペイロードからクライアントで描く（Next.js 本体の挙動）
   expect(body(res)).toContain('<html id="__next_error__">');
-  expect(flight(res)).toContain('"notFound":[["$","p",null,{"children":"custom not found"}]');
+  expect(flight(res)).toContain(
+    '"notFound":[["$","p",null,{"children":"custom not found"}]'
+  );
 });
 
 test("Server Component の例外は 500 で、dashboard/error.tsx の Error Boundary がペイロードに入る", async () => {
@@ -65,7 +88,9 @@ test("Server Component の例外は 500 で、dashboard/error.tsx の Error Boun
   expect(res.status).toBe(500);
   expect(body(res)).toContain('<html id="__next_error__">');
   // error.tsx は Client Component（Client Reference として送られる）
-  expect(flight(res)).toMatch(/"[^"]*\/fixture-app\/app\/dashboard\/error\.tsx"/);
+  expect(flight(res)).toMatch(
+    /"[^"]*\/fixture-app\/app\/dashboard\/error\.tsx"/u
+  );
   // 本番モードでは例外のメッセージをクライアントに送らない
   expect(res.html).not.toContain("user load failed");
 });

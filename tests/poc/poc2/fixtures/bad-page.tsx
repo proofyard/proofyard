@@ -1,5 +1,7 @@
 import { Card } from "./theme";
 
-export default function BadPage() {
-  return <Card user={{ name: "Bob" }} format={(name) => name.toUpperCase()} />;
-}
+const BadPage = () => (
+  <Card user={{ name: "Bob" }} format={(name) => name.toUpperCase()} />
+);
+
+export default BadPage;

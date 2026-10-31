@@ -1,10 +1,9 @@
 import { BackHome } from "../../../components/back-home";
 
-export default function Settings() {
-  return (
-    <>
-      <h1>Settings</h1>
-      <BackHome />
-    </>
-  );
-}
+const Settings = () => (
+  <>
+    <h1>Settings</h1>
+    <BackHome />
+  </>
+);
+export default Settings;

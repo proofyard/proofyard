@@ -2,7 +2,7 @@
 import Script from "next/script";
 import { connection } from "next/server";
 
-export default async function Scripts() {
+const Scripts = async () => {
   await connection();
   return (
     <main>
@@ -12,4 +12,5 @@ export default async function Scripts() {
       <Script id="inline-flag">{`document.body.dataset.inline = "ran";`}</Script>
     </main>
   );
-}
+};
+export default Scripts;

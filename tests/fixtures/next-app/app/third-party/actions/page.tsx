@@ -1,8 +1,9 @@
 import { addEntry, listEntries } from "fake-actions";
 import { connection } from "next/server";
+
 import { EntryCount } from "../../../components/entry-count";
 
-export default async function Page() {
+const Page = async () => {
   await connection();
   const entries = await listEntries();
   return (
@@ -14,9 +15,10 @@ export default async function Page() {
       </ul>
       <form action={addEntry}>
         <input name="entry" aria-label="entry" />
-        <button>Add entry</button>
+        <button type="submit">Add entry</button>
       </form>
       <EntryCount />
     </main>
   );
-}
+};
+export default Page;

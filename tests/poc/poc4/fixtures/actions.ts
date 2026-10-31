@@ -1,24 +1,29 @@
 "use server";
+/* oxlint-disable require-await -- Server Action は async の関数でなければならない */
 import { db } from "./db";
 
-export type State = { message?: string; error?: string };
+export interface State {
+  message?: string;
+  error?: string;
+}
 
-export async function createUser(_prev: State, formData: FormData): Promise<State> {
-  await db.gate; // テストが止めている間は完了しない（pending 状態の確認用）
+export const createUser = async (
+  _prev: State,
+  formData: FormData
+): Promise<State> => {
+  // テストが止めている間は完了しない（pending 状態の確認用）
+  await db.gate;
   const name = formData.get("name");
-  if (typeof name !== "string" || name === "") return { error: "Name is required" };
+  if (typeof name !== "string" || name === "") {
+    return { error: "Name is required" };
+  }
   db.users.push(name);
   return { message: `Created ${name}` };
-}
+};
 
-export async function joinTeam(team: string, user: string) {
-  return `${user} joined ${team}`;
-}
+export const joinTeam = async (team: string, user: string) =>
+  `${user} joined ${team}`;
 
-export async function echo<T>(value: T): Promise<T> {
-  return value;
-}
+export const echo = async <T>(value: T): Promise<T> => value;
 
-export async function leak() {
-  return () => "functions are not serializable";
-}
+export const leak = async () => () => "functions are not serializable";

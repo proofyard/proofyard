@@ -1,19 +1,20 @@
-import { Suspense } from "react";
 import { cacheLife, cacheTag } from "next/cache";
+import { Suspense } from "react";
 
 // "use cache" の関数が実際に実行された回数（キャッシュに当たれば増えない）
 let calls = 0;
 
+// oxlint-disable-next-line func-style, require-await -- "use cache" の関数（Next.js のコンパイラが変換する。async が要る）
 async function getProduct(id: string) {
   "use cache";
   cacheTag(`product-${id}`);
   // revalidate は、負荷の高いマシンで 1 つのテストが過ぎない長さ（過ぎると裏で再実行され、回数がずれる）
-  cacheLife({ stale: 0, revalidate: 3, expire: 60 });
+  cacheLife({ expire: 60, revalidate: 3, stale: 0 });
   calls += 1;
-  return { id, call: calls };
+  return { call: calls, id };
 }
 
-async function Product({ params }: { params: Promise<{ id: string }> }) {
+const Product = async ({ params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
   const product = await getProduct(id);
   return (
@@ -21,12 +22,12 @@ async function Product({ params }: { params: Promise<{ id: string }> }) {
       product {product.id} call {product.call}
     </p>
   );
-}
+};
 
-export default function Page({ params }: { params: Promise<{ id: string }> }) {
-  return (
-    <Suspense fallback={<p>loading</p>}>
-      <Product params={params} />
-    </Suspense>
-  );
-}
+const Page = ({ params }: { params: Promise<{ id: string }> }) => (
+  <Suspense fallback={<p>loading</p>}>
+    <Product params={params} />
+  </Suspense>
+);
+
+export default Page;

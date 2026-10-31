@@ -1,22 +1,49 @@
 // 仕様 24.1: tests/fixtures/next-app を本物の Next.js と比べる（bun run compat:next-app。next build を含むので遅い）
+/* oxlint-disable no-loop-func -- reference は beforeAll で代入し、テストの中で読む */
+/* oxlint-disable no-await-in-loop -- 比べるリクエストは順番に送る */
+/* oxlint-disable typescript/no-non-null-assertion -- 一致しないときはテストが例外で落ちてよい */
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { join } from "node:path";
+import nodePath from "node:path";
+
 import { requestRoute } from "proofyard";
-import { comparableFlight, comparableHtml, comparableModule, referenceModulePaths, startReference, type Reference } from "./reference";
+
+import {
+  comparableFlight,
+  comparableHtml,
+  comparableModule,
+  referenceModulePaths,
+  startReference,
+} from "./reference";
+import type { Reference } from "./reference";
 
 let reference: Reference;
 beforeAll(async () => {
-  reference = await startReference(join(import.meta.dir, "../fixtures/next-app"));
+  reference = await startReference(
+    nodePath.join(import.meta.dir, "../fixtures/next-app")
+  );
 }, 300_000);
 afterAll(() => reference?.stop());
 
 test("prefetch hints（server/prefetch-hints.json）は next build と同じ", async () => {
-  expect((globalThis as any)[Symbol.for("proofyard.next")].prefetchHints).toEqual(await Bun.file(join(reference.dir, ".next/server/prefetch-hints.json")).json());
+  expect(
+    (globalThis as unknown as Record<symbol, { prefetchHints: unknown }>)[
+      Symbol.for("proofyard.next")
+    ]!.prefetchHints
+  ).toEqual(
+    await Bun.file(
+      nodePath.join(reference.dir, ".next/server/prefetch-hints.json")
+    ).json()
+  );
 });
 
 // prerendered: next start は build のときに描画した HTML を返し、requestRoute は毎回リクエストのときに描画する。
 // そのために HTML が違うもの（ステータスとヘッダーだけ比べる）
-type Case = { path: string; cookies?: Record<string, string>; headers?: Record<string, string>; prerendered?: string };
+interface Case {
+  path: string;
+  cookies?: Record<string, string>;
+  headers?: Record<string, string>;
+  prerendered?: string;
+}
 const cases: Case[] = [
   { path: "/" },
   { path: "/users" },
@@ -24,10 +51,18 @@ const cases: Case[] = [
   { path: "/members" },
   { path: "/people/Alice" },
   { path: "/admin" },
-  { path: "/admin", cookies: { session: "Bob" } },
-  { path: "/api/users/Alice", cookies: { session: "Ann" } },
-  { path: "/dashboard", prerendered: "useSearchParams() の Suspense は、build のときは fallback（CSR に任せる）" },
-  { path: "/dashboard/settings", prerendered: "useSearchParams() の Suspense は、build のときは fallback（CSR に任せる）" },
+  { cookies: { session: "Bob" }, path: "/admin" },
+  { cookies: { session: "Ann" }, path: "/api/users/Alice" },
+  {
+    path: "/dashboard",
+    prerendered:
+      "useSearchParams() の Suspense は、build のときは fallback（CSR に任せる）",
+  },
+  {
+    path: "/dashboard/settings",
+    prerendered:
+      "useSearchParams() の Suspense は、build のときは fallback（CSR に任せる）",
+  },
   { path: "/dashboard/teams/core" },
   { path: "/gallery" },
   { path: "/gallery/photo/1" },
@@ -47,9 +82,13 @@ const cases: Case[] = [
   { path: "/third-party/server" },
   { path: "/third-party/actions" },
   { path: "/third-party/cjs" },
-  { path: "/third-party/next?q=x", cookies: { locale: "ja" } },
-  { path: "/third-party/next", cookies: { locale: "fr" } },
-  { path: "/does-not-exist", prerendered: "_not-found は build のときの HTML で、<title> の並びが違う（notFound() をリクエストのときに呼ぶ /third-party/next は同じ）" },
+  { cookies: { locale: "ja" }, path: "/third-party/next?q=x" },
+  { cookies: { locale: "fr" }, path: "/third-party/next" },
+  {
+    path: "/does-not-exist",
+    prerendered:
+      "_not-found は build のときの HTML で、<title> の並びが違う（notFound() をリクエストのときに呼ぶ /third-party/next は同じ）",
+  },
   { path: "/robots.txt" },
   { path: "/sitemap.xml" },
   { path: "/docs/a/b/c" },
@@ -74,42 +113,91 @@ const cases: Case[] = [
 ];
 
 // Bun の Response.json() は charset を付ける（Node.js は付けない）。アプリのコードは Bun で動く
-const contentType = (value: string | null) => value?.replace(/^application\/json;charset=utf-8$/, "application/json");
+const contentType = (value: string | null) =>
+  value?.replace(/^application\/json;charset=utf-8$/u, "application/json");
 
-for (const { path, cookies, headers, prerendered } of cases)
+for (const { path, cookies, headers, prerendered } of cases) {
   test(`requestRoute ${path}${cookies ? ` ${JSON.stringify(cookies)}` : ""} は next start と同じ`, async () => {
-    const cookie = cookies && Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join("; ");
+    const cookie =
+      cookies &&
+      Object.entries(cookies)
+        .map(([k, v]) => `${k}=${v}`)
+        .join("; ");
     const [ours, real] = await Promise.all([
       requestRoute(path, { cookies, headers }),
-      fetch(reference.url + path, { redirect: "manual", headers: { ...headers, ...(cookie && { cookie }) } }),
+      fetch(reference.url + path, {
+        headers: { ...headers, ...(cookie && { cookie }) },
+        redirect: "manual",
+      }),
     ]);
     expect(ours.status).toBe(real.status);
-    expect(ours.headers.get("location")?.replace(/^https?:\/\/[^/]+/, "")).toBe(real.headers.get("location")?.replace(/^https?:\/\/[^/]+/, "") ?? undefined);
-    expect(contentType(ours.headers.get("content-type"))).toBe(contentType(real.headers.get("content-type")));
-    for (const name of ["x-section", "set-cookie"]) expect(`${name}: ${ours.headers.get(name)}`).toBe(`${name}: ${real.headers.get(name)}`);
-    if (!prerendered) expect(comparableHtml(await ours.text())).toBe(comparableHtml(await real.text()));
+    expect(
+      ours.headers.get("location")?.replace(/^https?:\/\/[^/]+/u, "")
+    ).toBe(
+      real.headers.get("location")?.replace(/^https?:\/\/[^/]+/u, "") ??
+        undefined
+    );
+    expect(contentType(ours.headers.get("content-type"))).toBe(
+      contentType(real.headers.get("content-type"))
+    );
+    for (const name of ["x-section", "set-cookie"]) {
+      expect(`${name}: ${ours.headers.get(name)}`).toBe(
+        `${name}: ${real.headers.get(name)}`
+      );
+    }
+    if (!prerendered) {
+      expect(comparableHtml(await ours.text())).toBe(
+        comparableHtml(await real.text())
+      );
+    }
   });
+}
 
 // next/font の preload（next-font-manifest.json）。フォントのファイルの名前は中身のハッシュ（Next.js の next-font-loader が付ける）。
 // リクエストのときの描画では、React が preload を Link ヘッダーにする（HTML の <link> には入らない）。
 // build のときの描画（静的なページ）では HTML の <link> になる。requestRoute は静的なページも毎回リクエストのときに描画する
-const fontHeader = (response: Response) => (response.headers.get("link")?.split(/,\s*(?=<)/) ?? []).filter((entry) => entry.includes('as="font"'));
-const fontLinks = (html: string) => html.match(/<link[^>]*as="font"[^>]*>/g) ?? [];
+const fontHeader = (response: Response) =>
+  (response.headers.get("link")?.split(/,\s*(?=<)/u) ?? []).filter((entry) =>
+    entry.includes('as="font"')
+  );
+const fontLinks = (html: string) =>
+  html.match(/<link[^>]*as="font"[^>]*>/gu) ?? [];
 test("next/font の preload とフォントのファイルは next start と同じ", async () => {
-  const [ours, real] = await Promise.all([requestRoute("/fonts/live"), fetch(`${reference.url}/fonts/live`)]);
+  const [ours, real] = await Promise.all([
+    requestRoute("/fonts/live"),
+    fetch(`${reference.url}/fonts/live`),
+  ]);
   expect(fontHeader(real)).not.toEqual([]);
   expect(fontHeader(ours)).toEqual(fontHeader(real));
   expect(fontLinks(await ours.text())).toEqual(fontLinks(await real.text()));
   // 静的なページ: next start は build のときの HTML の <link>
-  const [oursStatic, realStatic] = await Promise.all([requestRoute("/fonts"), fetch(`${reference.url}/fonts`)]);
-  const hrefs = fontLinks(await realStatic.text()).map((link) => link.match(/href="([^"]+)"/)![1]!);
+  const [oursStatic, realStatic] = await Promise.all([
+    requestRoute("/fonts"),
+    fetch(`${reference.url}/fonts`),
+  ]);
+  const hrefs = fontLinks(await realStatic.text()).map(
+    (link) => link.match(/href="(?<href>[^"]+)"/u)![1]!
+  );
   expect(hrefs).not.toEqual([]);
-  expect(fontHeader(oursStatic).map((entry) => entry.match(/^<([^>]+)>/)![1]!)).toEqual(hrefs);
+  expect(
+    fontHeader(oursStatic).map(
+      (entry) => entry.match(/^<(?<href>[^>]+)>/u)![1]!
+    )
+  ).toEqual(hrefs);
   for (const href of hrefs) {
-    const [mine, theirs] = await Promise.all([requestRoute(href), fetch(reference.url + href)]);
+    const [mine, theirs] = await Promise.all([
+      requestRoute(href),
+      fetch(reference.url + href),
+    ]);
     expect(mine.status).toBe(theirs.status);
-    expect(mine.headers.get("content-type")).toBe(theirs.headers.get("content-type"));
-    expect(Buffer.from(await mine.arrayBuffer()).equals(Buffer.from(await theirs.arrayBuffer()))).toBe(true);
+    expect(mine.headers.get("content-type")).toBe(
+      theirs.headers.get("content-type")
+    );
+    expect(
+      Buffer.from(await mine.arrayBuffer()).equals(
+        Buffer.from(await theirs.arrayBuffer())
+      )
+    ).toBe(true);
   }
   // フォントを使わないページには出ない
   expect(fontHeader(await requestRoute("/styled"))).toEqual([]);
@@ -117,53 +205,93 @@ test("next/font の preload とフォントのファイルは next start と同�
 
 // unstable_noStore(): リクエストのたびに描画する（静的なページの s-maxage ではない）
 test("unstable_noStore() のページの Cache-Control は next start と同じ", async () => {
-  const [ours, real] = await Promise.all([requestRoute("/no-store"), fetch(`${reference.url}/no-store`)]);
+  const [ours, real] = await Promise.all([
+    requestRoute("/no-store"),
+    fetch(`${reference.url}/no-store`),
+  ]);
   expect(real.headers.get("cache-control")).toContain("no-store");
-  expect(ours.headers.get("cache-control")).toBe(real.headers.get("cache-control"));
+  expect(ours.headers.get("cache-control")).toBe(
+    real.headers.get("cache-control")
+  );
 });
 
+const bypass = (response: Response) =>
+  response.headers
+    .getSetCookie()
+    .find((cookie) => cookie.startsWith("__prerender_bypass="))!;
+const attributes = (cookie: string) => cookie.split("; ").slice(1);
 // draftMode(): Route Handler の enable() が __prerender_bypass のクッキーを付け、そのクッキーで isEnabled になる。
 // クッキーの値（previewModeId）はビルドごとに違うので、それぞれのクッキーで比べる
 test("draftMode() は next start と同じ", async () => {
-  const [ours, real] = await Promise.all([requestRoute("/api/draft"), fetch(`${reference.url}/api/draft`)]);
-  const bypass = (response: Response) => response.headers.getSetCookie().find((cookie) => cookie.startsWith("__prerender_bypass="))!;
-  const attributes = (cookie: string) => cookie.split("; ").slice(1);
+  const [ours, real] = await Promise.all([
+    requestRoute("/api/draft"),
+    fetch(`${reference.url}/api/draft`),
+  ]);
   expect(attributes(bypass(ours))).toEqual(attributes(bypass(real)));
-  const value = (response: Response) => bypass(response).split(";")[0]!.split("=")[1]!;
+  const value = (response: Response) =>
+    bypass(response).split(";")[0]!.split("=")[1]!;
   const [oursDraft, realDraft] = await Promise.all([
     requestRoute("/draft", { cookies: { __prerender_bypass: value(ours) } }),
-    fetch(`${reference.url}/draft`, { headers: { cookie: `__prerender_bypass=${value(real)}` } }),
+    fetch(`${reference.url}/draft`, {
+      headers: { cookie: `__prerender_bypass=${value(real)}` },
+    }),
   ]);
   const html = comparableHtml(await realDraft.text());
   expect(html).toContain("Draft <!-- -->on");
   expect(comparableHtml(await oursDraft.text())).toBe(html);
-  expect(oursDraft.headers.get("cache-control")).toBe(realDraft.headers.get("cache-control"));
+  expect(oursDraft.headers.get("cache-control")).toBe(
+    realDraft.headers.get("cache-control")
+  );
 });
 
 // generateImageMetadata: ページの <link rel="icon"> と、それぞれの画像
+const icons = (html: string) =>
+  (html.match(/<link rel="icon"[^>]*>/gu) ?? []).map((link) =>
+    link.replace(/\?[0-9a-f]{16}"/u, '?<contenthash>"')
+  );
 test("generateImageMetadata のアイコンは next start と同じ", async () => {
-  const icons = (html: string) => (html.match(/<link rel="icon"[^>]*>/g) ?? []).map((link) => link.replace(/\?[0-9a-f]{16}"/, '?<contenthash>"'));
-  const [ours, real] = await Promise.all([requestRoute("/badges"), fetch(`${reference.url}/badges`)]);
+  const [ours, real] = await Promise.all([
+    requestRoute("/badges"),
+    fetch(`${reference.url}/badges`),
+  ]);
   const links = icons(await real.text());
   expect(links.some((link) => link.includes("/badges/icon/small"))).toBe(true);
   expect(icons(await ours.text())).toEqual(links);
   for (const id of ["small", "large"]) {
-    const [mine, theirs] = await Promise.all([requestRoute(`/badges/icon/${id}`), fetch(`${reference.url}/badges/icon/${id}`)]);
+    const [mine, theirs] = await Promise.all([
+      requestRoute(`/badges/icon/${id}`),
+      fetch(`${reference.url}/badges/icon/${id}`),
+    ]);
     expect(mine.status).toBe(theirs.status);
-    expect(mine.headers.get("content-type")).toBe(theirs.headers.get("content-type"));
-    expect(Buffer.from(await mine.arrayBuffer()).equals(Buffer.from(await theirs.arrayBuffer()))).toBe(true);
+    expect(mine.headers.get("content-type")).toBe(
+      theirs.headers.get("content-type")
+    );
+    expect(
+      Buffer.from(await mine.arrayBuffer()).equals(
+        Buffer.from(await theirs.arrayBuffer())
+      )
+    ).toBe(true);
   }
 });
 
 // updateTag（Server Action）: JS なしのフォームの送信の後の HTML に新しい値が入る
+const tagPost = (html: string) => {
+  const body = new FormData();
+  body.set(html.match(/name="(?<id>\$ACTION_ID_[0-9a-f]+)"/u)![1]!, "");
+  return body;
+};
 test("Server Action の updateTag は next start と同じ", async () => {
-  const post = async (html: string) => {
-    const body = new FormData();
-    body.set(html.match(/name="(\$ACTION_ID_[0-9a-f]+)"/)![1]!, "");
-    return body;
-  };
-  const ours = await requestRoute("/tagged", { method: "POST", body: await post(await (await requestRoute("/tagged")).text()) });
-  const real = await fetch(`${reference.url}/tagged`, { method: "POST", redirect: "manual", body: await post(await (await fetch(`${reference.url}/tagged`)).text()) });
+  const oursPage = await requestRoute("/tagged");
+  const ours = await requestRoute("/tagged", {
+    body: tagPost(await oursPage.text()),
+    method: "POST",
+  });
+  const realPage = await fetch(`${reference.url}/tagged`);
+  const real = await fetch(`${reference.url}/tagged`, {
+    body: tagPost(await realPage.text()),
+    method: "POST",
+    redirect: "manual",
+  });
   expect(ours.status).toBe(real.status);
   const html = comparableHtml(await real.text());
   expect(html).toContain("Tagged <!-- -->1");
@@ -171,109 +299,255 @@ test("Server Action の updateTag は next start と同じ", async () => {
 });
 
 // JS なしのフォームの送信（progressive enhancement）。Action の id はビルドごとに違うので、それぞれの HTML から取る
-for (const [index, form] of ["addUser（revalidatePath）", "addAndOpen（redirect）"].entries())
+for (const [index, form] of [
+  "addUser（revalidatePath）",
+  "addAndOpen（redirect）",
+].entries()) {
+  const actionId = async (response: Response | Promise<Response>) => {
+    const resolved = await response;
+    const text = await resolved.text();
+    return [...text.matchAll(/name="(?<id>\$ACTION_ID_[0-9a-f]+)"/gu)][
+      index
+    ]![1]!;
+  };
+  const post = (id: string) => {
+    const body = new FormData();
+    body.set(id, "");
+    body.set("name", `Carol${index}`);
+    return body;
+  };
   test(`Server Action ${form} のフォームの送信は next start と同じ`, async () => {
-    const actionId = async (response: Response | Promise<Response>) => [...(await (await response).text()).matchAll(/name="(\$ACTION_ID_[0-9a-f]+)"/g)][index]![1]!;
-    const post = (id: string) => {
-      const body = new FormData();
-      body.set(id, "");
-      body.set("name", `Carol${index}`);
-      return body;
-    };
-    const ours = await requestRoute("/users", { method: "POST", body: post(await actionId(requestRoute("/users"))) });
-    const real = await fetch(`${reference.url}/users`, { method: "POST", redirect: "manual", body: post(await actionId(fetch(`${reference.url}/users`))) });
+    const ours = await requestRoute("/users", {
+      body: post(await actionId(requestRoute("/users"))),
+      method: "POST",
+    });
+    const real = await fetch(`${reference.url}/users`, {
+      body: post(await actionId(fetch(`${reference.url}/users`))),
+      method: "POST",
+      redirect: "manual",
+    });
     expect(ours.status).toBe(real.status);
     expect(ours.headers.get("location")).toBe(real.headers.get("location"));
-    expect(comparableHtml(await ours.text())).toBe(comparableHtml(await real.text()));
+    expect(comparableHtml(await ours.text())).toBe(
+      comparableHtml(await real.text())
+    );
   });
+}
 
 // RSC のペイロード（クライアントのナビゲーションのリクエスト）を Flight の意味論で比べる。
 // 比べるのはリクエストのときに描くルートだけ: next start は静的なルートに build のときの RSC（最初の HTML 用の形。`P`・`G` などがある）を返す
 const flightCases: Pick<Case, "path" | "cookies">[] = [
   { path: "/users/Alice" },
   { path: "/people/Alice" },
-  { path: "/admin", cookies: { session: "Bob" } },
+  { cookies: { session: "Bob" }, path: "/admin" },
   { path: "/dashboard/teams/core" },
   { path: "/gallery/photo/1" },
   { path: "/meta/hello" },
-  { path: "/third-party/next?q=x", cookies: { locale: "ja" } },
-  { path: "/third-party/next", cookies: { locale: "fr" } },
+  { cookies: { locale: "ja" }, path: "/third-party/next?q=x" },
+  { cookies: { locale: "fr" }, path: "/third-party/next" },
   { path: "/third-party/actions" },
   { path: "/third-party/cjs" },
   { path: "/scripts" },
   { path: "/search?q=x" },
   { path: "/docs/a/b/c" },
 ];
-const fixture = join(import.meta.dir, "../fixtures/next-app");
-for (const { path, cookies } of flightCases)
+const fixture = nodePath.join(import.meta.dir, "../fixtures/next-app");
+let modulePaths: Map<string, string> | undefined;
+for (const { path, cookies } of flightCases) {
   test(`RSC ${path}${cookies ? ` ${JSON.stringify(cookies)}` : ""} は next start と同じ Flight`, async () => {
     // 送るヘッダーがないときの _rsc は空（Next.js の computeCacheBustingSearchParam）
     const url = `${path}${path.includes("?") ? "&" : "?"}_rsc=`;
-    const cookie = cookies && Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join("; ");
+    const cookie =
+      cookies &&
+      Object.entries(cookies)
+        .map(([k, v]) => `${k}=${v}`)
+        .join("; ");
     const ours = await requestRoute(url, { cookies, headers: { rsc: "1" } });
-    const real = await fetch(reference.url + url, { redirect: "manual", headers: { rsc: "1", ...(cookie && { cookie }) } });
+    const real = await fetch(reference.url + url, {
+      headers: { rsc: "1", ...(cookie && { cookie }) },
+      redirect: "manual",
+    });
     expect(real.headers.get("x-nextjs-prerender")).toBeNull();
     expect(ours.status).toBe(real.status);
-    expect(ours.headers.get("content-type")).toBe(real.headers.get("content-type"));
+    expect(ours.headers.get("content-type")).toBe(
+      real.headers.get("content-type")
+    );
     const [oursText, realText] = [await ours.text(), await real.text()];
-    const paths = (modulePaths ??= referenceModulePaths(reference));
+    modulePaths ??= referenceModulePaths(reference);
+    const paths = modulePaths;
     const dirs = [fixture, reference.dir];
-    expect(await comparableFlight(oursText, (id) => comparableModule(id, dirs))).toEqual(
-      await comparableFlight(realText, (id) => comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)),
+    expect(
+      await comparableFlight(oursText, (id) => comparableModule(id, dirs))
+    ).toEqual(
+      await comparableFlight(realText, (id) =>
+        comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)
+      )
     );
   });
-let modulePaths: Map<string, string> | undefined;
+}
 
 // JS ありのクライアントからの Server Action（Next-Action ヘッダーと encodeReply の本文）の応答を Flight の意味論で比べる
-const { encodeReply } = require("next/dist/compiled/react-server-dom-webpack/cjs/react-server-dom-webpack-client.node.production.js");
+const {
+  encodeReply,
+  // oxlint-disable-next-line unicorn/prefer-module -- Next.js の内部の CJS をテストのときに読む
+} = require("next/dist/compiled/react-server-dom-webpack/cjs/react-server-dom-webpack-client.node.production.js");
+
 const actionCases = [
-  { form: "addUser（revalidatePath）", page: "/users", index: 0, field: "name", value: "Dave0" },
-  { form: "addAndOpen（redirect）", page: "/users", index: 1, field: "name", value: "Dave1" },
-  { form: "node_modules の addEntry", page: "/third-party/actions", index: 0, field: "entry", value: "compat" },
+  {
+    field: "name",
+    form: "addUser（revalidatePath）",
+    index: 0,
+    page: "/users",
+    value: "Dave0",
+  },
+  {
+    field: "name",
+    form: "addAndOpen（redirect）",
+    index: 1,
+    page: "/users",
+    value: "Dave1",
+  },
+  {
+    field: "entry",
+    form: "node_modules の addEntry",
+    index: 0,
+    page: "/third-party/actions",
+    value: "compat",
+  },
 ];
-for (const { form, page, index, field, value } of actionCases)
-  test(`Server Action ${form} の fetch の応答は next start と同じ Flight`, async () => {
-    const actionId = async (response: Response | Promise<Response>) => [...(await (await response).text()).matchAll(/name="\$ACTION_ID_([0-9a-f]+)"/g)][index]![1]!;
-    const request = async (id: string) => {
-      const formData = new FormData();
-      formData.set(field, value);
-      // Bun の FormData には toJSON があり、JSON.stringify が React の FormData の判定より先に普通のオブジェクトにする
-      Object.defineProperty(formData, "toJSON", { value: undefined });
-      return { method: "POST", headers: { "next-action": id, accept: "text/x-component" }, body: await encodeReply([formData]) };
+for (const { form, page, index, field, value } of actionCases) {
+  const actionId = async (response: Response | Promise<Response>) => {
+    const resolved = await response;
+    const text = await resolved.text();
+    return [...text.matchAll(/name="\$ACTION_ID_(?<id>[0-9a-f]+)"/gu)][
+      index
+    ]![1]!;
+  };
+  const request = async (id: string) => {
+    const formData = new FormData();
+    formData.set(field, value);
+    // Bun の FormData には toJSON があり、JSON.stringify が React の FormData の判定より先に普通のオブジェクトにする
+    Object.defineProperty(formData, "toJSON", { value: undefined });
+    return {
+      body: await encodeReply([formData]),
+      headers: { accept: "text/x-component", "next-action": id },
+      method: "POST",
     };
-    const ours = await requestRoute(page, await request(await actionId(requestRoute(page))));
-    const real = await fetch(reference.url + page, { redirect: "manual", ...(await request(await actionId(fetch(reference.url + page)))) });
+  };
+  test(`Server Action ${form} の fetch の応答は next start と同じ Flight`, async () => {
+    const ours = await requestRoute(
+      page,
+      await request(await actionId(requestRoute(page)))
+    );
+    const real = await fetch(reference.url + page, {
+      redirect: "manual",
+      ...(await request(await actionId(fetch(reference.url + page)))),
+    });
     expect(real.status).toBe(200);
-    if (form.includes("redirect")) expect(real.headers.get("x-action-redirect")).toStartWith("/users/Dave1");
+    if (form.includes("redirect")) {
+      expect(real.headers.get("x-action-redirect")).toStartWith("/users/Dave1");
+    }
     expect(ours.status).toBe(real.status);
-    for (const name of ["content-type", "x-action-redirect", "x-action-revalidated"]) expect(`${name}: ${ours.headers.get(name)}`).toBe(`${name}: ${real.headers.get(name)}`);
-    const paths = (modulePaths ??= referenceModulePaths(reference));
+    for (const name of [
+      "content-type",
+      "x-action-redirect",
+      "x-action-revalidated",
+    ]) {
+      expect(`${name}: ${ours.headers.get(name)}`).toBe(
+        `${name}: ${real.headers.get(name)}`
+      );
+    }
+    modulePaths ??= referenceModulePaths(reference);
+    const paths = modulePaths;
     const dirs = [fixture, reference.dir];
-    expect(await comparableFlight(await ours.text(), (id) => comparableModule(id, dirs))).toEqual(
-      await comparableFlight(await real.text(), (id) => comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)),
+    expect(
+      await comparableFlight(await ours.text(), (id) =>
+        comparableModule(id, dirs)
+      )
+    ).toEqual(
+      await comparableFlight(await real.text(), (id) =>
+        comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)
+      )
     );
   });
+}
 
 // ソフトナビゲーション（Next.js のクライアントが今の木を Next-Router-State-Tree で送る）。共通のレイアウトから下だけが返る。
 // Next-Url はインターセプトの元の URL
-const { computeCacheBustingSearchParam } = require("next/dist/shared/lib/router/utils/cache-busting-search-param");
+const {
+  computeCacheBustingSearchParam,
+  // oxlint-disable-next-line unicorn/prefer-module -- Next.js の内部の CJS をテストのときに読む
+} = require("next/dist/shared/lib/router/utils/cache-busting-search-param");
+
 const navigationCases = [
-  { from: "/dashboard/settings", to: "/dashboard/teams/core", tree: ["", { children: ["dashboard", { children: ["settings", { children: ["__PAGE__", {}] }] }] }] },
-  { from: "/gallery", to: "/gallery/photo/1", tree: ["", { children: ["gallery", { children: ["__PAGE__", {}], modal: ["__DEFAULT__", {}] }] }], nextUrl: "/gallery" },
-  { from: "/gallery", to: "/gallery/photo/1", tree: ["", { children: ["gallery", { children: ["__PAGE__", {}], modal: ["__DEFAULT__", {}] }] }] },
+  {
+    from: "/dashboard/settings",
+    to: "/dashboard/teams/core",
+    tree: [
+      "",
+      {
+        children: [
+          "dashboard",
+          { children: ["settings", { children: ["__PAGE__", {}] }] },
+        ],
+      },
+    ],
+  },
+  {
+    from: "/gallery",
+    nextUrl: "/gallery",
+    to: "/gallery/photo/1",
+    tree: [
+      "",
+      {
+        children: [
+          "gallery",
+          { children: ["__PAGE__", {}], modal: ["__DEFAULT__", {}] },
+        ],
+      },
+    ],
+  },
+  {
+    from: "/gallery",
+    to: "/gallery/photo/1",
+    tree: [
+      "",
+      {
+        children: [
+          "gallery",
+          { children: ["__PAGE__", {}], modal: ["__DEFAULT__", {}] },
+        ],
+      },
+    ],
+  },
 ];
-for (const { from, to, tree, nextUrl } of navigationCases)
+for (const { from, to, tree, nextUrl } of navigationCases) {
   test(`RSC ${from} → ${to}${nextUrl ? `（Next-Url: ${nextUrl}）` : ""} は next start と同じ Flight`, async () => {
     const stateTree = encodeURIComponent(JSON.stringify(tree));
-    const headers: Record<string, string> = { rsc: "1", "next-router-state-tree": stateTree, ...(nextUrl && { "next-url": nextUrl }) };
+    const headers: Record<string, string> = {
+      "next-router-state-tree": stateTree,
+      rsc: "1",
+      ...(nextUrl && { "next-url": nextUrl }),
+    };
     const url = `${to}?_rsc=${await computeCacheBustingSearchParam(undefined, undefined, stateTree, nextUrl)}`;
     const ours = await requestRoute(url, { headers });
-    const real = await fetch(reference.url + url, { redirect: "manual", headers });
+    const real = await fetch(reference.url + url, {
+      headers,
+      redirect: "manual",
+    });
     expect(real.status).toBe(200);
     expect(ours.status).toBe(real.status);
-    const paths = (modulePaths ??= referenceModulePaths(reference));
+    modulePaths ??= referenceModulePaths(reference);
+    const paths = modulePaths;
     const dirs = [fixture, reference.dir];
-    expect(await comparableFlight(await ours.text(), (id) => comparableModule(id, dirs))).toEqual(
-      await comparableFlight(await real.text(), (id) => comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)),
+    expect(
+      await comparableFlight(await ours.text(), (id) =>
+        comparableModule(id, dirs)
+      )
+    ).toEqual(
+      await comparableFlight(await real.text(), (id) =>
+        comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)
+      )
     );
   });
+}

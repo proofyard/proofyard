@@ -1,3 +1,5 @@
-export default async function Profile({ params }: { params: Promise<{ name: string }> }) {
-  return <h1>Profile {(await params).name}</h1>;
-}
+const Profile = async ({ params }: { params: Promise<{ name: string }> }) => {
+  const { name } = await params;
+  return <h1>Profile {name}</h1>;
+};
+export default Profile;

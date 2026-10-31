@@ -1,8 +1,9 @@
 // Phase 8 / 仕様 20.5: 大規模なアプリ（EC くらい）のベンチマーク用のアプリとテストを作る。
 //   bun tests/benchmarks/large/generate.ts → tests/benchmarks/large/app と tests/benchmarks/large/tests（git には入れない）
 // 規模: 20 セクション × 5 ページ = 100 ルート、Client Component 300、Server Component 1,000、テスト 1,000 件
+/* oxlint-disable typescript/no-non-null-assertion -- 添え字は剰余で常に範囲内 */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import nodePath from "node:path";
 
 const SECTIONS = 20;
 const CLIENT_PER_SECTION = 15;
@@ -10,17 +11,22 @@ const SERVER_PER_SECTION = 50;
 const TESTS_PER_SECTION = 50;
 
 const root = import.meta.dir;
-const app = join(root, "app");
-const tests = join(root, "tests");
-for (const dir of [app, tests]) rmSync(dir, { recursive: true, force: true });
+const app = nodePath.join(root, "app");
+const tests = nodePath.join(root, "tests");
+for (const dir of [app, tests]) {
+  rmSync(dir, { force: true, recursive: true });
+}
 const write = (path: string, code: string) => {
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(nodePath.dirname(path), { recursive: true });
   writeFileSync(path, code);
 };
 
-write(join(app, "next.config.ts"), `import type { NextConfig } from "next";\nconst config: NextConfig = {};\nexport default config;\n`);
 write(
-  join(app, "app/layout.tsx"),
+  nodePath.join(app, "next.config.ts"),
+  `import type { NextConfig } from "next";\nconst config: NextConfig = {};\nexport default config;\n`
+);
+write(
+  nodePath.join(app, "app/layout.tsx"),
   `import Link from "next/link";
 import { CartBadge } from "../components/cart-badge";
 
@@ -39,10 +45,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
-`,
+`
 );
 write(
-  join(app, "app/page.tsx"),
+  nodePath.join(app, "app/page.tsx"),
   `import Link from "next/link";
 
 export default function Home() {
@@ -55,10 +61,10 @@ ${Array.from({ length: SECTIONS }, (_, s) => `        <li><Link href="/s${s}">Se
     </main>
   );
 }
-`,
+`
 );
 write(
-  join(app, "components/cart-badge.tsx"),
+  nodePath.join(app, "components/cart-badge.tsx"),
   `"use client";
 import { useState } from "react";
 
@@ -66,7 +72,7 @@ export function CartBadge() {
   const [open, setOpen] = useState(false);
   return <button type="button" onClick={() => setOpen((o) => !o)}>{open ? "Close cart" : "Cart"}</button>;
 }
-`,
+`
 );
 
 // Client Component の型（どれも state を持ち、クリックで表示が変わる）
@@ -129,28 +135,43 @@ export function ${name}({ label }: { label: string }) {
 `,
 ];
 
+// ページごとに使う部品（Server Component 10 個、Client Component 3 個）
+const pick = <T>(xs: T[], page: number, n: number) =>
+  Array.from({ length: n }, (_, i) => xs[(page * n + i) % xs.length]!);
+
 const testFiles: string[] = [];
-for (let s = 0; s < SECTIONS; s++) {
-  const sec = join(app, `app/s${s}`);
-  const comp = join(app, `components/s${s}`);
-  const clients = Array.from({ length: CLIENT_PER_SECTION }, (_, i) => `S${s}Client${i}`);
-  clients.forEach((name, i) => write(join(comp, `client-${i}.tsx`), clientTemplates[i % clientTemplates.length]!(name)));
-  const servers = Array.from({ length: SERVER_PER_SECTION }, (_, i) => `S${s}Part${i}`);
-  servers.forEach((name, i) =>
+for (let s = 0; s < SECTIONS; s += 1) {
+  const sec = nodePath.join(app, `app/s${s}`);
+  const comp = nodePath.join(app, `components/s${s}`);
+  const clients = Array.from(
+    { length: CLIENT_PER_SECTION },
+    (_, i) => `S${s}Client${i}`
+  );
+  for (const [i, name] of clients.entries()) {
     write(
-      join(comp, `part-${i}.tsx`),
+      nodePath.join(comp, `client-${i}.tsx`),
+      clientTemplates[i % clientTemplates.length]!(name)
+    );
+  }
+  const servers = Array.from(
+    { length: SERVER_PER_SECTION },
+    (_, i) => `S${s}Part${i}`
+  );
+  for (const [i, name] of servers.entries()) {
+    write(
+      nodePath.join(comp, `part-${i}.tsx`),
       // 一部は async（データを待つ Server Component）
       i % 5 === 0
         ? `import { getItems } from "./db";\n\nexport async function ${name}() {\n  const items = await getItems();\n  return <section><h2>${name}</h2><p>${name} items: {items.length}</p></section>;\n}\n`
-        : `export function ${name}({ note }: { note?: string }) {\n  return <section><h2>${name}</h2><p>{note ?? "${name} text"}</p></section>;\n}\n`,
-    ),
+        : `export function ${name}({ note }: { note?: string }) {\n  return <section><h2>${name}</h2><p>{note ?? "${name} text"}</p></section>;\n}\n`
+    );
+  }
+  write(
+    nodePath.join(comp, "db.ts"),
+    `export const db = { items: ["Item A", "Item B"] };\nexport async function getItems() {\n  await new Promise((r) => setTimeout(r, 1));\n  return db.items;\n}\n`
   );
   write(
-    join(comp, "db.ts"),
-    `export const db = { items: ["Item A", "Item B"] };\nexport async function getItems() {\n  await new Promise((r) => setTimeout(r, 1));\n  return db.items;\n}\n`,
-  );
-  write(
-    join(comp, "actions.ts"),
+    nodePath.join(comp, "actions.ts"),
     `"use server";
 import { revalidatePath } from "next/cache";
 import { db } from "./db";
@@ -159,10 +180,8 @@ export async function addItem(formData: FormData) {
   db.items.push(String(formData.get("name")));
   revalidatePath("/s${s}");
 }
-`,
+`
   );
-  // ページごとに使う部品（Server Component 10 個、Client Component 3 個）
-  const pick = <T,>(xs: T[], page: number, n: number) => Array.from({ length: n }, (_, i) => xs[(page * n + i) % xs.length]!);
   const page = (pageIndex: number, title: string, body: string, extra = "") => {
     const parts = pick(servers, pageIndex, 10);
     const used = pick(clients, pageIndex, 3);
@@ -182,11 +201,11 @@ ${used.map((n) => `      <${n} label="p${pageIndex}" />`).join("\n")}
 `;
   };
   write(
-    join(sec, "layout.tsx"),
-    `import Link from "next/link";\n\nexport default function Layout({ children }: { children: React.ReactNode }) {\n  return (\n    <div>\n      <nav>\n        <Link href="/s${s}">List ${s}</Link>\n        <Link href="/s${s}/1">First ${s}</Link>\n        <Link href="/s${s}/about">About ${s}</Link>\n      </nav>\n      {children}\n    </div>\n  );\n}\n`,
+    nodePath.join(sec, "layout.tsx"),
+    `import Link from "next/link";\n\nexport default function Layout({ children }: { children: React.ReactNode }) {\n  return (\n    <div>\n      <nav>\n        <Link href="/s${s}">List ${s}</Link>\n        <Link href="/s${s}/1">First ${s}</Link>\n        <Link href="/s${s}/about">About ${s}</Link>\n      </nav>\n      {children}\n    </div>\n  );\n}\n`
   );
   write(
-    join(sec, "page.tsx"),
+    nodePath.join(sec, "page.tsx"),
     page(
       0,
       "Section",
@@ -195,39 +214,68 @@ ${used.map((n) => `      <${n} label="p${pageIndex}" />`).join("\n")}
         <input name="name" aria-label="new item" />
         <button>Add</button>
       </form>`,
-      `import { db } from "../../components/s${s}/db";\nimport { addItem } from "../../components/s${s}/actions";`,
-    ),
+      `import { db } from "../../components/s${s}/db";\nimport { addItem } from "../../components/s${s}/actions";`
+    )
   );
-  write(join(sec, "[id]/page.tsx"), page(1, "Item", ""));
-  write(join(sec, "edit/page.tsx"), page(2, "Edit", ""));
+  write(nodePath.join(sec, "[id]/page.tsx"), page(1, "Item", ""));
+  write(nodePath.join(sec, "edit/page.tsx"), page(2, "Edit", ""));
   write(
-    join(sec, "reviews/page.tsx"),
-    page(3, "Reviews", `      <Suspense fallback={<p>Loading reviews</p>}>\n        <Slow />\n      </Suspense>`, `import { Suspense } from "react";\nimport { S${s}Part0 as Slow } from "../../../components/s${s}/part-0";`),
+    nodePath.join(sec, "reviews/page.tsx"),
+    page(
+      3,
+      "Reviews",
+      `      <Suspense fallback={<p>Loading reviews</p>}>\n        <Slow />\n      </Suspense>`,
+      `import { Suspense } from "react";\nimport { S${s}Part0 as Slow } from "../../../components/s${s}/part-0";`
+    )
   );
-  write(join(sec, "about/page.tsx"), page(4, "About", ""));
+  write(nodePath.join(sec, "about/page.tsx"), page(4, "About", ""));
 
   // テスト（requestRoute 20%・SSR 20%・Client の表示 30%・クリック 20%・Server Action 10%）
   const kinds: string[] = [];
-  for (let i = 0; i < TESTS_PER_SECTION; i++) {
-    const r = i % 10;
-    const kind = r < 2 ? "request" : r < 4 ? "ssr" : r < 7 ? "client" : r < 9 ? "click" : "action";
-    const path = [`/s${s}`, `/s${s}/${i}`, `/s${s}/edit`, `/s${s}/reviews`, `/s${s}/about`][i % 5]!;
-    const heading = [`Section ${s}`, `Item ${s} ${i}`, `Edit ${s}`, `Reviews ${s}`, `About ${s}`][i % 5]!;
+  for (let i = 0; i < TESTS_PER_SECTION; i += 1) {
+    const kind = (
+      [
+        "request",
+        "request",
+        "ssr",
+        "ssr",
+        "client",
+        "client",
+        "client",
+        "click",
+        "click",
+        "action",
+      ] as const
+    )[i % 10]!;
+    const path = [
+      `/s${s}`,
+      `/s${s}/${i}`,
+      `/s${s}/edit`,
+      `/s${s}/reviews`,
+      `/s${s}/about`,
+    ][i % 5]!;
+    const heading = [
+      `Section ${s}`,
+      `Item ${s} ${i}`,
+      `Edit ${s}`,
+      `Reviews ${s}`,
+      `About ${s}`,
+    ][i % 5]!;
     const pageIndex = i % 5;
     const client = pick(clients, pageIndex, 3)[0]!;
     const body = {
-      request: `  const res = await requestRoute("${path}");\n  expect(res.status).toBe(200);\n  expect(await res.text()).toContain("${heading}");`,
-      ssr: `  const app = await renderRoute("${path}", { mode: "ssr" });\n  expect(app.getByRole("heading", { level: 1, name: "${heading}" })).toBeTruthy();`,
-      client: `  const app = await renderRoute("${path}");\n  expect(app.getByRole("heading", { level: 1, name: "${heading}" })).toBeTruthy();`,
+      action: `  const app = await renderRoute("/s${s}");\n  await app.user.type(app.getByRole("textbox", { name: "new item" }), "Item ${i}");\n  await app.user.click(app.getByRole("button", { name: "Add" }));\n  await app.findByText("Item ${i}");`,
       click:
         clients.indexOf(client) % clientTemplates.length === 0
           ? `  const app = await renderRoute("${path}");\n  await app.user.click(app.getByRole("button", { name: "p${pageIndex} ${client}: 0" }));\n  await app.findByRole("button", { name: "p${pageIndex} ${client}: 1" });`
           : `  const app = await renderRoute("${path}");\n  await app.user.click(app.getByRole("button", { name: "Cart" }));\n  await app.findByRole("button", { name: "Close cart" });`,
-      action: `  const app = await renderRoute("/s${s}");\n  await app.user.type(app.getByRole("textbox", { name: "new item" }), "Item ${i}");\n  await app.user.click(app.getByRole("button", { name: "Add" }));\n  await app.findByText("Item ${i}");`,
+      client: `  const app = await renderRoute("${path}");\n  expect(app.getByRole("heading", { level: 1, name: "${heading}" })).toBeTruthy();`,
+      request: `  const res = await requestRoute("${path}");\n  expect(res.status).toBe(200);\n  expect(await res.text()).toContain("${heading}");`,
+      ssr: `  const app = await renderRoute("${path}", { mode: "ssr" });\n  expect(app.getByRole("heading", { level: 1, name: "${heading}" })).toBeTruthy();`,
     }[kind];
     kinds.push(`test("${kind} ${path} #${i}", async () => {\n${body}\n});\n`);
   }
-  const file = join(tests, `s${s}.test.tsx`);
+  const file = nodePath.join(tests, `s${s}.test.tsx`);
   write(
     file,
     `import { beforeEach, expect, test } from "bun:test";
@@ -238,8 +286,10 @@ beforeEach(() => {
   db.items = ["Item A", "Item B"];
 });
 
-${kinds.join("\n")}`,
+${kinds.join("\n")}`
   );
   testFiles.push(file);
 }
-console.log(`generated ${SECTIONS * 5 + 1} routes, ${SECTIONS * CLIENT_PER_SECTION + 1} client components, ${SECTIONS * SERVER_PER_SECTION} server components, ${SECTIONS * TESTS_PER_SECTION} tests`);
+console.log(
+  `generated ${SECTIONS * 5 + 1} routes, ${SECTIONS * CLIENT_PER_SECTION + 1} client components, ${SECTIONS * SERVER_PER_SECTION} server components, ${SECTIONS * TESTS_PER_SECTION} tests`
+);

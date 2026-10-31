@@ -1,19 +1,30 @@
 // requestRoute: next start と同じルーターで、Proxy・next.config・Route Handler を通す
 import { expect, test } from "bun:test";
+
 import { requestRoute } from "proofyard";
 
 test("Route Handler: params / cookies / Proxy が足したリクエストヘッダー", async () => {
-  const res = await requestRoute("/api/users/Alice", { cookies: { theme: "dark", session: "Bob" } });
+  const res = await requestRoute("/api/users/Alice", {
+    cookies: { session: "Bob", theme: "dark" },
+  });
   expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ name: "Alice", user: "Bob", theme: "dark" });
+  expect(await res.json()).toEqual({
+    name: "Alice",
+    theme: "dark",
+    user: "Bob",
+  });
   // Proxy が応答に付けた Cookie
   expect(res.headers.get("set-cookie")).toContain("seen=1");
 });
 
 test("Route Handler: POST の本文", async () => {
-  const res = await requestRoute("/api/users/Alice", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: "hi" }) });
+  const res = await requestRoute("/api/users/Alice", {
+    body: JSON.stringify({ message: "hi" }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
   expect(res.status).toBe(201);
-  expect(await res.json()).toEqual({ to: "Alice", message: "hi" });
+  expect(await res.json()).toEqual({ message: "hi", to: "Alice" });
 });
 
 test("Proxy の matcher に入らないパスは Proxy を通らない", async () => {
@@ -44,5 +55,6 @@ test("next.config の redirects / rewrites / headers", async () => {
   expect(rewritten.status).toBe(200);
   expect(await rewritten.text()).toContain("Profile <!-- -->Dave");
 
-  expect((await requestRoute("/users/Eve")).headers.get("x-section")).toBe("users");
+  const eve = await requestRoute("/users/Eve");
+  expect(eve.headers.get("x-section")).toBe("users");
 });

@@ -1,3 +1,2 @@
-export default function Forbidden() {
-  return <h1>Forbidden here</h1>;
-}
+const Forbidden = () => <h1>Forbidden here</h1>;
+export default Forbidden;

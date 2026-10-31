@@ -1,9 +1,16 @@
 "use client";
 import { useEffect, useState } from "react";
 
-export function Counter({ label, initial = 0 }: { label: string; initial?: number }) {
+export const Counter = ({
+  label,
+  initial = 0,
+}: {
+  label: string;
+  initial?: number;
+}) => {
   const [count, setCount] = useState(initial);
   const [ready, setReady] = useState(false);
+  // oxlint-disable-next-line react/set-state-in-effect -- ハイドレーション後に effect が動いたことを表示で確かめる
   useEffect(() => setReady(true), []);
   return (
     <div>
@@ -13,4 +20,4 @@ export function Counter({ label, initial = 0 }: { label: string; initial?: numbe
       </button>
     </div>
   );
-}
+};

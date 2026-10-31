@@ -1,3 +1,2 @@
-export default function Unauthorized() {
-  return <h1>Please sign in</h1>;
-}
+const Unauthorized = () => <h1>Please sign in</h1>;
+export default Unauthorized;

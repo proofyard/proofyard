@@ -1,4 +1,2 @@
 "use client";
-export function Chart() {
-  return <p>Chart ready ({typeof window})</p>;
-}
+export const Chart = () => <p>Chart ready ({typeof window})</p>;

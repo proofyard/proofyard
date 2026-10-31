@@ -1,6 +1,6 @@
 import { getItems } from "./items";
 import { ItemsView } from "./items-view";
 
-export default async function Page() {
-  return <ItemsView items={await getItems()} />;
-}
+const Page = async () => <ItemsView items={await getItems()} />;
+
+export default Page;

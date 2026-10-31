@@ -1,3 +1,2 @@
-export default function Loading() {
-  return <p>Loading slow page</p>;
-}
+const Loading = () => <p>Loading slow page</p>;
+export default Loading;

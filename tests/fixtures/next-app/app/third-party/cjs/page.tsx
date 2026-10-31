@@ -3,7 +3,7 @@ import Badge, { Toggle } from "fake-cjs-ui";
 import { connection } from "next/server";
 
 // CommonJS の "use client" のパッケージ（default と名前付きの export、module.exports そのもの）
-export default async function Page() {
+const Page = async () => {
   await connection();
   return (
     <main>
@@ -12,4 +12,5 @@ export default async function Page() {
       <Hello />
     </main>
   );
-}
+};
+export default Page;

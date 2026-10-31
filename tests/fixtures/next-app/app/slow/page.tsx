@@ -1,6 +1,8 @@
 import { db } from "../../components/users/db";
 
-export default async function Slow() {
-  await db.gate; // テストが止めている間は描画が終わらない
+const Slow = async () => {
+  // テストが止めている間は描画が終わらない
+  await db.gate;
   return <h1>Slow page</h1>;
-}
+};
+export default Slow;

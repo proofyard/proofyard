@@ -1,5 +1,4 @@
 import { UserList } from "../components/user-list";
 
-export default function Home() {
-  return <UserList />;
-}
+const Home = () => <UserList />;
+export default Home;

@@ -1,20 +1,23 @@
+import type * as ClientRuntime from "../client/runtime";
+/* oxlint-disable typescript/no-explicit-any -- globalThis / React / Flight の型のない境界を扱う */
+import { installDom } from "../dom/environment";
 // SSR Mode / Client Mode（仕様 4.2 / 4.3 / 14）。Server Components を Flight にし、
 //   ssr:    SSR 層の React でデコードして HTML にし、turbo-dom に入れる（Effect は動かない）
 //   client: ブラウザ層の React でデコードして createRoot で描画する（hydrate: true なら SSR の HTML を hydrateRoot）
 // クエリは Testing Library（ブラウザ層のもの）。
 import type { NextHarness } from "../next/preload";
-import { installDom } from "../dom/environment";
+import { filterCalls, runAction } from "./actions";
+import type { ActionCall, ServerActionFunction } from "./actions";
 import { renderFlight } from "./render-rsc";
-import { filterCalls, runAction, type ActionCall } from "./actions";
 
-type BrowserRuntime = typeof import("../client/runtime");
+type BrowserRuntime = typeof ClientRuntime;
 type Queries = ReturnType<BrowserRuntime["within"]>;
 
-export type RenderOptions = {
+export interface RenderOptions {
   mode?: "ssr" | "client";
   // Client Mode で、SSR の HTML を hydrateRoot する
   hydrate?: boolean;
-};
+}
 export type RenderResult = Queries & {
   container: HTMLElement;
   // SSR の HTML（ssr、または hydrate のとき）
@@ -26,22 +29,28 @@ export type RenderResult = Queries & {
   // Client Mode で呼ばれた Server Actions
   actions: {
     // 関数名、または import した Server Action で絞る
-    getCalls(action?: string | Function): ActionCall[];
+    getCalls: (action?: string | ServerActionFunction) => ActionCall[];
   };
-  unmount(): void;
+  unmount: () => void;
 };
 
-export function harness(): NextHarness {
-  const h = (globalThis as any)[Symbol.for("proofyard.next")] as NextHarness | undefined;
-  if (!h) throw new Error('[proofyard] the Next.js preload is not loaded. Add `preload = ["proofyard/preload"]` to bunfig.toml');
+export const harness = (): NextHarness => {
+  const h = (globalThis as any)[Symbol.for("proofyard.next")] as
+    | NextHarness
+    | undefined;
+  if (!h) {
+    throw new Error(
+      '[proofyard] the Next.js preload is not loaded. Add `preload = ["proofyard/preload"]` to bunfig.toml'
+    );
+  }
   return h;
-}
+};
 
 // DOM は使うときに入れる（rsc / ssr 層のコードに window を見せないため、プリロードでは入れない）
-export function ensureDom() {
+export const ensureDom = () => {
   installDom();
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-}
+};
 
 const containers = new Set<HTMLElement>();
 let browserRuntime: BrowserRuntime | undefined;
@@ -49,39 +58,63 @@ let browserRuntime: BrowserRuntime | undefined;
 // テストごとの後片付け（プリロードの afterEach から呼ばれる）
 (globalThis as any)[Symbol.for("proofyard.cleanup")] = () => {
   browserRuntime?.cleanup();
-  for (const container of containers) container.remove();
+  for (const container of containers) {
+    container.remove();
+  }
   containers.clear();
 };
 
-async function ssrHtml(stream: ReadableStream<Uint8Array>, serverError: (error: unknown) => unknown) {
+const ssrHtml = async (
+  stream: ReadableStream<Uint8Array>,
+  serverError: (error: unknown) => unknown
+) => {
   const h = harness();
   const ssr = h.ssrRuntime();
   // SSR 層の Flight クライアントは globalThis.__next_require__ で Client Component を読む
-  (globalThis as any).__next_require__ = (id: string) => (globalThis as any).__proofyardNextRequire(id);
+  (globalThis as any).__next_require__ = (id: string) =>
+    (globalThis as any).__proofyardNextRequire(id);
   try {
-    const { prelude } = await ssr.prerender(ssr.root(ssr.decode(stream, h.ssrModuleMap())));
+    const { prelude } = await ssr.prerender(
+      ssr.root(ssr.decode(stream, h.ssrModuleMap()))
+    );
     return await new Response(prelude).text();
   } catch (error) {
     throw serverError(error);
   }
-}
+};
 
-const actionsOf = (calls: ActionCall[]): RenderResult["actions"] => ({ getCalls: (action) => filterCalls(calls, action) });
+const actionsOf = (calls: ActionCall[]): RenderResult["actions"] => ({
+  getCalls: (action) => filterCalls(calls, action),
+});
 
-export async function render(ui: unknown, { mode = "client", hydrate = false }: RenderOptions = {}): Promise<RenderResult> {
+export const render = async (
+  ui: unknown,
+  { mode = "client", hydrate = false }: RenderOptions = {}
+): Promise<RenderResult> => {
   ensureDom();
   // ブラウザ層を先に用意してから描画を始める（Flight のストリームはすぐに読み始める）
-  const browser = (browserRuntime ??= await harness().loadBrowser());
+  browserRuntime ??= await harness().loadBrowser();
+  const browser = browserRuntime;
   const { stream, serverError } = renderFlight(ui);
   const recoverableErrors: unknown[] = [];
 
   if (mode === "ssr") {
-    if (hydrate) throw new Error('[proofyard] hydrate requires mode: "client"');
+    if (hydrate) {
+      throw new Error('[proofyard] hydrate requires mode: "client"');
+    }
     const html = await ssrHtml(stream, serverError);
-    const container = document.body.appendChild(document.createElement("div"));
+    const container = document.createElement("div");
+    document.body.append(container);
     containers.add(container);
     container.innerHTML = html;
-    return { ...browser.within(container), container, html, recoverableErrors, actions: actionsOf([]), unmount: () => container.remove() };
+    return {
+      ...browser.within(container),
+      actions: actionsOf([]),
+      container,
+      html,
+      recoverableErrors,
+      unmount: () => container.remove(),
+    };
   }
 
   let html: string | undefined;
@@ -92,7 +125,8 @@ export async function render(ui: unknown, { mode = "client", hydrate = false }: 
     const [forSsr, forClient] = stream.tee();
     clientStream = forClient;
     html = await ssrHtml(forSsr, serverError);
-    container = document.body.appendChild(document.createElement("div"));
+    container = document.createElement("div");
+    document.body.append(container);
     containers.add(container);
     container.innerHTML = html;
   }
@@ -101,9 +135,16 @@ export async function render(ui: unknown, { mode = "client", hydrate = false }: 
   const callServer = async (id: string, args: unknown[]): Promise<unknown> => {
     const body = await browser.encodeReply(args);
     const { result } = await runAction(id, body as string | FormData, calls);
-    const { stream, serverError: actionError } = renderFlight({ result, tree: ui });
+    const { stream: actionStream, serverError: actionError } = renderFlight({
+      result,
+      tree: ui,
+    });
     try {
-      const { result: returned, tree } = (await browser.decode(stream, callServer)) as { result: PromiseLike<unknown>; tree: unknown };
+      const { result: returned, tree } = (await browser.decode(
+        actionStream,
+        callServer
+      )) as { result: PromiseLike<unknown>; tree: unknown };
+      // oxlint-disable-next-line no-use-before-define -- Server Action は描画後（flightRoot の初期化後）にしか呼ばれない
       flightRoot.refresh(tree as any);
       return await returned;
     } catch (error) {
@@ -122,24 +163,30 @@ export async function render(ui: unknown, { mode = "client", hydrate = false }: 
   const flightRoot = browser.root(response as PromiseLike<any>);
   // Flight の続きのチャンクでサスペンドするので、非同期の act で描画する
   let utils: ReturnType<BrowserRuntime["render"]> | undefined;
+  // oxlint-disable-next-line require-await -- 非同期版の act を使うため async にする
   await browser.act(async () => {
-    utils = browser.render(flightRoot.element as any, {
-      container,
-      hydrate,
-      onRecoverableError: (error: unknown) => void recoverableErrors.push(error),
-    } as any);
+    utils = browser.render(
+      flightRoot.element as any,
+      {
+        container,
+        hydrate,
+        onRecoverableError: (error: unknown) => {
+          recoverableErrors.push(error);
+        },
+      } as any
+    );
   });
-  const rendered = utils!;
+  const rendered = utils as ReturnType<BrowserRuntime["render"]>;
   containers.add(rendered.container);
   // クエリは Testing Library と同じく document.body 全体（Portal で外に描画されたものも見つかる）
   return {
     ...browser.within(rendered.baseElement),
+    actions: actionsOf(calls),
     container: rendered.container,
     html,
+    recoverableErrors,
+    unmount: rendered.unmount,
     // 既定の document は user-event の読み込み時のもの。いまの document を渡す
     user: browser.userEvent.setup({ document }),
-    recoverableErrors,
-    actions: actionsOf(calls),
-    unmount: rendered.unmount,
   } as unknown as RenderResult;
-}
+};

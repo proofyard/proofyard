@@ -1,9 +1,19 @@
 "use client";
-import { useState } from "react";
 import { listEntries } from "fake-actions";
+import { useState } from "react";
 
 // Client Component から呼ぶサードパーティの Server Action（ブラウザのバンドルでは Server Reference になる）
-export function EntryCount() {
+export const EntryCount = () => {
   const [count, setCount] = useState<number>();
-  return <button onClick={async () => setCount((await listEntries()).length)}>{count === undefined ? "Count entries" : `entries: ${count}`}</button>;
-}
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        const entries = await listEntries();
+        setCount(entries.length);
+      }}
+    >
+      {count === undefined ? "Count entries" : `entries: ${count}`}
+    </button>
+  );
+};

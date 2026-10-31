@@ -1,7 +1,13 @@
 "use client";
-import { useParams, usePathname, useSearchParams, useSelectedLayoutSegment, useSelectedLayoutSegments } from "next/navigation";
+import {
+  useParams,
+  usePathname,
+  useSearchParams,
+  useSelectedLayoutSegment,
+  useSelectedLayoutSegments,
+} from "next/navigation";
 
-export function CurrentPath() {
+export const CurrentPath = () => {
   const search = useSearchParams().toString();
   return (
     <>
@@ -12,4 +18,4 @@ export function CurrentPath() {
       <p>Segments: {useSelectedLayoutSegments().join("/") || "(none)"}</p>
     </>
   );
-}
+};

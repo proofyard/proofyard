@@ -1,5 +1,3 @@
 import { tlaValue } from "../../../components/tla-value";
 
-export function GET() {
-  return Response.json({ tlaValue });
-}
+export const GET = () => Response.json({ tlaValue });

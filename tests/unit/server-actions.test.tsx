@@ -1,9 +1,22 @@
+/* oxlint-disable typescript/no-non-null-assertion -- テストでは値があることを前提にし、なければそこで失敗させる */
 // Server Actions（仕様 8 章）: Client Mode の render() から、HTTP なしで Flight（encodeReply / decodeReply）を往復させて実行する
 import { beforeEach, expect, test } from "bun:test";
+
 import { render } from "proofyard";
+
+import {
+  createUser,
+  echo,
+  fail,
+  joinTeam,
+  leak,
+  like,
+} from "../fixtures/next-app/components/users/actions";
 import { db } from "../fixtures/next-app/components/users/db";
-import { createUser, echo, fail, joinTeam, leak, like } from "../fixtures/next-app/components/users/actions";
-import { CallButton, LikeCounter } from "../fixtures/next-app/components/users/user-form";
+import {
+  CallButton,
+  LikeCounter,
+} from "../fixtures/next-app/components/users/user-form";
 import { UsersPage } from "../fixtures/next-app/components/users/users-page";
 
 beforeEach(() => {
@@ -16,15 +29,18 @@ test("useActionState: フォームを送信し、Action の結果と描画し直
   const app = await render(<UsersPage />);
   await app.user!.type(app.getByRole("textbox"), "Alice");
   await app.user!.click(app.getByRole("button", { name: "Create" }));
-  expect((await app.findByRole("status")).textContent).toBe("Created Alice");
+  const status = await app.findByRole("status");
+  expect(status.textContent).toBe("Created Alice");
   // RSC Refresh: サーバー側のデータの変更が Server Component の一覧に出る
-  expect((await app.findByRole("listitem")).textContent).toBe("Alice");
+  const item = await app.findByRole("listitem");
+  expect(item.textContent).toBe("Alice");
   const calls = app.actions.getCalls(createUser);
   expect(calls).toHaveLength(1);
   expect((calls[0]!.args[1] as FormData).get("name")).toBe("Alice");
 });
 
 test("useFormStatus: Action の完了前は pending", async () => {
+  // oxlint-disable-next-line typescript/no-invalid-void-type -- resolve() を引数なしで呼ぶ
   const gate = Promise.withResolvers<void>();
   db.gate = gate.promise;
   const app = await render(<UsersPage />);
@@ -32,14 +48,16 @@ test("useFormStatus: Action の完了前は pending", async () => {
   await app.user!.click(app.getByRole("button", { name: "Create" }));
   await app.findByRole("button", { name: "Saving..." });
   gate.resolve();
-  expect((await app.findByRole("status")).textContent).toBe("Created Bob");
+  const status = await app.findByRole("status");
+  expect(status.textContent).toBe("Created Bob");
   expect(app.getByRole("button", { name: "Create" })).toBeDefined();
 });
 
 test("サーバー側の検証エラーを返す", async () => {
   const app = await render(<UsersPage />);
   await app.user!.click(app.getByRole("button", { name: "Create" }));
-  expect((await app.findByRole("alert")).textContent).toBe("Name is required");
+  const alert = await app.findByRole("alert");
+  expect(alert.textContent).toBe("Name is required");
   expect(db.users).toEqual([]);
 });
 
@@ -51,8 +69,15 @@ test(".bind() した Server Action を props で渡す", async () => {
 });
 
 test("引数と戻り値は Flight で往復する（Date / Map / bigint / Set）", async () => {
-  const value = { at: new Date(0), tags: new Map([["a", 1]]), big: 10n, set: new Set(["x"]) };
-  const app = await render(<CallButton label="echo" action={echo.bind(null, value)} />);
+  const value = {
+    at: new Date(0),
+    big: 10n,
+    set: new Set(["x"]),
+    tags: new Map([["a", 1]]),
+  };
+  const app = await render(
+    <CallButton label="echo" action={echo.bind(null, value)} />
+  );
   await app.user!.click(app.getByRole("button", { name: "echo" }));
   await app.findByRole("button", { name: "ok: object" });
   const [received] = app.actions.getCalls(echo)[0]!.args as [typeof value];
@@ -65,17 +90,22 @@ test("引数と戻り値は Flight で往復する（Date / Map / bigint / Set�
 test("シリアライズできない戻り値はエラーになる", async () => {
   const app = await render(<CallButton label="leak" action={leak} />);
   await app.user!.click(app.getByRole("button", { name: "leak" }));
-  const button = await app.findByRole("button", { name: /^error: / });
-  expect(button.textContent).toContain("Functions cannot be passed directly to Client Components");
+  const button = await app.findByRole("button", { name: /^error: /u });
+  expect(button.textContent).toContain(
+    "Functions cannot be passed directly to Client Components"
+  );
 });
 
 test("Action の例外はクライアントに元のエラーとして届く", async () => {
   const app = await render(<CallButton label="fail" action={fail} />);
   await app.user!.click(app.getByRole("button", { name: "fail" }));
-  await app.findByRole("button", { name: "error: action failed on the server" });
+  await app.findByRole("button", {
+    name: "error: action failed on the server",
+  });
 });
 
 test("useOptimistic: 完了前は楽観的な値、完了後はサーバーの値", async () => {
+  // oxlint-disable-next-line typescript/no-invalid-void-type -- resolve() を引数なしで呼ぶ
   const gate = Promise.withResolvers<void>();
   db.gate = gate.promise;
   const app = await render(<LikeCounter likes={0} like={like} />);
@@ -87,10 +117,11 @@ test("useOptimistic: 完了前は楽観的な値、完了後はサーバーの�
   expect(db.likes).toBe(1);
 });
 
-test("クロージャの Server Action（関数の中の \"use server\"）は、閉じ込めた値をサーバーで受け取る", async () => {
-  const { Greeting } = await import("../fixtures/next-app/components/users/greeting");
+test('クロージャの Server Action（関数の中の "use server"）は、閉じ込めた値をサーバーで受け取る', async () => {
+  const { Greeting } =
+    await import("../fixtures/next-app/components/users/greeting");
   const app = await render(<Greeting team="core" />);
   await app.user!.click(app.getByRole("button", { name: "greet" }));
-  const button = await app.findByRole("button", { name: /^(ok|error)/ });
+  const button = await app.findByRole("button", { name: /^(?:ok|error)/u });
   expect(button.textContent).toBe("ok: string");
 });

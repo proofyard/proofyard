@@ -1,16 +1,16 @@
 import { Suspense } from "react";
 
-async function Name({ params }: { params: Promise<{ id: string }> }) {
-  return <p>Product {(await params).id}</p>;
-}
+const Name = async ({ params }: { params: Promise<{ id: string }> }) => {
+  const { id } = await params;
+  return <p>Product {id}</p>;
+};
 
-export default function Page({ params }: { params: Promise<{ id: string }> }) {
-  return (
-    <main>
-      <h1>Product page</h1>
-      <Suspense fallback={<p>Loading product</p>}>
-        <Name params={params} />
-      </Suspense>
-    </main>
-  );
-}
+const Page = ({ params }: { params: Promise<{ id: string }> }) => (
+  <main>
+    <h1>Product page</h1>
+    <Suspense fallback={<p>Loading product</p>}>
+      <Name params={params} />
+    </Suspense>
+  </main>
+);
+export default Page;

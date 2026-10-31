@@ -1,3 +1,2 @@
-export default function NoModal() {
-  return null;
-}
+const NoModal = () => null;
+export default NoModal;

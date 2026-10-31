@@ -1,3 +1,4 @@
+/* oxlint-disable max-classes-per-file -- ErrorEvent は installDom の後の Event（turbo-dom）を継承するので関数の中で作る */
 // DOM Adapter（仕様 2.2）: turbo-dom を入れ、足りない部分をここで補う。
 // Client Graph の react-dom/client を読む前に呼ぶこと。
 import { installGlobals } from "@miaskiewicz/turbo-dom/install";
@@ -8,17 +9,46 @@ import { installGlobals } from "@miaskiewicz/turbo-dom/install";
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-the-form-data-set
 // ponytail: 未対応 = input[type=image] の座標、dirname、fieldset の最初の legend の例外、改行の正規化
 const NativeFormData = globalThis.FormData;
+const globals = globalThis as unknown as Record<string, unknown>;
 
 const BUTTON_TYPES = new Set(["submit", "button", "reset", "image"]);
 
-function isButton(el: Element) {
+const isButton = (el: Element) => {
   const tag = el.localName;
-  return tag === "button" || (tag === "input" && BUTTON_TYPES.has((el as HTMLInputElement).type));
-}
+  return (
+    tag === "button" ||
+    (tag === "input" && BUTTON_TYPES.has((el as HTMLInputElement).type))
+  );
+};
 
-function isDisabled(el: Element) {
-  return (el as HTMLInputElement).disabled || el.closest("fieldset[disabled]") !== null;
-}
+const isDisabled = (el: Element) =>
+  (el as HTMLInputElement).disabled ||
+  el.closest("fieldset[disabled]") !== null;
+
+// 名前のある 1 つのコントロールの値を足す
+const appendControl = (data: FormData, el: Element, name: string) => {
+  const { type } = el as HTMLInputElement;
+  if (el.localName === "input" && (type === "checkbox" || type === "radio")) {
+    if ((el as HTMLInputElement).checked) {
+      data.append(name, (el as HTMLInputElement).value || "on");
+    }
+  } else if (el.localName === "input" && type === "file") {
+    throw new Error(
+      '[proofyard] Unsupported: <input type="file"> in FormData is not supported by the DOM adapter yet'
+    );
+  } else if (el.localName === "select") {
+    for (const option of (el as HTMLSelectElement).options) {
+      if (option.selected && !option.disabled) {
+        data.append(name, option.value);
+      }
+    }
+  } else if (el.localName === "button") {
+    // turbo-dom 0.5.6 は HTMLButtonElement.value が未実装。仕様では value 属性の反映
+    data.append(name, el.getAttribute("value") ?? "");
+  } else {
+    data.append(name, (el as HTMLInputElement).value);
+  }
+};
 
 class ProofyardFormData extends NativeFormData {
   // Bun の FormData には独自の toJSON があり、JSON.stringify で普通のオブジェクトに化ける。
@@ -29,31 +59,35 @@ class ProofyardFormData extends NativeFormData {
 
   constructor(form?: HTMLFormElement, submitter?: HTMLElement | null) {
     super();
-    if (form === undefined) return;
-    if (form?.localName !== "form") throw new TypeError("FormData: parameter 1 is not of type 'HTMLFormElement'");
-    if (submitter != null && (!isButton(submitter) || (submitter as HTMLButtonElement).form !== form)) {
-      throw new TypeError("FormData: submitter is not a submit button of the form");
+    if (form === undefined) {
+      return;
     }
-    for (const el of Array.from(form.elements)) {
-      if (el.closest("datalist") || isDisabled(el)) continue;
-      if (isButton(el) && el !== submitter) continue;
-      const name = el.getAttribute("name");
-      if (!name) continue;
-      const type = (el as HTMLInputElement).type;
-      if (el.localName === "input" && (type === "checkbox" || type === "radio")) {
-        if ((el as HTMLInputElement).checked) this.append(name, (el as HTMLInputElement).value || "on");
-      } else if (el.localName === "input" && type === "file") {
-        throw new Error("[proofyard] Unsupported: <input type=\"file\"> in FormData is not supported by the DOM adapter yet");
-      } else if (el.localName === "select") {
-        for (const option of Array.from((el as HTMLSelectElement).options)) {
-          if (option.selected && !option.disabled) this.append(name, option.value);
-        }
-      } else if (el.localName === "button") {
-        // turbo-dom 0.5.6 は HTMLButtonElement.value が未実装。仕様では value 属性の反映
-        this.append(name, el.getAttribute("value") ?? "");
-      } else {
-        this.append(name, (el as HTMLInputElement).value);
+    if (form?.localName !== "form") {
+      throw new TypeError(
+        "FormData: parameter 1 is not of type 'HTMLFormElement'"
+      );
+    }
+    if (
+      submitter !== null &&
+      submitter !== undefined &&
+      (!isButton(submitter) || (submitter as HTMLButtonElement).form !== form)
+    ) {
+      throw new TypeError(
+        "FormData: submitter is not a submit button of the form"
+      );
+    }
+    for (const el of form.elements) {
+      if (el.closest("datalist") || isDisabled(el)) {
+        continue;
       }
+      if (isButton(el) && el !== submitter) {
+        continue;
+      }
+      const name = el.getAttribute("name");
+      if (!name) {
+        continue;
+      }
+      appendControl(this, el, name);
     }
   }
 }
@@ -82,87 +116,86 @@ const KEEP_NATIVE = [
   "File",
 ] as const;
 
-export function installDom(html = "<!doctype html><html><head></head><body></body></html>") {
-  if (installed) return installed;
-  const native = Object.fromEntries(KEEP_NATIVE.map((name) => [name, (globalThis as any)[name]]));
-  // DOM を入れる前に作られた Bun 本来の EventTarget（Next.js の CloseController、AbortSignal など）に、入れた後の turbo-dom の Event が送られる
-  // （DOM を入れる前のリクエストの Proxy の after() は、レスポンスの後に new Event("close") を送る）。Bun 本来の Event に作り直して送る
-  // ponytail: 作り直した Event の preventDefault は元の Event に戻らない
-  const NativeEvent = globalThis.Event;
-  const nativeDispatch = globalThis.EventTarget.prototype.dispatchEvent;
-  globalThis.EventTarget.prototype.dispatchEvent = function (event: Event) {
-    return nativeDispatch.call(this, event instanceof NativeEvent ? event : new NativeEvent(event.type, event));
-  };
-  installed = installGlobals(globalThis, { html });
-  for (const name of KEEP_NATIVE) if (native[name] !== undefined) (globalThis as any)[name] = native[name];
-  globalThis.FormData = ProofyardFormData as typeof FormData;
-  installLocation();
-  resolveUrlAttributes();
-  installReportError();
-  return installed;
-}
-
 // ブラウザの reportError: window に error イベントを送り、取り消されなければコンソールに出す
 // （Bun のものは捕まえられなかった例外になり、テストが落ちる。Next.js は Hydration Mismatch などをこれで報告する）
 // turbo-dom 0.5.6 には ErrorEvent がない（グローバルの ErrorEvent は Bun のもので、turbo-dom の window には送れない）
 // https://html.spec.whatwg.org/multipage/webappapis.html#dom-reporterror
-function installReportError() {
+const installReportError = () => {
   class ErrorEvent extends Event {
     readonly error: unknown;
     readonly message: string;
-    constructor(type: string, init: EventInit & { error?: unknown; message?: string } = {}) {
+    constructor(
+      type: string,
+      init: EventInit & { error?: unknown; message?: string } = {}
+    ) {
       super(type, init);
       this.error = init.error;
       this.message = init.message ?? "";
     }
   }
-  (globalThis as any).ErrorEvent = ErrorEvent;
+  globals.ErrorEvent = ErrorEvent;
   globalThis.reportError = (error: unknown) => {
-    const event = new ErrorEvent("error", { error, message: error instanceof Error ? error.message : String(error), cancelable: true });
-    if (window.dispatchEvent(event)) console.error(error);
+    const event = new ErrorEvent("error", {
+      cancelable: true,
+      error,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    if (window.dispatchEvent(event)) {
+      console.error(error);
+    }
   };
-}
+};
 
 // turbo-dom 0.5.6 の src / href は属性の値をそのまま返す。HTML の要素ではブラウザと同じく文書の URL で解決する
 // （Next.js のクライアントは <script>.src から assetPrefix を求める）
 // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes
-function resolveUrlAttributes() {
+const resolveUrlAttributes = () => {
   for (const name of ["src", "href"]) {
     const original = Object.getOwnPropertyDescriptor(Element.prototype, name);
-    if (!original?.get) throw new Error(`[proofyard] the DOM adapter expected Element.prototype.${name}`);
+    const getter = original?.get;
+    if (!getter) {
+      throw new Error(
+        `[proofyard] the DOM adapter expected Element.prototype.${name}`
+      );
+    }
     Object.defineProperty(Element.prototype, name, {
       ...original,
       get(this: Element) {
-        if (this.namespaceURI !== "http://www.w3.org/1999/xhtml") return original.get!.call(this);
+        if (this.namespaceURI !== "http://www.w3.org/1999/xhtml") {
+          return getter.call(this);
+        }
         const value = this.getAttribute(name);
-        if (value === null) return "";
+        if (value === null) {
+          return "";
+        }
         return URL.parse(value, document.baseURI)?.href ?? value;
       },
     });
   }
-}
+};
 
 // turbo-dom 0.5.6 の location は http://localhost/ 固定で、history.pushState も URL を変えない。
 // Next.js のルーターは location.href と history.state / pushState / replaceState / popstate を使うので、
 // URL を共有する Location と History を入れる。
 // ponytail: ページ遷移（href の代入・assign・replace・reload）はテストの中では起こせないので Fail Closed
 let current = new URL("http://localhost/");
-const entries: { url: URL; state: unknown }[] = [{ url: current, state: null }];
+interface HistoryEntry {
+  url: URL;
+  state: unknown;
+}
+const entries: HistoryEntry[] = [{ state: null, url: current }];
 let index = 0;
 
 const navigation = (what: string) => () => {
-  throw new Error(`[proofyard] Unsupported: ${what} (a full page navigation) is not supported in tests`);
+  throw new Error(
+    `[proofyard] Unsupported: ${what} (a full page navigation) is not supported in tests`
+  );
 };
 
 const location = {
-  get href() {
-    return current.href;
-  },
-  set href(_: string) {
-    navigation("location.href = ...")();
-  },
-  get protocol() {
-    return current.protocol;
+  assign: navigation("location.assign()"),
+  get hash() {
+    return current.hash;
   },
   get host() {
     return current.host;
@@ -170,75 +203,156 @@ const location = {
   get hostname() {
     return current.hostname;
   },
-  get port() {
-    return current.port;
+  get href() {
+    return current.href;
   },
-  get pathname() {
-    return current.pathname;
-  },
-  get search() {
-    return current.search;
-  },
-  get hash() {
-    return current.hash;
+  set href(_: string) {
+    navigation("location.href = ...")();
   },
   get origin() {
     return current.origin;
   },
-  assign: navigation("location.assign()"),
-  replace: navigation("location.replace()"),
+  get pathname() {
+    return current.pathname;
+  },
+  get port() {
+    return current.port;
+  },
+  get protocol() {
+    return current.protocol;
+  },
   reload: navigation("location.reload()"),
+  replace: navigation("location.replace()"),
+  get search() {
+    return current.search;
+  },
   toString: () => current.href,
 };
 
-function move(url: string | URL | null | undefined, state: unknown, push: boolean) {
-  const next = url == null ? current : new URL(url, current);
-  if (next.origin !== current.origin) throw new DOMException(`Cannot change the URL to ${next.href} (different origin)`, "SecurityError");
-  if (push) entries.splice(++index, Infinity, { url: next, state: structuredClone(state) });
-  else entries[index] = { url: next, state: structuredClone(state) };
-  current = next;
-  for (const resolve of historyWaiters.splice(0)) resolve();
-}
-
 // 次の pushState / replaceState を待つ。Next.js のルーターは状態をコミットするたびに書く（app-router.tsx の HistoryUpdater）
 const historyWaiters: (() => void)[] = [];
-export const nextHistoryWrite = () => new Promise<void>((resolve) => historyWaiters.push(resolve));
+export const nextHistoryWrite = () =>
+  // oxlint-disable-next-line promise/avoid-new -- 次の書き込みで resolve する Promise（Promise.withResolvers<void> は no-invalid-void-type になる）
+  new Promise<void>((resolve) => {
+    historyWaiters.push(resolve);
+  });
+
+const move = (
+  url: string | URL | null | undefined,
+  state: unknown,
+  push: boolean
+) => {
+  const next =
+    url === null || url === undefined ? current : new URL(url, current);
+  if (next.origin !== current.origin) {
+    throw new DOMException(
+      `Cannot change the URL to ${next.href} (different origin)`,
+      "SecurityError"
+    );
+  }
+  if (push) {
+    index += 1;
+    entries.splice(index, Infinity, {
+      state: structuredClone(state),
+      url: next,
+    });
+  } else {
+    entries[index] = { state: structuredClone(state), url: next };
+  }
+  current = next;
+  for (const resolve of historyWaiters.splice(0)) {
+    resolve();
+  }
+};
 
 const history = {
-  get length() {
-    return entries.length;
-  },
-  get state() {
-    return entries[index]!.state;
-  },
-  scrollRestoration: "auto",
-  pushState: (state: unknown, _title: string, url?: string | URL | null) => move(url, state, true),
-  replaceState: (state: unknown, _title: string, url?: string | URL | null) => move(url, state, false),
+  back: () => history.go(-1),
+  forward: () => history.go(1),
   go(delta = 0) {
     const target = index + delta;
-    if (delta === 0 || target < 0 || target >= entries.length) return;
+    if (delta === 0 || target < 0 || target >= entries.length) {
+      return;
+    }
     index = target;
-    current = entries[index]!.url;
+    current = (entries[index] as HistoryEntry).url;
     // ブラウザと同じく popstate は非同期に発火する
     setTimeout(() => {
       const event = new Event("popstate");
-      Object.defineProperty(event, "state", { value: entries[index]!.state });
+      Object.defineProperty(event, "state", {
+        value: (entries[index] as HistoryEntry).state,
+      });
       window.dispatchEvent(event);
-    });
+    }, 0);
   },
-  back: () => history.go(-1),
-  forward: () => history.go(1),
+  get length() {
+    return entries.length;
+  },
+  pushState: (state: unknown, _title: string, url?: string | URL | null) =>
+    move(url, state, true),
+  replaceState: (state: unknown, _title: string, url?: string | URL | null) =>
+    move(url, state, false),
+  scrollRestoration: "auto",
+  get state() {
+    return (entries[index] as HistoryEntry).state;
+  },
 };
 
-function installLocation() {
-  for (const target of [globalThis, document]) Object.defineProperty(target, "location", { configurable: true, get: () => location });
-  Object.defineProperty(globalThis, "history", { configurable: true, get: () => history });
-  Object.defineProperty(document, "URL", { configurable: true, get: () => current.href });
-}
+const installLocation = () => {
+  for (const target of [globalThis, document]) {
+    Object.defineProperty(target, "location", {
+      configurable: true,
+      get: () => location,
+    });
+  }
+  Object.defineProperty(globalThis, "history", {
+    configurable: true,
+    get: () => history,
+  });
+  Object.defineProperty(document, "URL", {
+    configurable: true,
+    get: () => current.href,
+  });
+};
 
 // テストのはじめに URL と履歴を決める（renderRoute が使う）
-export function resetLocation(url: string) {
+export const resetLocation = (url: string) => {
   current = new URL(url, "http://localhost/");
-  entries.splice(0, Infinity, { url: current, state: null });
+  entries.splice(0, Infinity, { state: null, url: current });
   index = 0;
-}
+};
+
+// 入れた DOM（1 プロセスに 1 つ）。テストの前に呼ぶ
+export const installDom = (
+  html = "<!doctype html><html><head></head><body></body></html>"
+) => {
+  if (installed) {
+    return installed;
+  }
+  const native = Object.fromEntries(
+    KEEP_NATIVE.map((name) => [name, globals[name]])
+  );
+  // DOM を入れる前に作られた Bun 本来の EventTarget（Next.js の CloseController、AbortSignal など）に、入れた後の turbo-dom の Event が送られる
+  // （DOM を入れる前のリクエストの Proxy の after() は、レスポンスの後に new Event("close") を送る）。Bun 本来の Event に作り直して送る
+  // ponytail: 作り直した Event の preventDefault は元の Event に戻らない
+  const NativeEvent = globalThis.Event;
+  const nativeDispatch = globalThis.EventTarget.prototype.dispatchEvent;
+  globalThis.EventTarget.prototype.dispatchEvent = function dispatchEvent(
+    event: Event
+  ) {
+    return nativeDispatch.call(
+      this,
+      event instanceof NativeEvent ? event : new NativeEvent(event.type, event)
+    );
+  };
+  installed = installGlobals(globalThis, { html });
+  for (const name of KEEP_NATIVE) {
+    if (native[name] !== undefined) {
+      globals[name] = native[name];
+    }
+  }
+  globalThis.FormData = ProofyardFormData as typeof FormData;
+  installLocation();
+  resolveUrlAttributes();
+  installReportError();
+  return installed;
+};

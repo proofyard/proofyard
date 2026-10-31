@@ -1,68 +1,127 @@
 // 未対応のケースは通常の JS として実行せず、明示的にエラーにする（Fail Closed）
 import { expect, test } from "bun:test";
 import { mkdtempDisposableSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import nodePath from "node:path";
+
 import { buildLayer } from "../../../src/next/layers";
 
 // rsc 層のバンドルは Next.js 本体だけ（アプリと node_modules はネイティブで読み込み、"use cache" はそこで変換する）。
 // 変換を通らずにバンドルに入れば、ビルドを失敗させる
 test('rsc 層のバンドルに入った node_modules の "use cache" はビルドを失敗させる', async () => {
-  using tmp = mkdtempDisposableSync(join(tmpdir(), "proofyard-unsupported-"));
+  using tmp = mkdtempDisposableSync(
+    nodePath.join(tmpdir(), "proofyard-unsupported-")
+  );
   const dir = tmp.path;
-  mkdirSync(join(dir, "node_modules/cached-lib"), { recursive: true });
-  writeFileSync(join(dir, "node_modules/cached-lib/index.js"), `export async function load() {\n  "use cache";\n  return 1;\n}\n`);
-  writeFileSync(join(dir, "entry.js"), `export { load } from "cached-lib";\n`);
-  const error = await buildLayer("rsc", [join(dir, "entry.js")], { outdir: join(dir, "out"), define: { "process.env.NODE_ENV": '"production"' } }).catch((e) => e);
+  mkdirSync(nodePath.join(dir, "node_modules/cached-lib"), { recursive: true });
+  writeFileSync(
+    nodePath.join(dir, "node_modules/cached-lib/index.js"),
+    `export async function load() {\n  "use cache";\n  return 1;\n}\n`
+  );
+  writeFileSync(
+    nodePath.join(dir, "entry.js"),
+    `export { load } from "cached-lib";\n`
+  );
+  const error = await buildLayer("rsc", [nodePath.join(dir, "entry.js")], {
+    define: { "process.env.NODE_ENV": '"production"' },
+    outdir: nodePath.join(dir, "out"),
+  }).catch((error_) => error_);
   expect(error).toBeInstanceOf(AggregateError);
-  expect(String(error.errors.map((e: { message: string }) => e.message))).toContain(
-    'Unsupported Next.js feature: "use server" / "use cache" in node_modules is not compiled by the current runtime',
+  expect(
+    String(error.errors.map((e: { message: string }) => e.message))
+  ).toContain(
+    'Unsupported Next.js feature: "use server" / "use cache" in node_modules is not compiled by the current runtime'
   );
 });
 
 // "use server" の CommonJS は Next.js の SWC の変換がどう扱うかを確かめていない（"use client" の CommonJS は対応。tests/unit/advanced.test.tsx）
-for (const directive of ["use server"])
+for (const directive of ["use server"]) {
   test(`node_modules の CommonJS の "${directive}" は未対応。サーバーで実行せず、読み込んだときに失敗させる`, async () => {
-    using tmp = mkdtempDisposableSync(join(tmpdir(), "proofyard-third-party-client-"));
-    const app = tmp.path;
-    mkdirSync(join(app, "app"));
-    mkdirSync(join(app, "node_modules/fake-ui"), { recursive: true });
-    writeFileSync(join(app, "node_modules/fake-ui/package.json"), JSON.stringify({ name: "fake-ui", main: "index.js" }));
-    writeFileSync(join(app, "node_modules/fake-ui/index.js"), `"${directive}";\nexports.Button = async function Button() { return null; };\n`);
-    writeFileSync(join(app, "app/layout.tsx"), `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`);
-    writeFileSync(join(app, "app/page.tsx"), `import { Button } from "fake-ui";\nexport default function P() { return <Button />; }\n`);
-    writeFileSync(
-      join(app, "page.test.ts"),
-      `import { expect, test } from "bun:test";\ntest("page", async () => {\n  await expect(import("./app/page.tsx")).rejects.toThrow('Unsupported: CommonJS "${directive}" ');\n});\n`,
+    using tmp = mkdtempDisposableSync(
+      nodePath.join(tmpdir(), "proofyard-third-party-client-")
     );
-    const proc = Bun.spawn(["bun", "test", "--preload", join(import.meta.dir, "../../../src/next/preload.ts"), join(app, "page.test.ts")], {
-      cwd: process.cwd(),
-      env: { ...process.env, PROOFYARD_NEXT_APP: app },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const output = (await new Response(proc.stdout).text()) + (await new Response(proc.stderr).text());
+    const app = tmp.path;
+    mkdirSync(nodePath.join(app, "app"));
+    mkdirSync(nodePath.join(app, "node_modules/fake-ui"), { recursive: true });
+    writeFileSync(
+      nodePath.join(app, "node_modules/fake-ui/package.json"),
+      JSON.stringify({ main: "index.js", name: "fake-ui" })
+    );
+    writeFileSync(
+      nodePath.join(app, "node_modules/fake-ui/index.js"),
+      `"${directive}";\nexports.Button = async function Button() { return null; };\n`
+    );
+    writeFileSync(
+      nodePath.join(app, "app/layout.tsx"),
+      `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`
+    );
+    writeFileSync(
+      nodePath.join(app, "app/page.tsx"),
+      `import { Button } from "fake-ui";\nexport default function P() { return <Button />; }\n`
+    );
+    writeFileSync(
+      nodePath.join(app, "page.test.ts"),
+      `import { expect, test } from "bun:test";\ntest("page", async () => {\n  await expect(import("./app/page.tsx")).rejects.toThrow('Unsupported: CommonJS "${directive}" ');\n});\n`
+    );
+    const proc = Bun.spawn(
+      [
+        "bun",
+        "test",
+        "--preload",
+        nodePath.join(import.meta.dir, "../../../src/next/preload.ts"),
+        nodePath.join(app, "page.test.ts"),
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, PROOFYARD_NEXT_APP: app },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    const output =
+      (await new Response(proc.stdout).text()) +
+      (await new Response(proc.stderr).text());
     expect(output).toContain("1 pass");
     expect(await proc.exited).toBe(0);
   }, 60_000);
+}
 
 test("同じプロセスで同時に動くテスト（test.concurrent）は、DOM とキャッシュを分けられないので Fail Closed", async () => {
-  using tmp = mkdtempDisposableSync(join(tmpdir(), "proofyard-concurrent-"));
-  const app = tmp.path;
-  mkdirSync(join(app, "app"));
-  writeFileSync(join(app, "app/layout.tsx"), `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`);
-  writeFileSync(join(app, "app/page.tsx"), `export default function P() { return <p>home</p>; }\n`);
-  writeFileSync(
-    join(app, "page.test.ts"),
-    `import { test } from "bun:test";\nfor (const name of ["a", "b"]) test.concurrent(name, () => Bun.sleep(50));\n`,
+  using tmp = mkdtempDisposableSync(
+    nodePath.join(tmpdir(), "proofyard-concurrent-")
   );
-  const proc = Bun.spawn(["bun", "test", "--preload", join(import.meta.dir, "../../../src/next/preload.ts"), join(app, "page.test.ts")], {
-    cwd: process.cwd(),
-    env: { ...process.env, PROOFYARD_NEXT_APP: app },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const output = (await new Response(proc.stdout).text()) + (await new Response(proc.stderr).text());
+  const app = tmp.path;
+  mkdirSync(nodePath.join(app, "app"));
+  writeFileSync(
+    nodePath.join(app, "app/layout.tsx"),
+    `export default function L({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n`
+  );
+  writeFileSync(
+    nodePath.join(app, "app/page.tsx"),
+    `export default function P() { return <p>home</p>; }\n`
+  );
+  writeFileSync(
+    nodePath.join(app, "page.test.ts"),
+    `import { test } from "bun:test";\nfor (const name of ["a", "b"]) test.concurrent(name, () => Bun.sleep(50));\n`
+  );
+  const proc = Bun.spawn(
+    [
+      "bun",
+      "test",
+      "--preload",
+      nodePath.join(import.meta.dir, "../../../src/next/preload.ts"),
+      nodePath.join(app, "page.test.ts"),
+    ],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, PROOFYARD_NEXT_APP: app },
+      stderr: "pipe",
+      stdout: "pipe",
+    }
+  );
+  const output =
+    (await new Response(proc.stdout).text()) +
+    (await new Response(proc.stderr).text());
   expect(output).toContain("Unsupported: concurrent tests in one process");
   expect(output).toContain("1 fail");
   expect(await proc.exited).toBe(1);

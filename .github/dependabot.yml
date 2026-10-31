@@ -15,7 +15,7 @@ updates:
     ignore:
       - dependency-name: next
         update-types: [version-update:semver-major, version-update:semver-minor]
-      - dependency-name: '@next/*'
+      - dependency-name: "@next/*"
         update-types: [version-update:semver-major, version-update:semver-minor]
       - dependency-name: react
       - dependency-name: react-dom
@@ -23,9 +23,9 @@ updates:
     groups:
       # Its own pull request, so CI on a new Next.js patch doesn't hold back the rest.
       next:
-        patterns: [next, '@next/*']
+        patterns: [next, "@next/*"]
       bun:
-        patterns: ['*']
+        patterns: ["*"]
     labels: [dependencies]
 
   # Also the SHAs the workflows pin.
@@ -37,5 +37,5 @@ updates:
       default-days: 7
     groups:
       github-actions:
-        patterns: ['*']
+        patterns: ["*"]
     labels: [dependencies]

@@ -1,9 +1,12 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
-export function proxy(request: NextRequest) {
+export const proxy = (request: NextRequest) => {
   const session = request.cookies.get("session")?.value;
   if (request.nextUrl.pathname.startsWith("/admin")) {
-    if (!session) return NextResponse.redirect(new URL("/users", request.url));
+    if (!session) {
+      return NextResponse.redirect(new URL("/users", request.url));
+    }
     return NextResponse.rewrite(new URL(`/users/${session}`, request.url));
   }
   // API: ログイン中のユーザーをリクエストヘッダーで渡し、応答に Cookie を付ける
@@ -12,6 +15,6 @@ export function proxy(request: NextRequest) {
   const response = NextResponse.next({ request: { headers } });
   response.cookies.set("seen", "1");
   return response;
-}
+};
 
 export const config = { matcher: ["/admin/:path*", "/api/:path*"] };

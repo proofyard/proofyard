@@ -1,13 +1,13 @@
-import { ThemeProvider } from "./theme";
 import ServerContent from "./server-content";
+import { ThemeProvider } from "./theme";
 
 // SC(Page) -> CC(ThemeProvider) -> SC(ServerContent) -> CC(Card)
-export default function Page() {
-  return (
-    <main>
-      <ThemeProvider>
-        <ServerContent />
-      </ThemeProvider>
-    </main>
-  );
-}
+const Page = () => (
+  <main>
+    <ThemeProvider>
+      <ServerContent />
+    </ThemeProvider>
+  </main>
+);
+
+export default Page;

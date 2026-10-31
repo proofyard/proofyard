@@ -1,6 +1,7 @@
 import { draftMode } from "next/headers";
 
-export default async function Draft() {
+const Draft = async () => {
   const { isEnabled } = await draftMode();
   return <h1>Draft {isEnabled ? "on" : "off"}</h1>;
-}
+};
+export default Draft;

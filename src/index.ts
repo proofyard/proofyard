@@ -1,19 +1,33 @@
 // Proofyard の公開 API
-import type { NextHarness, PrerenderRouteResult, RequestRouteOptions } from "./next/preload";
+import type {
+  NextHarness,
+  PrerenderRouteResult,
+  RequestRouteOptions,
+} from "./next/preload";
 
-export type { PrerenderRouteResult, RequestRouteOptions };
+export type { PrerenderRouteResult, RequestRouteOptions } from "./next/preload";
 
-function harness(): NextHarness {
-  const h = (globalThis as any)[Symbol.for("proofyard.next")] as NextHarness | undefined;
-  if (!h) throw new Error('[proofyard] the Next.js preload is not loaded. Add `preload = ["proofyard/preload"]` to bunfig.toml');
+const harness = (): NextHarness => {
+  const h = (globalThis as unknown as Record<symbol, unknown>)[
+    Symbol.for("proofyard.next")
+  ] as NextHarness | undefined;
+  if (!h) {
+    throw new Error(
+      '[proofyard] the Next.js preload is not loaded. Add `preload = ["proofyard/preload"]` to bunfig.toml'
+    );
+  }
   return h;
-}
+};
 
 // URL へのリクエストを Next.js 本体のリクエスト処理に通し、HTTP の応答を返す（仕様 18.1 requestRoute）
-export const requestRoute = (url: string, options?: RequestRouteOptions): Promise<Response> => harness().requestRoute(url, options);
+export const requestRoute = (
+  url: string,
+  options?: RequestRouteOptions
+): Promise<Response> => harness().requestRoute(url, options);
 
 // next build と同じ prerender で、Partial Prerendering の静的シェルを作る（仕様 12 章。cacheComponents が必要）
-export const prerenderRoute = (url: string): Promise<PrerenderRouteResult> => harness().prerenderRoute(url);
+export const prerenderRoute = (url: string): Promise<PrerenderRouteResult> =>
+  harness().prerenderRoute(url);
 
 // このテストで無効化されたキャッシュタグ（revalidateTag / updateTag / revalidatePath）
 export const getInvalidatedTags = (): string[] => harness().invalidatedTags();
@@ -23,7 +37,17 @@ export const flushAfter = (): Promise<void> => harness().flushAfter();
 
 // Server Components を RSC Mode で描画する（仕様 4.1 / 18.2）
 export { renderRSC } from "./testing/render-rsc";
-export type { ClientReference, ServerReference, RenderRSCResult, WaitOptions, RSCClientElement, RSCElement, RSCHostElement, RSCNode, TextMatcher } from "./testing/render-rsc";
+export type {
+  ClientReference,
+  ServerReference,
+  RenderRSCResult,
+  WaitOptions,
+  RSCClientElement,
+  RSCElement,
+  RSCHostElement,
+  RSCNode,
+  TextMatcher,
+} from "./testing/render-rsc";
 
 // SSR Mode / Client Mode（仕様 4.2 / 4.3 / 14）
 export { render } from "./testing/render";
@@ -31,21 +55,33 @@ export type { RenderOptions, RenderResult } from "./testing/render";
 export type { ActionCall } from "./testing/actions";
 
 // ルートを HTML にし、Client Mode では Next.js 本体のクライアントでハイドレーションする（仕様 18.3 / 18.4）
+// oxlint-disable-next-line import/first -- モジュールの評価順（render-rsc → render → render-route）を変えないためここに置く
 import { renderRoute } from "./testing/render-route";
-export { renderRoute };
-export type { RenderRouteOptions, RenderRouteResult, RouteMetadata, RouteRouter } from "./testing/render-route";
+
+export { renderRoute } from "./testing/render-route";
+export type {
+  RenderRouteOptions,
+  RenderRouteResult,
+  RouteMetadata,
+  RouteRouter,
+} from "./testing/render-route";
 
 // テストのコンテキスト（仕様 11.5 / 18.1。提案 API）。アプリのキャッシュ（Cache Components、タグ）は、作らなくてもテストごとに分離している。
 // これは同じテストの中の呼び出しをまとめるだけ（同じテストのコンテキストはキャッシュを共有する）
-export type TestContextOptions = { cache?: "isolated" };
-export function createTestContext(options: TestContextOptions = {}) {
-  if (options.cache !== undefined && options.cache !== "isolated")
-    throw new Error(`[proofyard] Unsupported: createTestContext({ cache: ${JSON.stringify(options.cache)} }). Only "isolated" (per test) is supported`);
+export interface TestContextOptions {
+  cache?: "isolated";
+}
+export const createTestContext = (options: TestContextOptions = {}) => {
+  if (options.cache !== undefined && options.cache !== "isolated") {
+    throw new Error(
+      `[proofyard] Unsupported: createTestContext({ cache: ${JSON.stringify(options.cache)} }). Only "isolated" (per test) is supported`
+    );
+  }
   return {
+    cache: { getInvalidatedTags },
+    flushAfter,
+    prerenderRoute,
     renderRoute,
     requestRoute,
-    prerenderRoute,
-    flushAfter,
-    cache: { getInvalidatedTags },
   };
-}
+};

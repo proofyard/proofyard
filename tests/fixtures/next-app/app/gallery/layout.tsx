@@ -1,8 +1,13 @@
-export default function GalleryLayout({ children, modal }: { children: React.ReactNode; modal: React.ReactNode }) {
-  return (
-    <>
-      {children}
-      {modal}
-    </>
-  );
-}
+const GalleryLayout = ({
+  children,
+  modal,
+}: {
+  children: React.ReactNode;
+  modal: React.ReactNode;
+}) => (
+  <>
+    {children}
+    {modal}
+  </>
+);
+export default GalleryLayout;

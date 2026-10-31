@@ -1,5 +1,7 @@
 "use client";
 
-export default function DashboardError({ error }: { error: Error }) {
-  return <p role="alert">dashboard error: {error.message}</p>;
-}
+const DashboardError = ({ error }: { error: Error }) => (
+  <p role="alert">dashboard error: {error.message}</p>
+);
+
+export default DashboardError;

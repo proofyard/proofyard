@@ -1,22 +1,31 @@
+/* oxlint-disable typescript/no-non-null-assertion -- テストでは値があることを前提にし、なければそこで失敗させる */
 // Phase 7 / 仕様 16 章: Metadata、after()、Dynamic Imports など（どれも Next.js 本体の処理をそのまま通す）
 import { beforeEach, expect, test } from "bun:test";
-import { flushAfter, renderRoute, requestRoute } from "proofyard";
-import { db } from "../fixtures/next-app/components/users/db";
-import { createStyleLoader } from "../../src/next/css";
 import { mkdtempDisposableSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
+
+import { flushAfter, renderRoute, requestRoute } from "proofyard";
+
+import { createStyleLoader } from "../../src/next/css";
+import { db } from "../fixtures/next-app/components/users/db";
 // @ts-expect-error 型のない偽物のパッケージ
-import { listEntries, resetEntries } from "../fixtures/next-app/node_modules/fake-actions";
+import {
+  listEntries,
+  resetEntries,
+} from "../fixtures/next-app/node_modules/fake-actions";
 
 beforeEach(() => {
   db.afterLog = [];
 });
 
 test("Metadata: layout の title.template と generateMetadata", async () => {
-  const html = await (await requestRoute("/meta/hello")).text();
+  const res = await requestRoute("/meta/hello");
+  const html = await res.text();
   expect(html).toContain("<title>Post hello | Fixture</title>");
-  expect(html).toContain('<meta name="description" content="Proofyard fixture"/>');
+  expect(html).toContain(
+    '<meta name="description" content="Proofyard fixture"/>'
+  );
   expect(html).toContain('<meta property="og:title" content="OG hello"/>');
 });
 
@@ -36,13 +45,18 @@ test("Metadata: 遷移すると metadata が変わり、前のページのもの
   expect(app.metadata.title).toBe("Post b | Fixture");
   expect(app.metadata.get("og:title")).toBe("OG b");
   expect(document.head.querySelectorAll("title")).toHaveLength(1);
-  expect(document.head.querySelectorAll('meta[property="og:title"]')).toHaveLength(1);
+  expect(
+    document.head.querySelectorAll('meta[property="og:title"]')
+  ).toHaveLength(1);
 });
 
 test("Metadata: generateViewport と icon.svg", async () => {
-  const html = await (await requestRoute("/meta/hello")).text();
+  const res = await requestRoute("/meta/hello");
+  const html = await res.text();
   expect(html).toContain('<meta name="theme-color" content="#123456"/>');
-  expect(html).toMatch(/<link rel="icon" href="\/icon\.svg\?[0-9a-f]+" type="image\/svg\+xml" sizes="any"\/>/);
+  expect(html).toMatch(
+    /<link rel="icon" href="\/icon\.svg\?[0-9a-f]+" type="image\/svg\+xml" sizes="any"\/>/u
+  );
   const icon = await requestRoute("/icon.svg");
   expect(icon.headers.get("content-type")).toBe("image/svg+xml");
 });
@@ -50,21 +64,28 @@ test("Metadata: generateViewport と icon.svg", async () => {
 test("Metadata のルート: sitemap.ts と robots.ts", async () => {
   const sitemap = await requestRoute("/sitemap.xml");
   expect(sitemap.headers.get("content-type")).toBe("application/xml");
-  expect(await sitemap.text()).toContain("<loc>https://example.com/users</loc>");
+  expect(await sitemap.text()).toContain(
+    "<loc>https://example.com/users</loc>"
+  );
   const robots = await requestRoute("/robots.txt");
   expect(await robots.text()).toBe("User-Agent: *\nDisallow: /admin\n\n");
 });
 
 test("Metadata: opengraph-image.tsx（next/og の ImageResponse）", async () => {
-  const html = await (await requestRoute("/og")).text();
+  const res = await requestRoute("/og");
+  const html = await res.text();
   expect(html).toContain('<meta property="og:image:width" content="120"/>');
   expect(html).toContain('<meta property="og:image:alt" content="OG image"/>');
-  const path = html.match(/<meta property="og:image" content="http:\/\/localhost:3000([^"]+)"/)![1]!;
-  const image = await requestRoute(path);
+  const imagePath = html.match(
+    /<meta property="og:image" content="http:\/\/localhost:3000(?<path>[^"]+)"/u
+  )![1]!;
+  const image = await requestRoute(imagePath);
   expect(image.status).toBe(200);
   expect(image.headers.get("content-type")).toBe("image/png");
   // PNG のシグネチャ
-  expect([...new Uint8Array(await image.arrayBuffer()).slice(1, 4)]).toEqual([0x50, 0x4e, 0x47]);
+  expect([...new Uint8Array(await image.arrayBuffer()).slice(1, 4)]).toEqual([
+    0x50, 0x4e, 0x47,
+  ]);
 });
 
 test("after(): 応答を返したあとに動く", async () => {
@@ -83,7 +104,7 @@ test("after(): renderRoute の lifecycle.flushAfter と、後から終わる処�
 test("Dynamic Imports: next/dynamic（ssr: false）と import()", async () => {
   const app = await renderRoute("/lazy", { mode: "ssr" });
   // SSR では ssr: false のものは描画されない
-  expect(app.queryByText(/Chart ready/)).toBeNull();
+  expect(app.queryByText(/Chart ready/u)).toBeNull();
   const client = await renderRoute("/lazy");
   await client.findByText("Chart ready (object)");
   await client.user.click(client.getByRole("button", { name: "Open notes" }));
@@ -108,7 +129,13 @@ test("Concurrent Rendering: useDeferredValue と startTransition の中の route
   db.gate = null;
   const app = await renderRoute("/concurrent");
   await app.user.type(app.getByRole("textbox", { name: "Filter" }), "a");
-  await app.waitFor(() => expect(app.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Alice", "Carol", "Dave"]));
+  await app.waitFor(() =>
+    expect(app.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Alice",
+      "Carol",
+      "Dave",
+    ])
+  );
   await app.user.click(app.getByRole("button", { name: "Go slow" }));
   await app.findByRole("heading", { name: "Slow page" });
   expect(location.pathname).toBe("/slow");
@@ -117,15 +144,22 @@ test("Concurrent Rendering: useDeferredValue と startTransition の中の route
 test("環境変数（.env）、server-only、next/image", async () => {
   const app = await renderRoute("/compat");
   // サーバーは .env の値（テストでは Next.js と同じく .env.local を読まない）。NEXT_PUBLIC_* はブラウザのバンドルに埋め込まれる
-  expect(app.getByText(/Server secret/).textContent).toBe("Server secret: from-dotenv");
-  expect(app.getByText(/Client label/).textContent).toBe("Client label: Fixture site");
-  expect(app.getByRole("img", { name: "Logo" }).getAttribute("src")).toBe("/logo.svg");
+  expect(app.getByText(/Server secret/u).textContent).toBe(
+    "Server secret: from-dotenv"
+  );
+  expect(app.getByText(/Client label/u).textContent).toBe(
+    "Client label: Fixture site"
+  );
+  expect(app.getByRole("img", { name: "Logo" }).getAttribute("src")).toBe(
+    "/logo.svg"
+  );
   expect(app.errors).toEqual([]);
 });
 
 test("useSyncExternalStore と client-only（Client Component から）", async () => {
   // サーバーは getServerSnapshot の値。ハイドレーションの後にクライアントの値になる
-  expect(await (await requestRoute("/compat")).text()).toContain("<button>server</button>");
+  const res = await requestRoute("/compat");
+  expect(await res.text()).toContain("<button>server</button>");
   const app = await renderRoute("/compat");
   await app.user.click(await app.findByRole("button", { name: "clicks 0" }));
   await app.findByRole("button", { name: "clicks 1" });
@@ -133,79 +167,122 @@ test("useSyncExternalStore と client-only（Client Component から）", async 
 });
 
 test("next/image の画像の最適化（/_next/image）", async () => {
-  const res = await requestRoute("/_next/image?url=%2Fdot.png&w=32&q=75", { headers: { accept: "image/webp" } });
+  const res = await requestRoute("/_next/image?url=%2Fdot.png&w=32&q=75", {
+    headers: { accept: "image/webp" },
+  });
   expect(res.status).toBe(200);
   expect(res.headers.get("content-type")).toBe("image/webp");
 });
 
 test("CSS: CSS Modules のクラス名（別のファイルからの composes、Sass を含む）は next build と同じ（Server / Client Component）。普通の CSS と Sass は読み込むだけ", async () => {
-  const html = await (await requestRoute("/styled")).text();
-  expect(html).toContain('<h1 class="page_title__NlRtp typography_heading__QbXVJ">');
+  const res = await requestRoute("/styled");
+  const html = await res.text();
+  expect(html).toContain(
+    '<h1 class="page_title__NlRtp typography_heading__QbXVJ">'
+  );
   const app = await renderRoute("/styled");
-  expect(app.getByRole("heading").className).toBe("page_title__NlRtp typography_heading__QbXVJ");
-  expect(app.getByRole("button", { name: "Styled" }).className).toBe("styled-button_button__wkz7j typography_heading__QbXVJ typography_label__g9Nhv");
+  expect(app.getByRole("heading").className).toBe(
+    "page_title__NlRtp typography_heading__QbXVJ"
+  );
+  expect(app.getByRole("button", { name: "Styled" }).className).toBe(
+    "styled-button_button__wkz7j typography_heading__QbXVJ typography_label__g9Nhv"
+  );
   // .module.scss（変数、入れ子、.module.css からの composes）
-  expect(app.getByText("Note").className).toBe("note_note__sgNv2 typography_label__g9Nhv");
+  expect(app.getByText("Note").className).toBe(
+    "note_note__sgNv2 typography_label__g9Nhv"
+  );
   expect(app.getByText("here").className).toBe("note_emphasis__vAEyq");
   expect(app.errors).toEqual([]);
 });
 
 test("CSS: CSS Modules でないファイルからの composes は Fail Closed", async () => {
-  using tmp = mkdtempDisposableSync(join(tmpdir(), "proofyard-composes-"));
+  using tmp = mkdtempDisposableSync(path.join(tmpdir(), "proofyard-composes-"));
   const dir = tmp.path;
-  writeFileSync(join(dir, "global.css"), ".base { color: red; }\n");
-  writeFileSync(join(dir, "button.module.css"), '.button { composes: base from "./global.css"; }\n');
-  const config = await require("next/dist/server/config").default("phase-production-build", dir);
+  writeFileSync(path.join(dir, "global.css"), ".base { color: red; }\n");
+  writeFileSync(
+    path.join(dir, "button.module.css"),
+    '.button { composes: base from "./global.css"; }\n'
+  );
+  // oxlint-disable-next-line node/global-require, unicorn/prefer-module -- CommonJS の default（exports.default）をそのまま読む
+  const config = await require("next/dist/server/config").default(
+    "phase-production-build",
+    dir
+  );
   const { style } = createStyleLoader(dir, config);
-  await expect(style(join(dir, "button.module.css"))).rejects.toThrow(`[proofyard] Unsupported: composes from ${join(dir, "global.css")}`);
+  await expect(style(path.join(dir, "button.module.css"))).rejects.toThrow(
+    `[proofyard] Unsupported: composes from ${path.join(dir, "global.css")}`
+  );
 });
 
 test("next/font/local: クラス名とフォント名は Next.js のローダーが作る", async () => {
   const app = await renderRoute("/fonts");
   const text = app.getByText("Branded");
-  expect(text.className).toMatch(/^__className_[0-9a-f]{6} __variable_[0-9a-f]{6}$/);
+  expect(text.className).toMatch(
+    /^__className_[0-9a-f]{6} __variable_[0-9a-f]{6}$/u
+  );
   expect(text.dataset.family).toBe("'brand'");
   expect(app.errors).toEqual([]);
 });
 
 test("next/font/local: preload は Link ヘッダーで、フォントのファイルは /_next/static/media で返る", async () => {
   const response = await requestRoute("/fonts");
-  const [, href] = response.headers.get("link")!.match(/<(\/_next\/static\/media\/[0-9a-f]+\.p\.woff2)>; rel=preload; as="font"/)!;
+  const [, href] = response.headers
+    .get("link")!
+    .match(
+      /<(?<href>\/_next\/static\/media\/[0-9a-f]+\.p\.woff2)>; rel=preload; as="font"/u
+    )!;
   const font = await requestRoute(href!);
   expect(font.status).toBe(200);
   expect(font.headers.get("content-type")).toBe("font/woff2");
-  expect(Buffer.from(await font.arrayBuffer()).equals(readFileSync(join(import.meta.dir, "../fixtures/next-app/app/fonts/brand.woff2")))).toBe(true);
+  expect(
+    Buffer.from(await font.arrayBuffer()).equals(
+      readFileSync(
+        path.join(import.meta.dir, "../fixtures/next-app/app/fonts/brand.woff2")
+      )
+    )
+  ).toBe(true);
   // フォントを使わないページにはない
-  expect((await requestRoute("/styled")).headers.get("link") ?? "").not.toContain('as="font"');
+  const styled = await requestRoute("/styled");
+  expect(styled.headers.get("link") ?? "").not.toContain('as="font"');
 });
 
-test("サードパーティの \"use client\"（パッケージの奥のファイル、別のパッケージ）は Client Reference になる", async () => {
+test('サードパーティの "use client"（パッケージの奥のファイル、別のパッケージ）は Client Reference になる', async () => {
   const app = await renderRoute("/third-party");
   // サーバーで実行されていれば、react-server の React に useState がなく失敗する
   await app.user.click(app.getByRole("button", { name: "CLICKS: 0" }));
   await app.findByRole("button", { name: "CLICKS: 1" });
-  await app.waitFor(() => expect(app.getByText("tip").dataset.mounted).toBe("true"));
+  await app.waitFor(() =>
+    expect(app.getByText("tip").dataset.mounted).toBe("true")
+  );
   expect(app.errors).toEqual([]);
 });
 
 test('サードパーティの CommonJS の "use client"（Next.js と同じく createClientModuleProxy。default、名前付き、module.exports そのもの）', async () => {
-  const html = await (await requestRoute("/third-party/cjs")).text();
-  expect(html).toContain("<span data-badge=\"\">cjs</span>");
+  const res = await requestRoute("/third-party/cjs");
+  const html = await res.text();
+  expect(html).toContain('<span data-badge="">cjs</span>');
   expect(html).toContain("Power: off");
   const app = await renderRoute("/third-party/cjs");
   await app.user.click(app.getByRole("button", { name: "Power: off" }));
   await app.findByRole("button", { name: "Power: on" });
-  await app.waitFor(() => expect(app.getByText("hello from cjs").dataset.mounted).toBe("true"));
+  await app.waitFor(() =>
+    expect(app.getByText("hello from cjs").dataset.mounted).toBe("true")
+  );
   expect(app.errors).toEqual([]);
 });
 
 test('サードパーティの "use server"：Server Component のフォーム（JS なし・あり）と Client Component から呼ぶ', async () => {
   await resetEntries();
-  const html = await (await requestRoute("/third-party/actions")).text();
+  const res = await requestRoute("/third-party/actions");
+  const html = await res.text();
   const body = new FormData();
-  body.set(html.match(/name="(\$ACTION_ID_[0-9a-f]+)"/)![1]!, "");
+  body.set(html.match(/name="(?<id>\$ACTION_ID_[0-9a-f]+)"/u)![1]!, "");
   body.set("entry", "no-js");
-  expect((await requestRoute("/third-party/actions", { method: "POST", body })).status).toBe(200);
+  const posted = await requestRoute("/third-party/actions", {
+    body,
+    method: "POST",
+  });
+  expect(posted.status).toBe(200);
   expect(await listEntries()).toEqual(["no-js"]);
 
   const app = await renderRoute("/third-party/actions");
@@ -218,15 +295,24 @@ test('サードパーティの "use server"：Server Component のフォーム�
 });
 
 test("サードパーティの exports の react-server の条件は、Next.js の rsc 層と同じく react-server のファイル", async () => {
-  const html = await (await requestRoute("/third-party/server")).text();
+  const res = await requestRoute("/third-party/server");
+  const html = await res.text();
   expect(html).toContain("server build<!-- --> (<!-- -->react-server<!-- -->)");
 });
 
 test("next/* を直接 import するサードパーティのパッケージ（サーバー: next/headers・notFound、クライアント: next/navigation の hooks）", async () => {
-  const html = await (await requestRoute("/third-party/next?q=x", { cookies: { locale: "ja" } })).text();
+  const res = await requestRoute("/third-party/next?q=x", {
+    cookies: { locale: "ja" },
+  });
+  const html = await res.text();
   expect(html).toContain("locale <!-- -->ja");
   expect(html).toContain("path /third-party/next q x");
-  expect((await requestRoute("/third-party/next", { cookies: { locale: "fr" } })).status).toBe(404);
-  const app = await renderRoute("/third-party/next?q=y", { cookies: { locale: "en" } });
+  const fr = await requestRoute("/third-party/next", {
+    cookies: { locale: "fr" },
+  });
+  expect(fr.status).toBe(404);
+  const app = await renderRoute("/third-party/next?q=y", {
+    cookies: { locale: "en" },
+  });
   expect(app.getByText("path /third-party/next q y")).toBeTruthy();
 });

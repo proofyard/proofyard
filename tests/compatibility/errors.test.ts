@@ -1,18 +1,32 @@
 // 仕様 24.1: エラー、notFound()、redirect() を本物の Next.js と比べる（tests/poc/poc5/fixture-app。bun run compat:errors）
+/* oxlint-disable no-loop-func -- reference は beforeAll で代入し、テストの中で読む */
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { join } from "node:path";
-import { requestRoute } from "proofyard";
-import { comparableFlight, comparableHtml, comparableModule, referenceModulePaths, startReference, type Reference } from "./reference";
+import nodePath from "node:path";
 
-const fixture = join(import.meta.dir, "../poc/poc5/fixture-app");
+import { requestRoute } from "proofyard";
+
+import {
+  comparableFlight,
+  comparableHtml,
+  comparableModule,
+  referenceModulePaths,
+  startReference,
+} from "./reference";
+import type { Reference } from "./reference";
+
+const fixture = nodePath.join(import.meta.dir, "../poc/poc5/fixture-app");
 let reference: Reference;
 beforeAll(async () => {
   reference = await startReference(fixture);
 }, 300_000);
 afterAll(() => reference?.stop());
 
-const cases: { path: string; cookies?: Record<string, string>; prerendered?: boolean }[] = [
-  { path: "/dashboard/users/1?tab=likes", cookies: { theme: "dark" } },
+const cases: {
+  path: string;
+  cookies?: Record<string, string>;
+  prerendered?: boolean;
+}[] = [
+  { cookies: { theme: "dark" }, path: "/dashboard/users/1?tab=likes" },
   // error.tsx（Error Boundary）
   { path: "/dashboard/users/boom" },
   // not-found.tsx
@@ -26,25 +40,54 @@ const cases: { path: string; cookies?: Record<string, string>; prerendered?: boo
 // dashboard のレイアウトは User-Agent を表示する（fetch は自動で付ける）
 const userAgent = "proofyard-compat";
 for (const { path, cookies, prerendered } of cases) {
-  const cookie = cookies && Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join("; ");
+  const cookie =
+    cookies &&
+    Object.entries(cookies)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("; ");
   test(`requestRoute ${path} は next start と同じ`, async () => {
-    const ours = await requestRoute(path, { cookies, headers: { "user-agent": userAgent } });
-    const real = await fetch(reference.url + path, { redirect: "manual", headers: { "user-agent": userAgent, ...(cookie && { cookie }) } });
+    const ours = await requestRoute(path, {
+      cookies,
+      headers: { "user-agent": userAgent },
+    });
+    const real = await fetch(reference.url + path, {
+      headers: { "user-agent": userAgent, ...(cookie && { cookie }) },
+      redirect: "manual",
+    });
     expect(ours.status).toBe(real.status);
     expect(ours.headers.get("location")).toBe(real.headers.get("location"));
-    expect(comparableHtml(await ours.text())).toBe(comparableHtml(await real.text()));
+    expect(comparableHtml(await ours.text())).toBe(
+      comparableHtml(await real.text())
+    );
   });
-  if (!prerendered)
+  if (!prerendered) {
     test(`RSC ${path} は next start と同じ Flight`, async () => {
       const url = `${path}${path.includes("?") ? "&" : "?"}_rsc=`;
-      const ours = await requestRoute(url, { cookies, headers: { rsc: "1", "user-agent": userAgent } });
-      const real = await fetch(reference.url + url, { redirect: "manual", headers: { rsc: "1", "user-agent": userAgent, ...(cookie && { cookie }) } });
+      const ours = await requestRoute(url, {
+        cookies,
+        headers: { rsc: "1", "user-agent": userAgent },
+      });
+      const real = await fetch(reference.url + url, {
+        headers: {
+          rsc: "1",
+          "user-agent": userAgent,
+          ...(cookie && { cookie }),
+        },
+        redirect: "manual",
+      });
       expect(real.headers.get("x-nextjs-prerender")).toBeNull();
       expect(ours.status).toBe(real.status);
       const paths = referenceModulePaths(reference);
       const dirs = [fixture, reference.dir];
-      expect(await comparableFlight(await ours.text(), (id) => comparableModule(id, dirs))).toEqual(
-        await comparableFlight(await real.text(), (id) => comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)),
+      expect(
+        await comparableFlight(await ours.text(), (id) =>
+          comparableModule(id, dirs)
+        )
+      ).toEqual(
+        await comparableFlight(await real.text(), (id) =>
+          comparableModule(paths.get(id) ?? `unknown module ${id}`, dirs)
+        )
       );
     });
+  }
 }

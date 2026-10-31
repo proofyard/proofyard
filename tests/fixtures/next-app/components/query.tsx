@@ -1,18 +1,33 @@
 "use client";
-import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useState } from "react";
 
-export function QueryProvider({ children }: { children: React.ReactNode }) {
+export const QueryProvider = ({ children }: { children: React.ReactNode }) => {
   // TanStack Query の App Router の例と同じく、ブラウザではレンダーごとに作り直さない
-  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { staleTime: 60_000 } } }));
+  // oxlint-disable-next-line react/hook-use-state -- setter は使わない（TanStack Query の例と同じく一度だけ作る）
+  const [client] = useState(
+    () =>
+      new QueryClient({ defaultOptions: { queries: { staleTime: 60_000 } } })
+  );
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-}
+};
 
-export function Todos() {
+export const Todos = () => {
   const client = useQueryClient();
-  const { data } = useQuery({ queryKey: ["todos"], queryFn: () => fetch("/api/todos").then((r) => r.json() as Promise<string[]>) });
+  const { data } = useQuery({
+    queryFn: () =>
+      fetch("/api/todos").then((r) => r.json() as Promise<string[]>),
+    queryKey: ["todos"],
+  });
   const add = useMutation({
-    mutationFn: (title: string) => fetch("/api/todos", { method: "POST", body: title }),
+    mutationFn: (title: string) =>
+      fetch("/api/todos", { body: title, method: "POST" }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["todos"] }),
   });
   return (
@@ -22,7 +37,9 @@ export function Todos() {
           <li key={todo}>{todo}</li>
         ))}
       </ul>
-      <button onClick={() => add.mutate("Ship it")}>Add todo</button>
+      <button type="button" onClick={() => add.mutate("Ship it")}>
+        Add todo
+      </button>
     </>
   );
-}
+};

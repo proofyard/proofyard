@@ -1,11 +1,14 @@
 import { headers } from "next/headers";
 
-export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const ua = (await headers()).get("user-agent");
+const DashboardLayout = async ({ children }: { children: React.ReactNode }) => {
+  const requestHeaders = await headers();
+  const ua = requestHeaders.get("user-agent");
   return (
     <section>
       <nav>dashboard nav ({ua})</nav>
       {children}
     </section>
   );
-}
+};
+
+export default DashboardLayout;

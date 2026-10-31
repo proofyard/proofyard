@@ -1,4 +1,3 @@
 // 本物ならデータベースから読む
-export async function getItems(): Promise<string[]> {
-  return Array.from({ length: 5 }, (_, i) => `Item ${i + 1}`);
-}
+export const getItems = (): Promise<string[]> =>
+  Promise.resolve(Array.from({ length: 5 }, (_, i) => `Item ${i + 1}`));

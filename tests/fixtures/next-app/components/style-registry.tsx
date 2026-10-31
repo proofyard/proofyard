@@ -4,12 +4,16 @@
 import { useServerInsertedHTML } from "next/navigation";
 import { useRef } from "react";
 
-export function StyleRegistry({ children }: { children: React.ReactNode }) {
+export const StyleRegistry = ({ children }: { children: React.ReactNode }) => {
   const inserted = useRef(false);
   useServerInsertedHTML(() => {
-    if (inserted.current) return null;
+    if (inserted.current) {
+      return null;
+    }
     inserted.current = true;
-    return <style id="inserted-style">{".inserted { color: rebeccapurple; }"}</style>;
+    return (
+      <style id="inserted-style">{".inserted { color: rebeccapurple; }"}</style>
+    );
   });
-  return <>{children}</>;
-}
+  return children;
+};

@@ -1,4 +1,3 @@
 "use client";
-export default function Notes() {
-  return <p>Notes loaded</p>;
-}
+const Notes = () => <p>Notes loaded</p>;
+export default Notes;

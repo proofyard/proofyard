@@ -1,3 +1,1 @@
-export async function getUser() {
-  return { name: "Alice" };
-}
+export const getUser = () => Promise.resolve({ name: "Alice" });

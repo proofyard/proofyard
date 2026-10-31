@@ -1,1 +1,4 @@
-.title { composes: heading from "../../components/typography.module.css"; color: red; }
+.title {
+  composes: heading from "../../components/typography.module.css";
+  color: red;
+}

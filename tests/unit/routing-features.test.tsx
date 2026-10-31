@@ -1,6 +1,8 @@
 // ルーティングとキャッシュ、next/* のコンポーネントの機能（どれも Next.js 本体の処理をそのまま通す。tests/compatibility で next start と比べている）
 import { beforeEach, expect, test } from "bun:test";
+
 import { renderRoute, requestRoute } from "proofyard";
+
 import { db } from "../fixtures/next-app/components/users/db";
 
 beforeEach(() => {
@@ -21,8 +23,11 @@ test("catch-all [...slug] と optional catch-all [[...path]]", async () => {
 
 test("Route Groups: (group) は URL に入らず、layout は効く", async () => {
   const app = await renderRoute("/grouped", { mode: "ssr" });
-  expect(app.getByText("Grouped page").closest("[data-group]")?.getAttribute("data-group")).toBe("marketing");
-  expect((await requestRoute("/group/grouped")).status).toBe(404);
+  expect(
+    app.getByText("Grouped page").closest("[data-group]")?.dataset.group
+  ).toBe("marketing");
+  const res = await requestRoute("/group/grouped");
+  expect(res.status).toBe(404);
 });
 
 test("permanentRedirect() は 308", async () => {
@@ -34,7 +39,8 @@ test("permanentRedirect() は 308", async () => {
 });
 
 test("unstable_rethrow(): try / catch の中の notFound() を投げ直す", async () => {
-  expect(await (await requestRoute("/rethrow")).text()).toContain("<h1>Found</h1>");
+  const found = await requestRoute("/rethrow");
+  expect(await found.text()).toContain("<h1>Found</h1>");
   const missing = await requestRoute("/rethrow?missing=1");
   expect(missing.status).toBe(404);
   expect(await missing.text()).not.toContain("Swallowed");
@@ -45,19 +51,23 @@ test("unstable_noStore(): リクエストのたびに描画する", async () => 
   expect(first.headers.get("cache-control")).toContain("no-store");
   expect(await first.text()).toContain("Users <!-- -->1");
   db.users.push("Bob");
-  expect(await (await requestRoute("/no-store")).text()).toContain("Users <!-- -->2");
+  const second = await requestRoute("/no-store");
+  expect(await second.text()).toContain("Users <!-- -->2");
 });
 
 test("unstable_cache: 同じキーの結果を使い回す", async () => {
-  expect(await (await requestRoute("/cached")).text()).toContain("Cached users <!-- -->1");
+  const first = await requestRoute("/cached");
+  expect(await first.text()).toContain("Cached users <!-- -->1");
   db.users.push("Bob");
-  expect(await (await requestRoute("/cached")).text()).toContain("Cached users <!-- -->1");
+  const second = await requestRoute("/cached");
+  expect(await second.text()).toContain("Cached users <!-- -->1");
   expect(db.cacheCalls).toBe(1);
 });
 
 test("unstable_cache のキャッシュはテストごとに分かれる", async () => {
   db.users.push("Bob");
-  expect(await (await requestRoute("/cached")).text()).toContain("Cached users <!-- -->2");
+  const res = await requestRoute("/cached");
+  expect(await res.text()).toContain("Cached users <!-- -->2");
   expect(db.cacheCalls).toBe(1);
 });
 
@@ -70,10 +80,17 @@ test("Server Action の updateTag で、同じ応答に新しい値が出る", a
 });
 
 test("draftMode(): Route Handler の enable() のクッキーで有効になる", async () => {
-  expect((await renderRoute("/draft", { mode: "ssr" })).getByRole("heading").textContent).toBe("Draft off");
+  const off = await renderRoute("/draft", { mode: "ssr" });
+  expect(off.getByRole("heading").textContent).toBe("Draft off");
   const res = await requestRoute("/api/draft");
-  const cookie = Bun.Cookie.parse(res.headers.getSetCookie().find((c) => c.startsWith("__prerender_bypass="))!);
-  const app = await renderRoute("/draft", { mode: "ssr", cookies: { [cookie.name]: cookie.value } });
+  const cookie = Bun.Cookie.parse(
+    // oxlint-disable-next-line typescript/no-non-null-assertion -- クッキーがなければここで失敗させる
+    res.headers.getSetCookie().find((c) => c.startsWith("__prerender_bypass="))!
+  );
+  const app = await renderRoute("/draft", {
+    cookies: { [cookie.name]: cookie.value },
+    mode: "ssr",
+  });
   expect(app.getByRole("heading").textContent).toBe("Draft on");
 });
 
@@ -89,19 +106,23 @@ test("next/form: 送信はクエリを付けたクライアントのナビゲー
 test("useLinkStatus: ナビゲーションの間は pending", async () => {
   const app = await renderRoute("/link-status");
   expect(app.getByText("(idle)")).toBeDefined();
+  // oxlint-disable-next-line typescript/no-invalid-void-type -- resolve() を引数なしで呼ぶ
   const gate = Promise.withResolvers<void>();
   db.gate = gate.promise;
-  await app.user.click(app.getByRole("link", { name: /Open target/ }));
+  await app.user.click(app.getByRole("link", { name: /Open target/u }));
   await app.findByText("(loading)");
   gate.resolve();
   await app.findByRole("heading", { name: "Target page" });
 });
 
 test("useServerInsertedHTML: SSR の HTML に <style> を差し込む", async () => {
-  const html = await (await requestRoute("/inserted")).text();
-  expect(html.match(/<style id="inserted-style">/g)).toHaveLength(1);
+  const res = await requestRoute("/inserted");
+  const html = await res.text();
+  expect(html.match(/<style id="inserted-style">/gu)).toHaveLength(1);
   const app = await renderRoute("/inserted");
-  expect(document.getElementById("inserted-style")?.textContent).toBe(".inserted { color: rebeccapurple; }");
+  expect(document.querySelector("#inserted-style")?.textContent).toBe(
+    ".inserted { color: rebeccapurple; }"
+  );
   expect(app.getByRole("heading", { name: "Inserted styles" })).toBeDefined();
 });
 
@@ -114,20 +135,33 @@ test("next/script: afterInteractive と lazyOnload、インラインのスクリ
 
 test("Metadata のルート: manifest.ts と generateSitemaps", async () => {
   const manifest = await requestRoute("/manifest.webmanifest");
-  expect(manifest.headers.get("content-type")).toBe("application/manifest+json");
-  expect((await manifest.json()).short_name).toBe("Fixture");
-  const html = await (await requestRoute("/meta/hello")).text();
+  expect(manifest.headers.get("content-type")).toBe(
+    "application/manifest+json"
+  );
+  const manifestJson = await manifest.json();
+  expect(manifestJson.short_name).toBe("Fixture");
+  const meta = await requestRoute("/meta/hello");
+  const html = await meta.text();
   expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest"/>');
   for (const id of [0, 1]) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- 順にリクエストする
     const sitemap = await requestRoute(`/catalog/sitemap/${id}.xml`);
     expect(sitemap.headers.get("content-type")).toBe("application/xml");
-    expect(await sitemap.text()).toContain(`<loc>https://example.com/catalog/${id}/item</loc>`);
+    // oxlint-disable-next-line eslint/no-await-in-loop -- 順にリクエストする
+    expect(await sitemap.text()).toContain(
+      `<loc>https://example.com/catalog/${id}/item</loc>`
+    );
   }
 });
 
 test("Metadata: generateImageMetadata の複数のアイコン", async () => {
-  const html = await (await requestRoute("/badges")).text();
-  const hrefs = [...html.matchAll(/<link rel="icon" href="(\/badges\/icon\/[^"?]+)[^"]*"[^>]*sizes="(\d+x\d+)"/g)].map((m) => [m[1], m[2]]);
+  const res = await requestRoute("/badges");
+  const html = await res.text();
+  const hrefs = [
+    ...html.matchAll(
+      /<link rel="icon" href="(?<href>\/badges\/icon\/[^"?]+)[^"]*"[^>]*sizes="(?<sizes>\d+x\d+)"/gu
+    ),
+  ].map((m) => [m[1], m[2]]);
   expect(hrefs).toEqual([
     ["/badges/icon/small", "16x16"],
     ["/badges/icon/large", "48x48"],

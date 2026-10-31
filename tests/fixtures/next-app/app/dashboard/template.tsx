@@ -1,10 +1,9 @@
 import { Counter } from "../../components/counter";
 
-export default function DashboardTemplate({ children }: { children: React.ReactNode }) {
-  return (
-    <div>
-      <Counter label="Template clicks" />
-      {children}
-    </div>
-  );
-}
+const DashboardTemplate = ({ children }: { children: React.ReactNode }) => (
+  <div>
+    <Counter label="Template clicks" />
+    {children}
+  </div>
+);
+export default DashboardTemplate;

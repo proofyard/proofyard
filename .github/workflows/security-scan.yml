@@ -8,7 +8,7 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: '41 4 * * 1'
+    - cron: "41 4 * * 1"
   workflow_dispatch:
 
 permissions: {}
@@ -73,4 +73,4 @@ jobs:
           scan-ref: .
           scanners: secret
           format: table
-          exit-code: '1'
+          exit-code: "1"

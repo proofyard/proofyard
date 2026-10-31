@@ -1,11 +1,24 @@
 import { cookies, headers } from "next/headers";
 
-export async function GET(_request: Request, { params }: { params: Promise<{ name: string }> }) {
+export const GET = async (
+  _request: Request,
+  { params }: { params: Promise<{ name: string }> }
+) => {
   const { name } = await params;
-  return Response.json({ name, user: (await headers()).get("x-user"), theme: (await cookies()).get("theme")?.value ?? null });
-}
+  const cookieStore = await cookies();
+  const headerStore = await headers();
+  return Response.json({
+    name,
+    theme: cookieStore.get("theme")?.value ?? null,
+    user: headerStore.get("x-user"),
+  });
+};
 
-export async function POST(request: Request, { params }: { params: Promise<{ name: string }> }) {
+export const POST = async (
+  request: Request,
+  { params }: { params: Promise<{ name: string }> }
+) => {
   const { message } = await request.json();
-  return Response.json({ to: (await params).name, message }, { status: 201 });
-}
+  const { name } = await params;
+  return Response.json({ message, to: name }, { status: 201 });
+};

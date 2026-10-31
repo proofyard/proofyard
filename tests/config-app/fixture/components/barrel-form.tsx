@@ -1,13 +1,15 @@
-import { useState } from "react";
 import { Used } from "fake-barrel";
+import { useState } from "react";
 
 // "use client" はないが Client Component からだけ import される（rsc 層でコンパイルすると useState で失敗する）
-export function BarrelForm() {
+export const BarrelForm = () => {
   const [open, setOpen] = useState(false);
   return (
     <div>
-      <button onClick={() => setOpen(true)}>Open form</button>
+      <button type="button" onClick={() => setOpen(true)}>
+        Open form
+      </button>
       {open && <Used />}
     </div>
   );
-}
+};

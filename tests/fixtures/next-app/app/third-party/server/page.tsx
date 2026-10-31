@@ -1,9 +1,8 @@
 import label, { env } from "fake-server-lib";
 
-export default function Page() {
-  return (
-    <p>
-      {label()} ({env})
-    </p>
-  );
-}
+const Page = () => (
+  <p>
+    {label()} ({env})
+  </p>
+);
+export default Page;

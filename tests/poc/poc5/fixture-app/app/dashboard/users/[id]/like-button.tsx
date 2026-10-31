@@ -1,8 +1,12 @@
 "use client";
-import { useState } from "react";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 
-export function LikeButton({ initial }: { initial: number }) {
+export const LikeButton = ({ initial }: { initial: number }) => {
   const [likes, setLikes] = useState(initial);
-  return <button type="button" onClick={() => setLikes(likes + 1)}>likes: {likes} at {usePathname()}</button>;
-}
+  return (
+    <button type="button" onClick={() => setLikes(likes + 1)}>
+      likes: {likes} at {usePathname()}
+    </button>
+  );
+};

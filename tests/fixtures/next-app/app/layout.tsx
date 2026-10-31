@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 
-export const metadata: Metadata = { title: { template: "%s | Fixture", default: "Fixture" }, description: "Proofyard fixture" };
+export const metadata: Metadata = {
+  description: "Proofyard fixture",
+  title: { default: "Fixture", template: "%s | Fixture" },
+};
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <html lang="en">
-      <body>{children}</body>
-    </html>
-  );
-}
+const RootLayout = ({ children }: { children: React.ReactNode }) => (
+  <html lang="en">
+    <body>{children}</body>
+  </html>
+);
+export default RootLayout;

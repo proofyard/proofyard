@@ -1,3 +1,2 @@
-export default function Badges() {
-  return <h1>Badges</h1>;
-}
+const Badges = () => <h1>Badges</h1>;
+export default Badges;

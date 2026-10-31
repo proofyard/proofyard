@@ -1,3 +1,5 @@
-export default async function Team({ params }: { params: Promise<{ team: string }> }) {
-  return <h1>Team {(await params).team}</h1>;
-}
+const Team = async ({ params }: { params: Promise<{ team: string }> }) => {
+  const { team } = await params;
+  return <h1>Team {team}</h1>;
+};
+export default Team;

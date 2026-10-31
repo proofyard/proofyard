@@ -1,20 +1,29 @@
 "use client";
-import { use, useEffect, useLayoutEffect, useState, type FormEvent } from "react";
+import { use, useEffect, useLayoutEffect, useState } from "react";
+import type { FormEvent } from "react";
 import { createPortal } from "react-dom";
 
 export const effects: string[] = [];
 
-export function Counter({ label }: { label: string }) {
+export const Counter = ({ label }: { label: string }) => {
   const [count, setCount] = useState(0);
-  useLayoutEffect(() => void effects.push(`layout:${count}`), [count]);
+  useLayoutEffect(() => {
+    effects.push(`layout:${count}`);
+  }, [count]);
   useEffect(() => {
     effects.push(`effect:${count}`);
-    return () => void effects.push(`cleanup:${count}`);
+    return () => {
+      effects.push(`cleanup:${count}`);
+    };
   }, [count]);
-  return <button onClick={() => setCount((c) => c + 1)}>{label}: {count}</button>;
-}
+  return (
+    <button type="button" onClick={() => setCount((c) => c + 1)}>
+      {label}: {count}
+    </button>
+  );
+};
 
-export function Greeting() {
+export const Greeting = () => {
   const [name, setName] = useState("");
   const [greeted, setGreeted] = useState<string | null>(null);
   const submit = (e: FormEvent) => {
@@ -30,18 +39,21 @@ export function Greeting() {
       {greeted && <p>Hello, {greeted}</p>}
     </form>
   );
-}
+};
 
-export function Modal({ children }: { children: React.ReactNode }) {
-  return createPortal(<div role="dialog">{children}</div>, document.body);
-}
+export const Modal = ({ children }: { children: React.ReactNode }) =>
+  createPortal(
+    // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- open でない <dialog> はアクセシビリティツリーに出ない
+    <div role="dialog">{children}</div>,
+    document.body
+  );
 
 // Server から渡された Promise を Client で use() する
-export function UserName({ user }: { user: Promise<string> }) {
-  return <span>User: {use(user)}</span>;
-}
+export const UserName = ({ user }: { user: Promise<string> }) => (
+  <span>User: {use(user)}</span>
+);
 
 // SSR と Client で表示が変わる（Hydration Mismatch の検出用）
-export function Phase() {
-  return <i>{(globalThis as any).__phase}</i>;
-}
+export const Phase = () => (
+  <i>{(globalThis as typeof globalThis & { __phase?: string }).__phase}</i>
+);

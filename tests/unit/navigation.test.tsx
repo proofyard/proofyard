@@ -1,6 +1,8 @@
 // Client Navigation（Next.js 本体のクライアントルーター）
 import { beforeEach, expect, test } from "bun:test";
+
 import { renderRoute } from "proofyard";
+
 import { db } from "../fixtures/next-app/components/users/db";
 
 beforeEach(() => {
@@ -34,7 +36,7 @@ test("router.push / back / forward（仕様 18.6）", async () => {
 
 test("router.replace は履歴を増やさない", async () => {
   const app = await renderRoute("/dashboard");
-  const length = history.length;
+  const { length } = history;
   await app.router.replace("/dashboard/settings?tab=profile");
   expect(app.router.pathname).toBe("/dashboard/settings");
   expect(app.router.searchParams.get("tab")).toBe("profile");
@@ -75,6 +77,7 @@ test("Template は遷移で作り直される（Layout は残る）", async () =
 });
 
 test("loading.tsx: 遷移中はローディング、データが届いたらページ", async () => {
+  // oxlint-disable-next-line typescript/no-invalid-void-type -- resolve() を引数なしで呼ぶ
   const gate = Promise.withResolvers<void>();
   db.gate = gate.promise;
   const app = await renderRoute("/dashboard");
@@ -104,6 +107,7 @@ test("Intercepting Routes: 遷移ではモーダル、直接のアクセスで�
 });
 
 test("Streaming Navigation: 遷移先の Suspense は fallback が先に出て、データが届いたら中身", async () => {
+  // oxlint-disable-next-line typescript/no-invalid-void-type -- resolve() を引数なしで呼ぶ
   const gate = Promise.withResolvers<void>();
   db.gate = gate.promise;
   const app = await renderRoute("/dashboard");

@@ -1,3 +1,2 @@
-export default function Catalog() {
-  return <h1>Catalog</h1>;
-}
+const Catalog = () => <h1>Catalog</h1>;
+export default Catalog;

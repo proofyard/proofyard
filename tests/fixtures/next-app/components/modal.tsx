@@ -1,8 +1,15 @@
 "use client";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
+import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-export function Modal({ title, children }: { title: string; children: ReactNode }) {
+export const Modal = ({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) => {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -11,11 +18,12 @@ export function Modal({ title, children }: { title: string; children: ReactNode 
       </button>
       {open &&
         createPortal(
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- <dialog> にすると描画する markup が変わる
           <div role="dialog" aria-label={title}>
             {children}
           </div>,
-          document.body,
+          document.body
         )}
     </>
   );
-}
+};

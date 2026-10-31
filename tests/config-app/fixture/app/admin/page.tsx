@@ -1,7 +1,11 @@
-import { forbidden } from "next/navigation";
 import { cookies } from "next/headers";
+import { forbidden } from "next/navigation";
 
-export default async function Admin() {
-  if ((await cookies()).get("role")?.value !== "admin") forbidden();
+const Admin = async () => {
+  const cookieStore = await cookies();
+  if (cookieStore.get("role")?.value !== "admin") {
+    forbidden();
+  }
   return <h1>Admin area</h1>;
-}
+};
+export default Admin;

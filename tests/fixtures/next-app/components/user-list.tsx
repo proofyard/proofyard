@@ -1,8 +1,9 @@
 import { Suspense } from "react";
-import { getUsers } from "./users";
-import { LikeButton } from "./like-button";
 
-async function Users() {
+import { LikeButton } from "./like-button";
+import { getUsers } from "./users";
+
+const Users = async () => {
   const users = await getUsers();
   return (
     <ul>
@@ -14,15 +15,13 @@ async function Users() {
       ))}
     </ul>
   );
-}
+};
 
-export function UserList() {
-  return (
-    <section>
-      <h1>Users</h1>
-      <Suspense fallback={<p>Loading users...</p>}>
-        <Users />
-      </Suspense>
-    </section>
-  );
-}
+export const UserList = () => (
+  <section>
+    <h1>Users</h1>
+    <Suspense fallback={<p>Loading users...</p>}>
+      <Users />
+    </Suspense>
+  </section>
+);

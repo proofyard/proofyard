@@ -10,16 +10,23 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 
-export function ExternalStore() {
-  const value = useSyncExternalStore(subscribe, () => `clicks ${clicks}`, () => "server");
+export const ExternalStore = () => {
+  const value = useSyncExternalStore(
+    subscribe,
+    () => `clicks ${clicks}`,
+    () => "server"
+  );
   return (
+    // oxlint-disable-next-line react/button-has-type -- SSR の HTML（<button>server</button>）をテストが文字列で確かめる
     <button
       onClick={() => {
         clicks += 1;
-        listeners.forEach((listener) => listener());
+        for (const listener of listeners) {
+          listener();
+        }
       }}
     >
       {value}
     </button>
   );
-}
+};

@@ -4,8 +4,11 @@ import type { NextConfig } from "next";
 // optimizePackageImports（node_modules の fake-barrel）、reactCompiler
 const config: NextConfig = {
   basePath: "/base",
-  trailingSlash: true,
+  experimental: {
+    authInterrupts: true,
+    optimizePackageImports: ["fake-barrel"],
+  },
   reactCompiler: true,
-  experimental: { authInterrupts: true, optimizePackageImports: ["fake-barrel"] },
+  trailingSlash: true,
 };
 export default config;

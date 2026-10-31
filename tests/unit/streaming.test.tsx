@@ -1,6 +1,8 @@
 // 最初の HTML のストリーミング（仕様 6.3 / 6.4）。テストがデータを止めている間の途中の状態を見る
 import { beforeEach, expect, test } from "bun:test";
+
 import { renderRoute } from "proofyard";
+
 import { db } from "../fixtures/next-app/components/users/db";
 
 beforeEach(() => {
@@ -9,6 +11,7 @@ beforeEach(() => {
 });
 
 test("streaming: シェル（fallback）で返り、データが届いたら中身（Client Mode）", async () => {
+  // oxlint-disable-next-line typescript/no-invalid-void-type -- resolve() を引数なしで呼ぶ
   const gate = Promise.withResolvers<void>();
   db.gate = gate.promise;
   const app = await renderRoute("/stream", { streaming: true });
@@ -33,6 +36,7 @@ test("streaming なしでは、Suspense の中身が表示されてから返る"
 });
 
 test("SSR Mode（JavaScript なし）は、後から届いた中身を表示しない（hidden のまま）", async () => {
+  // oxlint-disable-next-line typescript/no-invalid-void-type -- resolve() を引数なしで呼ぶ
   const gate = Promise.withResolvers<void>();
   db.gate = gate.promise;
   const app = await renderRoute("/stream", { mode: "ssr", streaming: true });
@@ -40,10 +44,14 @@ test("SSR Mode（JavaScript なし）は、後から届いた中身を表示し�
   await app.waitForComplete();
   expect(app.getByText("Loading list")).toBeTruthy();
   expect(app.queryByRole("listitem")).toBeNull();
-  expect(app.html).toContain('<div hidden id="S:0"><ul><li>Alice</li></ul></div>');
+  expect(app.html).toContain(
+    '<div hidden id="S:0"><ul><li>Alice</li></ul></div>'
+  );
 });
 
 test("fallback が出ないページの waitForFallback はエラー", async () => {
   const app = await renderRoute("/dashboard", { streaming: true });
-  await expect(app.waitForFallback()).rejects.toThrow("without showing a Suspense fallback");
+  await expect(app.waitForFallback()).rejects.toThrow(
+    "without showing a Suspense fallback"
+  );
 });

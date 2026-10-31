@@ -1,8 +1,11 @@
+/* oxlint-disable typescript/no-non-null-assertion -- render() の user はブラウザで描画したときにある */
 import { expect, test } from "bun:test";
+
 import { render } from "proofyard";
+
 import { Counter } from "../fixtures/next-app/components/counter";
 
-async function Page() {
+const Page = async () => {
   const name = await Promise.resolve("Alice");
   return (
     <main>
@@ -10,7 +13,7 @@ async function Page() {
       <Counter label="Clicks" initial={2} />
     </main>
   );
-}
+};
 
 test("SSR Mode: Server と Client Components の初期 HTML（Effect は動かない）", async () => {
   const result = await render(<Page />, { mode: "ssr" });
@@ -28,7 +31,7 @@ test("Client Mode: Effect が動き、クリックで状態が更新される", 
 });
 
 test("Hydration: SSR の HTML を hydrateRoot し、操作できる", async () => {
-  const result = await render(<Page />, { mode: "client", hydrate: true });
+  const result = await render(<Page />, { hydrate: true, mode: "client" });
   expect(result.html).toContain("Not ready");
   await result.findByText("Ready");
   await result.user!.click(result.getByRole("button"));
@@ -37,8 +40,12 @@ test("Hydration: SSR の HTML を hydrateRoot し、操作できる", async () =
 });
 
 test("Hydration Mismatch は recoverableErrors に届く（SSR の typeof window は Next.js と同じく undefined）", async () => {
-  const { EnvironmentLabel } = await import("../fixtures/next-app/components/environment-label");
-  const result = await render(<EnvironmentLabel />, { mode: "client", hydrate: true });
+  const { EnvironmentLabel } =
+    await import("../fixtures/next-app/components/environment-label");
+  const result = await render(<EnvironmentLabel />, {
+    hydrate: true,
+    mode: "client",
+  });
   expect(result.html).toBe("<p>rendered on <!-- -->server</p>");
   await result.findByText("rendered on client");
   expect(result.recoverableErrors.length).toBeGreaterThan(0);
@@ -46,8 +53,10 @@ test("Hydration Mismatch は recoverableErrors に届く（SSR の typeof window
 });
 
 test("Server → Client（Provider）→ Server → Client（Context を読む）の入れ子", async () => {
-  const { ThemeProvider, ThemeToggle } = await import("../fixtures/next-app/components/theme");
-  async function Settings() {
+  const { ThemeProvider, ThemeToggle } =
+    await import("../fixtures/next-app/components/theme");
+  // oxlint-disable-next-line unicorn/consistent-function-scoping -- test の中で import した ThemeToggle を使う
+  const Settings = async () => {
     const title = await Promise.resolve("Settings");
     return (
       <section>
@@ -55,7 +64,7 @@ test("Server → Client（Provider）→ Server → Client（Context を読む�
         <ThemeToggle />
       </section>
     );
-  }
+  };
   const page = (
     <ThemeProvider initial="dark">
       <Settings />

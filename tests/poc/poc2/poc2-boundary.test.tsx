@@ -2,47 +2,64 @@
 // `bun run test:poc2` で実行する。
 // このファイル自体は Server Graph（`react-server` 条件）で動く。
 import { expect, mock, test } from "bun:test";
-import { join } from "node:path";
+import nodePath from "node:path";
+
 import * as React from "react";
 import { renderToReadableStream } from "react-server-dom-turbopack/server";
-import { CLIENT, clientModules } from "./plugin";
-import Page from "./fixtures/page";
+
 import BadPage from "./fixtures/bad-page";
+import Page from "./fixtures/page";
 import { Card } from "./fixtures/theme";
+import { CLIENT, clientModules } from "./plugin";
 
-const fixtures = join(import.meta.dir, "fixtures");
-const log: string[] = ((globalThis as any).__proofyardLog ??= []);
+const fixtures = nodePath.join(import.meta.dir, "fixtures");
+const g = globalThis as typeof globalThis & { __proofyardLog?: string[] };
+g.__proofyardLog ??= [];
+const log: string[] = g.__proofyardLog;
 
-const client = await import(join(import.meta.dir, "client-runtime.ts") + CLIENT);
+const client = await import(
+  nodePath.join(import.meta.dir, "client-runtime.ts") + CLIENT
+);
 
-function manifests() {
+const manifests = () => {
   const ids = [...clientModules];
   return {
     // Server 側（renderToReadableStream の第2引数）
-    client: Object.fromEntries(ids.map((id) => [id, { id, chunks: [], name: "*" }])),
+    client: Object.fromEntries(
+      ids.map((id) => [id, { chunks: [], id, name: "*" }])
+    ),
     // Client 側（createFromReadableStream の serverConsumerManifest）
     consumer: {
-      moduleMap: Object.fromEntries(ids.map((id) => [id, { "*": { id, chunks: [], name: "*" } }])),
-      serverModuleMap: null,
       moduleLoading: null,
+      moduleMap: Object.fromEntries(
+        ids.map((id) => [id, { "*": { chunks: [], id, name: "*" } }])
+      ),
+      serverModuleMap: null,
     },
   };
-}
+};
 
-async function renderFlight(node: React.ReactNode) {
+const renderFlight = async (node: React.ReactNode) => {
   const m = manifests();
   const errors: unknown[] = [];
-  const stream = renderToReadableStream(node, m.client, { onError: (e: unknown) => void errors.push(e) });
+  const stream = renderToReadableStream(node, m.client, {
+    onError: (e: unknown) => {
+      errors.push(e);
+    },
+  });
   const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
-  return { bytes, errors, consumer: m.consumer };
-}
+  return { bytes, consumer: m.consumer, errors };
+};
 
 // Server -> Flight -> Client -> HTML
-async function renderHTML(node: React.ReactNode) {
+const renderHTML = async (node: React.ReactNode) => {
   const { bytes, errors, consumer } = await renderFlight(node);
   await client.loadClientModules(clientModules);
-  return { html: await client.html(await client.decode(bytes, consumer)), errors };
-}
+  return {
+    errors,
+    html: await client.html(await client.decode(bytes, consumer)),
+  };
+};
 
 test("SC → CC → SC → CC: Client Component は Server Graph で実行されず、Client 側で解決される", async () => {
   log.length = 0;
@@ -54,7 +71,7 @@ test("SC → CC → SC → CC: Client Component は Server Graph で実行され
 
   // Flight には Client Reference の行が入っている
   const payload = new TextDecoder().decode(bytes);
-  expect(payload).toContain(join(fixtures, "theme.tsx"));
+  expect(payload).toContain(nodePath.join(fixtures, "theme.tsx"));
   expect(payload).toContain('"ThemeProvider"');
   expect(payload).toContain('"Card"');
 
@@ -62,33 +79,47 @@ test("SC → CC → SC → CC: Client Component は Server Graph で実行され
   await client.loadClientModules(clientModules);
   const html = await client.html(await client.decode(bytes, consumer));
   // ThemeProvider（CC）の Context が ServerContent（SC）をまたいで Card（CC）に届く
-  expect(html).toContain("<main><p>Alice<!-- --> (<!-- -->dark<!-- -->)</p></main>");
+  expect(html).toContain(
+    "<main><p>Alice<!-- --> (<!-- -->dark<!-- -->)</p></main>"
+  );
 
   // 実装は Client Graph で1回だけ実行された
   expect(log).toEqual(["theme.tsx executed: useState=function"]);
 });
 
 test("Server Graph と Client Graph の React は別インスタンス", () => {
-  expect((React as any).useState).toBeUndefined(); // react-server ビルド
+  // react-server ビルド
+  expect((React as unknown as { useState?: unknown }).useState).toBeUndefined();
   expect(typeof client.clientReact.useState).toBe("function");
 });
 
 test("Client Component に関数を渡すとシリアライズエラーになる", async () => {
   const { bytes, errors, consumer } = await renderFlight(<BadPage />);
-  expect(String(errors[0])).toMatch(/Functions cannot be passed directly to Client Components/);
+  expect(String(errors[0])).toMatch(
+    /Functions cannot be passed directly to Client Components/u
+  );
   // Client 側ではルートは解決し、エラーは描画時に表に出る
   await client.loadClientModules(clientModules);
-  const err = await client.decode(bytes, consumer).then(client.html).catch((e: Error) => e);
-  expect(err.message).toMatch(/Functions cannot be passed directly to Client Components/);
+  const err = await client
+    .decode(bytes, consumer)
+    .then(client.html)
+    .catch((error: Error) => error);
+  expect(err.message).toMatch(
+    /Functions cannot be passed directly to Client Components/u
+  );
 });
 
 test("Server Graph で Client Component を直接呼ぶと失敗する", () => {
-  expect(() => Card({ user: { name: "x" } })).toThrow(/cannot be called on the server/);
+  expect(() => Card({ user: { name: "x" } })).toThrow(
+    /cannot be called on the server/u
+  );
 });
 
 // mock.module はファイル全体に効くので最後に置く
 test("bun:test の mock.module が Server Component のデータ取得に効く", async () => {
-  mock.module(join(fixtures, "data.ts"), () => ({ getUser: async () => ({ name: "Mocked" }) }));
+  mock.module(nodePath.join(fixtures, "data.ts"), () => ({
+    getUser: () => Promise.resolve({ name: "Mocked" }),
+  }));
   const { html, errors } = await renderHTML(<Page />);
   expect(errors).toEqual([]);
   expect(html).toContain("<p>Mocked<!-- --> (<!-- -->dark<!-- -->)</p>");
