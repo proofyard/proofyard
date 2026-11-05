@@ -1,0 +1,6 @@
+# deepmerge は ultracite（lint の CLI、devDependencies）の中だけで使われ、proofyard の配布物には入らない。修正版が出ていない
+# 修正版が出るか、ultracite が依存をやめたら消す
+[[IgnoredVulns]]
+id = "GHSA-gcqx-w48m-w2h4"
+ignoreUntil = 2027-05-01
+reason = "deepmerge is only used inside the ultracite CLI (dev dependency, not shipped); no fixed version yet"

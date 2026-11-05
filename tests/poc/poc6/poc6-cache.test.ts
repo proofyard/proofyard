@@ -5,10 +5,7 @@ import { getInvalidatedTags, requestRoute } from "proofyard";
 
 // PROOFYARD_COMPARE_URL を指定すると、同じテストを本物の `next start` に HTTP で流す（Next.js 本体との比較）
 const compareUrl = process.env.PROOFYARD_COMPARE_URL;
-const send = (
-  url: string,
-  init: { method?: string } = {}
-): Promise<Response> =>
+const send = (url: string, init: { method?: string } = {}): Promise<Response> =>
   compareUrl
     ? fetch(compareUrl + url, { method: init.method, redirect: "manual" })
     : requestRoute(url, init);
